@@ -1,0 +1,1402 @@
+import 'dart:io';
+import 'dart:ui';
+import 'dart:async';
+import 'dart:convert';
+import 'package:flutter/material.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:path/path.dart' as p;
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:intl/intl.dart';
+import 'package:desktop_drop/desktop_drop.dart';
+
+import 'server.dart';
+import 'adb_manager.dart';
+import 'logger.dart';
+import 'tray_manager.dart';
+import 'device_storage.dart';
+import 'media_config.dart';
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await AppLogger.init();
+  await _startServer();
+  runApp(const BrandmenApp());
+}
+
+Future<void> _startServer() async {
+  try {
+    await MediaConfig.resolveDir();
+    final server = BrandmenServer();
+    await server.start();
+    AppLogger.log("HTTP сервер запущен на порту 5010, папка: ${MediaConfig.current}");
+  } catch (e) {
+    AppLogger.log("Ошибка запуска сервера: $e");
+  }
+}
+
+class BrandmenApp extends StatelessWidget {
+  const BrandmenApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'Brandmen Pro',
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData(
+        brightness: Brightness.dark,
+        fontFamily: 'Segoe UI',
+        scaffoldBackgroundColor: Colors.transparent,
+        useMaterial3: true,
+      ),
+      home: const AppleBackgroundWrapper(child: MainScreen()),
+    );
+  }
+}
+
+class AppleBackgroundWrapper extends StatelessWidget {
+  final Widget child;
+  const AppleBackgroundWrapper({super.key, required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Color(0xFF2C2C2E), Color(0xFF1C1C1E)],
+        ),
+      ),
+      child: child,
+    );
+  }
+}
+
+class MainScreen extends StatefulWidget {
+  const MainScreen({super.key});
+  @override
+  State<MainScreen> createState() => _MainScreenState();
+}
+
+class _MainScreenState extends State<MainScreen> {
+  int _selectedIndex = 0;
+  Timer? _schedulerTimer;
+  String? _lastTriggerMinute;
+  final adb = AdbManager();
+  final tray = TrayManager();
+
+  @override
+  void initState() {
+    super.initState();
+    _startScheduler();
+    _cleanupOnStart();
+    tray.init(() {
+      if (mounted) setState(() {});
+    });
+  }
+
+  Future<void> _cleanupOnStart() async {
+    await adb.cleanupOffline();
+  }
+
+  @override
+  void dispose() {
+    _schedulerTimer?.cancel();
+    super.dispose();
+  }
+
+  void _startScheduler() {
+    _schedulerTimer = Timer.periodic(const Duration(seconds: 30), (timer) async {
+      final prefs = await SharedPreferences.getInstance();
+      final enabled = prefs.getBool('autoOffEnabled') ?? false;
+      if (!enabled) return;
+
+      final offTime = prefs.getString('autoOffTime') ?? "22:00";
+      final now = DateTime.now();
+      final currentTime = DateFormat('HH:mm').format(now);
+
+      if (currentTime == offTime && _lastTriggerMinute != currentTime) {
+        _lastTriggerMinute = currentTime;
+        AppLogger.log("АВТОМАТИЧЕСКОЕ РАСПИСАНИЕ: Пора выключать экраны ($offTime)");
+        final saved = await DeviceStorage.load();
+        await adb.bulkSleep(saved.map((d) => d.ip).toList());
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final List<Widget> screens = [
+      const DashboardScreen(),
+      const MediaScreen(),
+      const SettingsScreen(),
+    ];
+
+    return Scaffold(
+      backgroundColor: Colors.transparent,
+      body: Row(
+        children: [
+          Container(
+            width: 220,
+            padding: const EdgeInsets.symmetric(vertical: 20),
+            decoration: BoxDecoration(
+              color: Colors.white.withOpacity(0.03),
+              border: const Border(right: BorderSide(color: Colors.white10)),
+            ),
+            child: Column(
+              children: [
+                const SizedBox(height: 30),
+                const Text("Brandmen", style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800, color: Colors.white)),
+                const Text("CONTROL", style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.blue, letterSpacing: 2)),
+                const SizedBox(height: 50),
+                _navItem(0, Icons.grid_view_rounded, "Планшеты"),
+                _navItem(1, Icons.play_circle_fill_rounded, "Медиатека"),
+                const Spacer(),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: OutlinedButton(
+                    onPressed: () {
+                      AppLogger.log("Сворачивание в трей");
+                      tray.hideToTray();
+                    },
+                    style: OutlinedButton.styleFrom(
+                      side: const BorderSide(color: Colors.white10),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
+                    child: const Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.unfold_less_rounded, size: 16, color: Colors.white38),
+                        SizedBox(width: 8),
+                        Text("В трей", style: TextStyle(color: Colors.white38, fontSize: 12)),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                _navItem(2, Icons.tune_rounded, "Настройки"),
+                const SizedBox(height: 10),
+              ],
+            ),
+          ),
+          Expanded(
+            child: ClipRect(
+              child: BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+                child: screens[_selectedIndex],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _navItem(int index, IconData icon, String label) {
+    bool active = _selectedIndex == index;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+      child: InkWell(
+        onTap: () => setState(() => _selectedIndex = index),
+        borderRadius: BorderRadius.circular(10),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          decoration: BoxDecoration(
+            color: active ? Colors.blue.withOpacity(0.15) : Colors.transparent,
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Row(
+            children: [
+              Icon(icon, color: active ? Colors.blue : Colors.white60, size: 20),
+              const SizedBox(width: 12),
+              Text(label, style: TextStyle(color: active ? Colors.white : Colors.white60, fontSize: 14, fontWeight: active ? FontWeight.w600 : FontWeight.normal)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class DashboardScreen extends StatefulWidget {
+  const DashboardScreen({super.key});
+  @override
+  State<DashboardScreen> createState() => _DashboardScreenState();
+}
+
+class _DashboardScreenState extends State<DashboardScreen> {
+  final adb = AdbManager();
+  List<SavedDevice> saved = [];
+  Map<String, DeviceStatus> statuses = {};
+  Timer? _screenshotTimer;
+  final Map<String, String> _thumbnails = {};
+  bool _isLoading = false;
+  bool _isRegistering = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _refresh();
+    _screenshotTimer = Timer.periodic(const Duration(minutes: 5), (timer) => _captureAll());
+  }
+
+  @override
+  void dispose() {
+    _screenshotTimer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _captureAll() async {
+    final tempDir = await getTemporaryDirectory();
+    for (final dev in saved) {
+      if (statuses[dev.ip]?.online != true) continue;
+      final path = p.join(tempDir.path, "thumb_${dev.ip.replaceAll('.', '_')}.png");
+      final result = await adb.takeScreenshot(dev.ip, path);
+      if (result != null && mounted) {
+        setState(() {
+          _thumbnails[dev.ip] = result;
+        });
+      }
+    }
+  }
+
+  Future<void> _refresh() async {
+    if (mounted) setState(() => _isLoading = true);
+    final list = await DeviceStorage.load();
+    final results = await adb.checkAll(list.map((d) => d.ip).toList());
+    if (mounted) {
+      setState(() {
+        saved = list;
+        statuses = {for (final s in results) s.ip: s};
+        _isLoading = false;
+      });
+      _captureAll();
+    }
+  }
+
+  Future<void> _registerViaUsb() async {
+    setState(() => _isRegistering = true);
+    final usbDevices = await adb.getUsbDevices();
+    if (!mounted) {
+      return;
+    }
+
+    if (usbDevices.isEmpty) {
+      setState(() => _isRegistering = false);
+      showDialog(
+        context: context,
+        builder: (c) => AlertDialog(
+          backgroundColor: const Color(0xFF2C2C2E),
+          title: const Text("Нет USB устройств"),
+          content: const Text("Подключите планшет через USB и включите отладку по USB на нём."),
+          actions: [TextButton(onPressed: () => Navigator.pop(c), child: const Text("OK"))],
+        ),
+      );
+      return;
+    }
+
+    int added = 0;
+    for (final id in usbDevices) {
+      AppLogger.log("Регистрация через USB: $id");
+      final ip = await adb.registerViaUsb(id);
+      if (!mounted) return;
+      if (ip != null) {
+        await DeviceStorage.add(ip, name: "Планшет ${(await DeviceStorage.load()).length + 1}");
+        added++;
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text("Планшет $ip зарегистрирован и сохранён"),
+          backgroundColor: Colors.green.shade700,
+        ));
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text("Не удалось зарегистрировать $id"),
+          backgroundColor: Colors.red.shade700,
+        ));
+      }
+    }
+    setState(() => _isRegistering = false);
+    if (added > 0) await _refresh();
+  }
+
+  Future<void> _syncAndPlay(SavedDevice dev) async {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text("Синхронизация ${dev.name}..."),
+      duration: const Duration(seconds: 2),
+      backgroundColor: Colors.blue.shade700,
+    ));
+    final mediaDir = await MediaConfig.resolveDir();
+    final pushed = await adb.syncDeviceDirect(dev.ip, mediaDir);
+    await adb.wakeUp(dev.ip, launchPlayer: true);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text("${dev.name}: загружено $pushed, запущено"),
+      backgroundColor: Colors.green.shade700,
+    ));
+  }
+
+  Future<void> _syncAndPlayAll() async {
+    final online = saved.where((d) => statuses[d.ip]?.online == true).toList();
+    if (online.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text("Нет онлайн-устройств"),
+        backgroundColor: Colors.orange,
+      ));
+      return;
+    }
+    final mediaDir = await MediaConfig.resolveDir();
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text("Синхронизация ${online.length} устройств..."),
+      backgroundColor: Colors.blue.shade700,
+    ));
+    await Future.wait(online.map((dev) async {
+      await adb.syncDeviceDirect(dev.ip, mediaDir);
+      await adb.wakeUp(dev.ip, launchPlayer: true);
+    }));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text("Запущено на ${online.length} устройствах"),
+      backgroundColor: Colors.green.shade700,
+    ));
+  }
+
+  Future<void> _syncOnly(SavedDevice dev) async {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text("Синхронизация ${dev.name}..."),
+      duration: const Duration(seconds: 2),
+      backgroundColor: Colors.blue.shade700,
+    ));
+    final mediaDir = await MediaConfig.resolveDir();
+    final pushed = await adb.syncDeviceDirect(dev.ip, mediaDir);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text("${dev.name}: загружено $pushed файлов"),
+      backgroundColor: Colors.green.shade700,
+    ));
+  }
+
+  void _endShift() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        backgroundColor: const Color(0xFF2C2C2E),
+        title: const Text("Завершить смену?"),
+        content: const Text("Все экраны планшетов будут выключены."),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(c, false), child: const Text("Отмена")),
+          TextButton(onPressed: () => Navigator.pop(c, true), child: const Text("Выключить всё", style: TextStyle(color: Colors.redAccent))),
+        ],
+      )
+    );
+
+    if (confirmed == true) {
+      AppLogger.log("МАССОВОЕ ВЫКЛЮЧЕНИЕ: Завершение смены");
+      await adb.bulkSleep(saved.map((d) => d.ip).toList());
+      _refresh();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final onlineCount = statuses.values.where((s) => s.online).length;
+
+    return Padding(
+      padding: const EdgeInsets.all(40.0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Wrap(
+            spacing: 16,
+            runSpacing: 12,
+            alignment: WrapAlignment.spaceBetween,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text("Устройства", style: TextStyle(fontSize: 34, fontWeight: FontWeight.w700, letterSpacing: -1)),
+                  Text("$onlineCount из ${saved.length} в сети", style: const TextStyle(color: Colors.white38, fontSize: 14)),
+                ],
+              ),
+              Wrap(
+                spacing: 12,
+                runSpacing: 12,
+                children: [
+                  OutlinedButton.icon(
+                    onPressed: _isRegistering ? null : _registerViaUsb,
+                    icon: _isRegistering
+                      ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(color: Colors.greenAccent, strokeWidth: 2))
+                      : const Icon(Icons.usb_rounded),
+                    label: const Text("USB"),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.greenAccent,
+                      side: const BorderSide(color: Colors.greenAccent),
+                      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    ),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: saved.isEmpty ? null : _syncAndPlayAll,
+                    icon: const Icon(Icons.cast_connected_rounded),
+                    label: const Text("Запустить все"),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.blue,
+                      side: const BorderSide(color: Colors.blue),
+                      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    ),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: saved.isEmpty ? null : _endShift,
+                    icon: const Icon(Icons.power_settings_new_rounded),
+                    label: const Text("Завершить смену"),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.redAccent,
+                      side: const BorderSide(color: Colors.redAccent),
+                      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    ),
+                  ),
+                  ElevatedButton.icon(
+                    onPressed: _isLoading ? null : _refresh,
+                    icon: _isLoading
+                      ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                      : const Icon(Icons.refresh_rounded),
+                    label: const Text("Обновить"),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.blue,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    ),
+                  ),
+                ],
+              )
+            ],
+          ),
+          const SizedBox(height: 40),
+          Expanded(
+            child: saved.isEmpty
+              ? _emptyState()
+              : LayoutBuilder(
+                  builder: (context, constraints) {
+                    final cols = (constraints.maxWidth / 280).floor().clamp(1, 6);
+                    return GridView.builder(
+                      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                        crossAxisCount: cols,
+                        crossAxisSpacing: 20,
+                        mainAxisSpacing: 20,
+                        childAspectRatio: 1.05,
+                      ),
+                      itemCount: saved.length,
+                      itemBuilder: (context, index) => _deviceCard(saved[index]),
+                    );
+                  },
+                ),
+          )
+        ],
+      ),
+    );
+  }
+
+  Widget _emptyState() {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.tablet_android_rounded, size: 80, color: Colors.white.withOpacity(0.1)),
+          const SizedBox(height: 20),
+          const Text("Нет зарегистрированных планшетов", style: TextStyle(color: Colors.white54, fontSize: 18)),
+          const SizedBox(height: 8),
+          const Text("Подключите планшет через USB и нажмите «Добавить по USB»",
+              style: TextStyle(color: Colors.white24, fontSize: 13)),
+        ],
+      ),
+    );
+  }
+
+  Widget _deviceCard(SavedDevice dev) {
+    final status = statuses[dev.ip];
+    final isOnline = status?.online ?? false;
+    final bat = int.tryParse(status?.battery ?? "0") ?? 0;
+
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.05),
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: isOnline ? Colors.green.withOpacity(0.2) : Colors.white.withOpacity(0.05)),
+      ),
+      padding: const EdgeInsets.all(20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    width: 10,
+                    height: 10,
+                    decoration: BoxDecoration(
+                      color: isOnline ? Colors.greenAccent : Colors.white24,
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Text(isOnline ? "Online" : "Offline",
+                      style: TextStyle(fontSize: 11, color: isOnline ? Colors.greenAccent : Colors.white38)),
+                ],
+              ),
+              if (isOnline)
+                Row(
+                  children: [
+                    Icon(bat < 20 ? Icons.battery_alert_rounded : Icons.battery_charging_full_rounded,
+                        size: 14, color: bat < 20 ? Colors.redAccent : Colors.white24),
+                    const SizedBox(width: 4),
+                    Text("${status?.battery ?? "??"}%",
+                        style: TextStyle(fontSize: 12,
+                            color: bat < 20 ? Colors.redAccent : Colors.white24,
+                            fontWeight: FontWeight.bold)),
+                  ],
+                ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Expanded(
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(12),
+              child: AspectRatio(
+                aspectRatio: 16 / 9,
+                child: _thumbnails.containsKey(dev.ip)
+                    ? Image.file(File(_thumbnails[dev.ip]!), fit: BoxFit.cover, key: ValueKey(_thumbnails[dev.ip]))
+                    : Container(color: Colors.black26, child: Icon(
+                        isOnline ? Icons.videocam_off_rounded : Icons.wifi_off_rounded,
+                        color: Colors.white10)),
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Text(dev.name, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600), overflow: TextOverflow.ellipsis),
+          Text(dev.ip, style: const TextStyle(fontSize: 11, color: Colors.white38)),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              _smallAppleBtn(Icons.play_arrow_rounded, isOnline ? () => _syncAndPlay(dev) : null,
+                  tooltip: "Синхронизировать плейлист и запустить"),
+              const SizedBox(width: 8),
+              _smallAppleBtn(Icons.sync_rounded, isOnline ? () => _syncOnly(dev) : null,
+                  tooltip: "Только синхронизация (без перезапуска)"),
+              const SizedBox(width: 8),
+              _smallAppleBtn(Icons.power_settings_new_rounded, isOnline ? () {
+                AppLogger.log("Выключение экрана на ${dev.ip}");
+                adb.sleep(dev.ip);
+              } : null, tooltip: "Выключить экран"),
+            ],
+          )
+        ],
+      ),
+    );
+  }
+
+  Widget _smallAppleBtn(IconData icon, VoidCallback? onTap, {String? tooltip}) {
+    final btn = InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(8),
+      child: Container(
+        padding: const EdgeInsets.all(8),
+        decoration: BoxDecoration(
+          color: Colors.white.withOpacity(onTap == null ? 0.02 : 0.05),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Icon(icon, size: 18, color: onTap == null ? Colors.white12 : Colors.white70),
+      ),
+    );
+    return tooltip != null ? Tooltip(message: tooltip, child: btn) : btn;
+  }
+}
+
+class MediaScreen extends StatefulWidget {
+  const MediaScreen({super.key});
+  @override
+  State<MediaScreen> createState() => _MediaScreenState();
+}
+
+class _MediaScreenState extends State<MediaScreen> {
+  List<File> videos = [];
+  late Directory _videoDir;
+  bool _dragging = false;
+  String? _customSourceDir;
+
+  static const _orderFileName = '.brandmen_order.json';
+  static const _playlistFileName = 'playlist.m3u';
+  static const _customDirPrefKey = 'custom_media_dir';
+
+  @override
+  void initState() {
+    super.initState();
+    _init();
+  }
+
+  Future<void> _init() async {
+    final dir = await MediaConfig.resolveDir();
+    _videoDir = Directory(dir);
+    final prefs = await SharedPreferences.getInstance();
+    _customSourceDir = prefs.getString(_customDirPrefKey);
+    await _loadVideos();
+  }
+
+  Future<void> _pickSourceFolder() async {
+    final dir = await FilePicker.platform.getDirectoryPath(
+      dialogTitle: "Выберите папку с видеороликами",
+    );
+    if (dir == null) return;
+    await MediaConfig.setCustom(dir);
+    setState(() {
+      _customSourceDir = dir;
+      _videoDir = Directory(dir);
+    });
+    await _loadVideos();
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text("Папка-источник: $dir"),
+        backgroundColor: Colors.green.shade700,
+      ));
+    }
+  }
+
+  Future<void> _resetSourceFolder() async {
+    await MediaConfig.setCustom(null);
+    final dir = await MediaConfig.resolveDir();
+    setState(() {
+      _customSourceDir = null;
+      _videoDir = Directory(dir);
+    });
+    await _loadVideos();
+  }
+
+  Future<List<String>> _loadSavedOrder() async {
+    final orderFile = File(p.join(_videoDir.path, _orderFileName));
+    if (!await orderFile.exists()) return [];
+    try {
+      final list = jsonDecode(await orderFile.readAsString()) as List;
+      return list.map((e) => e.toString()).toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
+  Future<void> _saveOrderAndPlaylist() async {
+    final names = videos.map((f) => p.basename(f.path)).toList();
+
+    final orderFile = File(p.join(_videoDir.path, _orderFileName));
+    await orderFile.writeAsString(jsonEncode(names));
+
+    final playlistFile = File(p.join(_videoDir.path, _playlistFileName));
+    final buf = StringBuffer('#EXTM3U\n');
+    for (final n in names) {
+      buf.writeln(n);
+    }
+    await playlistFile.writeAsString(buf.toString());
+    AppLogger.log("Плейлист обновлён: ${names.length} файлов");
+  }
+
+  Future<void> _loadVideos() async {
+    final disk = _videoDir
+        .listSync()
+        .whereType<File>()
+        .where((f) {
+          final name = p.basename(f.path).toLowerCase();
+          if (name.startsWith('.')) return false;
+          if (name == _playlistFileName) return false;
+          return ['.mp4', '.mkv', '.mov', '.avi', '.webm']
+              .contains(p.extension(name));
+        })
+        .toList();
+
+    final savedOrder = await _loadSavedOrder();
+    final byName = {for (final f in disk) p.basename(f.path): f};
+
+    final ordered = <File>[];
+    for (final name in savedOrder) {
+      final f = byName.remove(name);
+      if (f != null) ordered.add(f);
+    }
+    // Новые файлы добавляются в конец, по дате
+    final newOnes = byName.values.toList()
+      ..sort((a, b) => b.statSync().modified.compareTo(a.statSync().modified));
+    ordered.addAll(newOnes);
+
+    if (mounted) setState(() => videos = ordered);
+    if (savedOrder.length != ordered.length) {
+      await _saveOrderAndPlaylist();
+    }
+  }
+
+  Future<void> _pickVideos() async {
+    final result = await FilePicker.platform
+        .pickFiles(type: FileType.video, allowMultiple: true);
+    if (result == null) return;
+    for (final pathStr in result.paths) {
+      if (pathStr != null) {
+        await File(pathStr).copy(p.join(_videoDir.path, p.basename(pathStr)));
+      }
+    }
+    await _loadVideos();
+    await _saveOrderAndPlaylist();
+  }
+
+  Future<void> _deleteVideo(File file) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        backgroundColor: const Color(0xFF2C2C2E),
+        title: const Text("Удалить видео?"),
+        content: Text(p.basename(file.path)),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(c, false),
+              child: const Text("Отмена")),
+          TextButton(
+              onPressed: () => Navigator.pop(c, true),
+              child: const Text("Удалить",
+                  style: TextStyle(color: Colors.redAccent))),
+        ],
+      ),
+    );
+    if (confirmed == true) {
+      await file.delete();
+      await _loadVideos();
+      await _saveOrderAndPlaylist();
+    }
+  }
+
+  void _previewVideo(File file) {
+    if (Platform.isWindows) {
+      Process.run('cmd', ['/c', 'start', '', file.path], runInShell: true);
+    } else if (Platform.isMacOS) {
+      Process.run('open', [file.path]);
+    } else {
+      Process.run('xdg-open', [file.path]);
+    }
+  }
+
+  Future<void> _renameVideo(File file) async {
+    final currentName = p.basenameWithoutExtension(file.path);
+    final ext = p.extension(file.path);
+    final controller = TextEditingController(text: currentName);
+    final newName = await showDialog<String>(
+      context: context,
+      builder: (c) => AlertDialog(
+        backgroundColor: const Color(0xFF2C2C2E),
+        title: const Text("Переименовать ролик"),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: InputDecoration(
+            border: const OutlineInputBorder(),
+            suffixText: ext,
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(c), child: const Text("Отмена")),
+          TextButton(
+              onPressed: () => Navigator.pop(c, controller.text.trim()),
+              child: const Text("Сохранить")),
+        ],
+      ),
+    );
+    if (newName == null || newName.isEmpty || newName == currentName) return;
+
+    final safeName = newName.replaceAll(RegExp(r'[/\\:*?"<>|]'), '_');
+    final newPath = p.join(p.dirname(file.path), '$safeName$ext');
+    if (await File(newPath).exists()) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text("Файл с именем '$safeName$ext' уже существует"),
+          backgroundColor: Colors.red.shade700,
+        ));
+      }
+      return;
+    }
+    await file.rename(newPath);
+    await _loadVideos();
+    await _saveOrderAndPlaylist();
+  }
+
+  Future<void> _addDroppedFiles(List<String> paths) async {
+    int added = 0;
+    int skipped = 0;
+    for (final path in paths) {
+      final ext = p.extension(path).toLowerCase();
+      if (!['.mp4', '.mkv', '.mov', '.avi', '.webm'].contains(ext)) {
+        skipped++;
+        continue;
+      }
+      final src = File(path);
+      if (!await src.exists()) continue;
+      final dst = File(p.join(_videoDir.path, p.basename(path)));
+      try {
+        await src.copy(dst.path);
+        added++;
+      } catch (_) {}
+    }
+    await _loadVideos();
+    await _saveOrderAndPlaylist();
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text("Добавлено: $added${skipped > 0 ? ", пропущено $skipped (не видео)" : ""}"),
+        backgroundColor: added > 0 ? Colors.green.shade700 : Colors.orange.shade700,
+      ));
+    }
+  }
+
+  Future<void> _reorder(int oldIndex, int newIndex) async {
+    if (newIndex > oldIndex) newIndex--;
+    setState(() {
+      final item = videos.removeAt(oldIndex);
+      videos.insert(newIndex, item);
+    });
+    await _saveOrderAndPlaylist();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final totalMb = videos.fold<int>(0, (s, f) => s + f.lengthSync()) /
+        (1024 * 1024);
+
+    return DropTarget(
+      onDragEntered: (_) => setState(() => _dragging = true),
+      onDragExited: (_) => setState(() => _dragging = false),
+      onDragDone: (detail) async {
+        setState(() => _dragging = false);
+        await _addDroppedFiles(detail.files.map((f) => f.path).toList());
+      },
+      child: Stack(
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(40.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Wrap(
+                  alignment: WrapAlignment.spaceBetween,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  spacing: 16,
+                  runSpacing: 12,
+                  children: [
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Text("Плейлист",
+                            style: TextStyle(
+                                fontSize: 34,
+                                fontWeight: FontWeight.w700,
+                                letterSpacing: -1)),
+                        Text(
+                            "${videos.length} роликов • ${totalMb.toStringAsFixed(1)} MB",
+                            style: const TextStyle(
+                                color: Colors.white38, fontSize: 14)),
+                      ],
+                    ),
+                    Wrap(
+                      spacing: 12,
+                      children: [
+                        OutlinedButton.icon(
+                          onPressed: _pickSourceFolder,
+                          icon: const Icon(Icons.folder_open_rounded),
+                          label: const Text("Выбрать папку"),
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: Colors.white70,
+                            side: const BorderSide(color: Colors.white24),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 18, vertical: 16),
+                            shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12)),
+                          ),
+                        ),
+                        ElevatedButton.icon(
+                          onPressed: _pickVideos,
+                          icon: const Icon(Icons.add_to_photos_rounded),
+                          label: const Text("Добавить"),
+                          style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.blue,
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 18, vertical: 16),
+                              shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(12))),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                _sourceFolderBanner(),
+                const SizedBox(height: 12),
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.blue.withOpacity(0.08),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.blue.withOpacity(0.2)),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(Icons.lightbulb_outline,
+                          color: Colors.blue.shade200, size: 18),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          "Перетащи видео из Finder сюда • Меняй порядок drag&drop • Карандаш = переименовать",
+                          style: TextStyle(
+                              color: Colors.blue.shade200, fontSize: 12),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 20),
+                Expanded(
+                  child: videos.isEmpty
+                      ? Center(
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(Icons.file_download_outlined,
+                                  size: 80,
+                                  color: Colors.white.withOpacity(0.1)),
+                              const SizedBox(height: 16),
+                              const Text("Перетащи сюда видеофайлы",
+                                  style: TextStyle(
+                                      color: Colors.white54, fontSize: 18)),
+                              const SizedBox(height: 6),
+                              const Text("или нажми «Добавить»",
+                                  style: TextStyle(
+                                      color: Colors.white24, fontSize: 13)),
+                            ],
+                          ),
+                        )
+                      : ReorderableListView.builder(
+                          buildDefaultDragHandles: false,
+                          itemCount: videos.length,
+                          onReorder: _reorder,
+                          itemBuilder: (context, i) {
+                            final file = videos[i];
+                            return _videoItem(file, i, key: ValueKey(file.path));
+                          },
+                        ),
+                ),
+              ],
+            ),
+          ),
+          if (_dragging)
+            Positioned.fill(
+              child: Container(
+                margin: const EdgeInsets.all(20),
+                decoration: BoxDecoration(
+                  color: Colors.blue.withOpacity(0.15),
+                  border: Border.all(color: Colors.blue, width: 3, style: BorderStyle.solid),
+                  borderRadius: BorderRadius.circular(24),
+                ),
+                child: const Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.file_download_rounded, size: 100, color: Colors.blue),
+                      SizedBox(height: 20),
+                      Text("Отпусти чтобы добавить видео",
+                          style: TextStyle(color: Colors.blue, fontSize: 24, fontWeight: FontWeight.bold)),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _sourceFolderBanner() {
+    if (_customSourceDir == null) return const SizedBox.shrink();
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: Colors.green.withOpacity(0.08),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.green.withOpacity(0.25)),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.folder_special_rounded, color: Colors.green.shade300, size: 18),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text("Источник: $_customSourceDir",
+                    style: TextStyle(color: Colors.green.shade200, fontSize: 12, fontWeight: FontWeight.w600),
+                    overflow: TextOverflow.ellipsis),
+                Text("Файлы из этой папки автоматически попадают в плейлист",
+                    style: TextStyle(color: Colors.green.shade100.withOpacity(0.7), fontSize: 11)),
+              ],
+            ),
+          ),
+          TextButton.icon(
+            onPressed: _resetSourceFolder,
+            icon: const Icon(Icons.close_rounded, size: 16),
+            label: const Text("Сбросить"),
+            style: TextButton.styleFrom(foregroundColor: Colors.white60),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _videoItem(File file, int index, {required Key key}) {
+    final sizeMb = (file.lengthSync() / (1024 * 1024)).toStringAsFixed(1);
+    return Container(
+      key: key,
+      margin: const EdgeInsets.only(bottom: 8),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.04),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.white.withOpacity(0.05)),
+      ),
+      child: Row(
+        children: [
+          ReorderableDragStartListener(
+            index: index,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 16),
+              child: const Icon(Icons.drag_indicator_rounded,
+                  color: Colors.white24, size: 20),
+            ),
+          ),
+          Container(
+            width: 32,
+            height: 32,
+            decoration: BoxDecoration(
+              color: Colors.blue.withOpacity(0.15),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            alignment: Alignment.center,
+            child: Text(
+              "${index + 1}",
+              style: const TextStyle(
+                  color: Colors.blue, fontWeight: FontWeight.bold, fontSize: 13),
+            ),
+          ),
+          const SizedBox(width: 14),
+          const Icon(Icons.movie_creation_outlined,
+              color: Colors.white54, size: 24),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  p.basename(file.path),
+                  style: const TextStyle(fontWeight: FontWeight.w500, fontSize: 14),
+                  overflow: TextOverflow.ellipsis,
+                ),
+                Text("$sizeMb MB",
+                    style:
+                        const TextStyle(color: Colors.white38, fontSize: 12)),
+              ],
+            ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.play_circle_outline_rounded,
+                color: Colors.blue),
+            tooltip: "Открыть",
+            onPressed: () => _previewVideo(file),
+          ),
+          IconButton(
+            icon: const Icon(Icons.edit_rounded, color: Colors.white60),
+            tooltip: "Переименовать",
+            onPressed: () => _renameVideo(file),
+          ),
+          IconButton(
+            icon: const Icon(Icons.delete_outline_rounded,
+                color: Colors.redAccent),
+            tooltip: "Удалить",
+            onPressed: () => _deleteVideo(file),
+          ),
+          const SizedBox(width: 8),
+        ],
+      ),
+    );
+  }
+}
+
+class SettingsScreen extends StatefulWidget {
+  const SettingsScreen({super.key});
+  @override
+  State<SettingsScreen> createState() => _SettingsScreenState();
+}
+
+class _SettingsScreenState extends State<SettingsScreen> {
+  final _timeController = TextEditingController(text: "22:00");
+  bool autoOffEnabled = false;
+  String? localIp;
+  List<SavedDevice> savedDevices = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSettings();
+    _getHostIp();
+    _loadDevices();
+  }
+
+  Future<void> _loadDevices() async {
+    final list = await DeviceStorage.load();
+    if (mounted) setState(() => savedDevices = list);
+  }
+
+  Future<void> _loadSettings() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (mounted) {
+      setState(() {
+        _timeController.text = prefs.getString('autoOffTime') ?? "22:00";
+        autoOffEnabled = prefs.getBool('autoOffEnabled') ?? false;
+      });
+    }
+  }
+
+  Future<void> _saveSettings() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('autoOffTime', _timeController.text);
+    await prefs.setBool('autoOffEnabled', autoOffEnabled);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Настройки сохранены")));
+  }
+
+  Future<void> _getHostIp() async {
+    try {
+      for (var interface in await NetworkInterface.list()) {
+        for (var addr in interface.addresses) {
+          if (addr.type == InternetAddressType.IPv4 && !addr.isLoopback) {
+            if (mounted) setState(() => localIp = addr.address);
+            return;
+          }
+        }
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _renameDevice(SavedDevice dev) async {
+    final controller = TextEditingController(text: dev.name);
+    final newName = await showDialog<String>(
+      context: context,
+      builder: (c) => AlertDialog(
+        backgroundColor: const Color(0xFF2C2C2E),
+        title: const Text("Переименовать планшет"),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(border: OutlineInputBorder()),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(c), child: const Text("Отмена")),
+          TextButton(onPressed: () => Navigator.pop(c, controller.text.trim()), child: const Text("Сохранить")),
+        ],
+      ),
+    );
+    if (newName != null && newName.isNotEmpty) {
+      await DeviceStorage.rename(dev.ip, newName);
+      _loadDevices();
+    }
+  }
+
+  Future<void> _removeDevice(SavedDevice dev) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        backgroundColor: const Color(0xFF2C2C2E),
+        title: const Text("Удалить планшет?"),
+        content: Text("${dev.name} (${dev.ip})"),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(c, false), child: const Text("Отмена")),
+          TextButton(onPressed: () => Navigator.pop(c, true), child: const Text("Удалить", style: TextStyle(color: Colors.redAccent))),
+        ],
+      ),
+    );
+    if (confirmed == true) {
+      await DeviceStorage.remove(dev.ip);
+      _loadDevices();
+    }
+  }
+
+  Future<void> _addManually() async {
+    final controller = TextEditingController();
+    final ip = await showDialog<String>(
+      context: context,
+      builder: (c) => AlertDialog(
+        backgroundColor: const Color(0xFF2C2C2E),
+        title: const Text("Добавить планшет вручную"),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(hintText: "192.168.x.x", border: OutlineInputBorder()),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(c), child: const Text("Отмена")),
+          TextButton(onPressed: () => Navigator.pop(c, controller.text.trim()), child: const Text("Добавить")),
+        ],
+      ),
+    );
+    if (ip != null && RegExp(r'^\d+\.\d+\.\d+\.\d+$').hasMatch(ip)) {
+      await DeviceStorage.add(ip, name: "Планшет ${savedDevices.length + 1}");
+      _loadDevices();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(40.0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text("Настройки", style: TextStyle(fontSize: 34, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 30),
+
+          _sectionCard("Сеть", [
+            _settingRow("IP этого Mac",
+                SelectableText(localIp ?? "...",
+                    style: const TextStyle(color: Colors.blue, fontWeight: FontWeight.bold, fontSize: 16))),
+            const SizedBox(height: 8),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.blue.withOpacity(0.08),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.blue.withOpacity(0.2)),
+              ),
+              child: Text(
+                "На планшете в Brandmen Ads → ⚙️ ввести ТОЛЬКО IP (без :5010), порт добавляется автоматически",
+                style: TextStyle(color: Colors.blue.shade200, fontSize: 12),
+              ),
+            ),
+          ]),
+
+          const SizedBox(height: 20),
+
+          _sectionCard("Автоматизация", [
+            _settingRow("Автоматическое выключение",
+                Switch(value: autoOffEnabled, activeColor: Colors.blue,
+                    onChanged: (v) => setState(() => autoOffEnabled = v))),
+            if (autoOffEnabled) ...[
+              const SizedBox(height: 12),
+              _settingRow("Время (ЧЧ:ММ)", SizedBox(
+                width: 100,
+                child: TextField(
+                  controller: _timeController,
+                  textAlign: TextAlign.center,
+                  decoration: const InputDecoration(isDense: true, border: OutlineInputBorder()),
+                ),
+              )),
+            ],
+            const SizedBox(height: 20),
+            SizedBox(
+              width: double.infinity,
+              height: 48,
+              child: ElevatedButton(
+                onPressed: _saveSettings,
+                style: ElevatedButton.styleFrom(backgroundColor: Colors.blue, foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
+                child: const Text("Сохранить", style: TextStyle(fontWeight: FontWeight.bold)),
+              ),
+            ),
+          ]),
+
+          const SizedBox(height: 20),
+
+          _sectionCard("Планшеты (${savedDevices.length})", [
+            ...savedDevices.map((dev) => Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Row(
+                children: [
+                  const Icon(Icons.tablet_android_rounded, color: Colors.white38, size: 20),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(dev.name, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w500)),
+                        Text(dev.ip, style: const TextStyle(fontSize: 12, color: Colors.white38)),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.edit_rounded, color: Colors.white54, size: 18),
+                    onPressed: () => _renameDevice(dev),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent, size: 18),
+                    onPressed: () => _removeDevice(dev),
+                  ),
+                ],
+              ),
+            )),
+            if (savedDevices.isEmpty)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 16),
+                child: Text("Нет сохранённых планшетов", style: TextStyle(color: Colors.white38)),
+              ),
+            const SizedBox(height: 8),
+            OutlinedButton.icon(
+              onPressed: _addManually,
+              icon: const Icon(Icons.add_rounded, size: 18),
+              label: const Text("Добавить вручную по IP"),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: Colors.white70,
+                side: const BorderSide(color: Colors.white24),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+              ),
+            ),
+          ]),
+        ],
+      ),
+    );
+  }
+
+  Widget _sectionCard(String title, List<Widget> children) {
+    return Container(
+      width: 700,
+      padding: const EdgeInsets.all(25),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.05),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: Colors.white.withOpacity(0.05)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(title, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold,
+              color: Colors.white54, letterSpacing: 1.5)),
+          const SizedBox(height: 16),
+          ...children,
+        ],
+      ),
+    );
+  }
+
+  Widget _settingRow(String label, Widget control) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Expanded(child: Text(label, style: const TextStyle(fontSize: 14, color: Colors.white70))),
+        control,
+      ],
+    );
+  }
+}

@@ -1,0 +1,51 @@
+name: Build Windows
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      - name: Flutter version
+        run: flutter --version
+
+      - name: Get dependencies
+        run: flutter pub get
+
+      - name: Build Windows release
+        run: flutter build windows --release
+
+      - name: List build output
+        run: dir build\windows\x64\runner\Release
+        shell: cmd
+
+      - name: Zip release
+        run: |
+          cd build\windows\x64\runner\Release
+          7z a -tzip ..\..\..\..\..\BrandmenControl-Windows.zip .
+        shell: cmd
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: BrandmenControl-Windows
+          path: BrandmenControl-Windows.zip
+          retention-days: 30
+
+      - name: Create Release on tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: BrandmenControl-Windows.zip

@@ -1,0 +1,29 @@
+name: brandmen_windows
+description: Brandmen Control Panel for Windows
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  shelf: ^1.4.1          # HTTP Server
+  shelf_static: ^1.1.2   # Serving video files
+  process_run: ^1.0.0    # Running ADB commands
+  path: ^1.8.3           # File paths
+  path_provider: ^2.1.1  # Local storage paths
+  file_picker: ^6.1.1    # Choosing video files
+  shared_preferences: ^2.2.2 # Saving settings (IPs, etc)
+  http: ^1.1.0           # Communication with tablets
+  intl: ^0.18.1
+  system_tray: ^2.0.2    # System tray support
+  desktop_drop: ^0.4.4   # Drag-and-drop файлов с рабочего стола
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^2.0.0
+
+flutter:
+  uses-material-design: true
