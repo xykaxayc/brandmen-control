@@ -338,51 +338,63 @@ class _DashboardScreenState extends State<DashboardScreen> {
           title: Text(dev.name, style: const TextStyle(fontSize: 18)),
           content: SizedBox(
             width: 360,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Row(
-                  children: [
-                    const Icon(Icons.volume_up_rounded, color: Colors.white60),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Slider(
-                        value: currentVol.toDouble(),
-                        min: 0, max: 15, divisions: 15,
-                        label: "$currentVol",
-                        activeColor: Colors.blue,
-                        onChanged: (v) => setLocal(() => currentVol = v.round()),
-                        onChangeEnd: (v) async {
-                          await adb.setVolume(dev.ip, v.round());
-                        },
+            child: SliderTheme(
+              data: SliderTheme.of(c).copyWith(
+                activeTrackColor: Colors.blue,
+                inactiveTrackColor: Colors.white24,
+                thumbColor: Colors.white,
+                overlayColor: Colors.blue.withOpacity(0.2),
+                trackHeight: 4,
+                thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 10),
+                valueIndicatorColor: Colors.blue,
+                valueIndicatorTextStyle: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Row(
+                    children: [
+                      const Icon(Icons.volume_up_rounded, color: Colors.white70),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Slider(
+                          value: currentVol.toDouble(),
+                          min: 0, max: 15, divisions: 15,
+                          label: "$currentVol",
+                          onChanged: (v) => setLocal(() => currentVol = v.round()),
+                          onChangeEnd: (v) async {
+                            await adb.setVolume(dev.ip, v.round());
+                          },
+                        ),
                       ),
-                    ),
-                    SizedBox(width: 36, child: Text("$currentVol/15",
-                        style: const TextStyle(color: Colors.white54, fontSize: 12))),
-                  ],
-                ),
-                const SizedBox(height: 20),
-                Row(
-                  children: [
-                    const Icon(Icons.brightness_6_rounded, color: Colors.white60),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Slider(
-                        value: currentBright.toDouble(),
-                        min: 1, max: 255, divisions: 50,
-                        label: "${(currentBright * 100 ~/ 255)}%",
-                        activeColor: Colors.amber,
-                        onChanged: (v) => setLocal(() => currentBright = v.round()),
-                        onChangeEnd: (v) async {
-                          await adb.setBrightness(dev.ip, v.round());
-                        },
+                      SizedBox(width: 44, child: Text("$currentVol/15",
+                          style: const TextStyle(color: Colors.white70, fontSize: 12),
+                          textAlign: TextAlign.right)),
+                    ],
+                  ),
+                  const SizedBox(height: 24),
+                  Row(
+                    children: [
+                      const Icon(Icons.brightness_6_rounded, color: Colors.white70),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Slider(
+                          value: currentBright.toDouble(),
+                          min: 1, max: 255, divisions: 50,
+                          label: "${(currentBright * 100 ~/ 255)}%",
+                          onChanged: (v) => setLocal(() => currentBright = v.round()),
+                          onChangeEnd: (v) async {
+                            await adb.setBrightness(dev.ip, v.round());
+                          },
+                        ),
                       ),
-                    ),
-                    SizedBox(width: 36, child: Text("${currentBright * 100 ~/ 255}%",
-                        style: const TextStyle(color: Colors.white54, fontSize: 12))),
-                  ],
-                ),
-              ],
+                      SizedBox(width: 44, child: Text("${currentBright * 100 ~/ 255}%",
+                          style: const TextStyle(color: Colors.white70, fontSize: 12),
+                          textAlign: TextAlign.right)),
+                    ],
+                  ),
+                ],
+              ),
             ),
           ),
           actions: [
