@@ -230,6 +230,51 @@ class AdbManager {
     await _run(adb, ['-s', id, 'shell', 'input', 'keyevent', 'KEYCODE_SLEEP']);
   }
 
+  // Громкость 0..15 (поток MUSIC)
+  Future<void> setVolume(String ip, int level) async {
+    final adb = await _getAdb();
+    final id = '$ip:5555';
+    final clamped = level.clamp(0, 15);
+    await _run(adb,
+        ['-s', id, 'shell', 'cmd', 'audio', 'set-volume', '3', '$clamped']);
+  }
+
+  Future<int> getVolume(String ip) async {
+    final adb = await _getAdb();
+    final id = '$ip:5555';
+    final r = await _run(
+        adb, ['-s', id, 'shell', 'cmd', 'audio', 'get-volume', '3'],
+        timeout: const Duration(seconds: 4));
+    final match = RegExp(r'\d+').firstMatch(r.stdout.toString());
+    if (match != null) return int.tryParse(match.group(0)!) ?? 8;
+    return 8;
+  }
+
+  // Яркость 0..255
+  Future<void> setBrightness(String ip, int level) async {
+    final adb = await _getAdb();
+    final id = '$ip:5555';
+    final clamped = level.clamp(1, 255);
+    await _run(adb, [
+      '-s', id, 'shell', 'settings', 'put', 'system',
+      'screen_brightness_mode', '0'
+    ]);
+    await _run(adb, [
+      '-s', id, 'shell', 'settings', 'put', 'system',
+      'screen_brightness', '$clamped'
+    ]);
+  }
+
+  Future<int> getBrightness(String ip) async {
+    final adb = await _getAdb();
+    final id = '$ip:5555';
+    final r = await _run(adb,
+        ['-s', id, 'shell', 'settings', 'get', 'system', 'screen_brightness'],
+        timeout: const Duration(seconds: 4));
+    final v = int.tryParse(r.stdout.toString().trim());
+    return v ?? 128;
+  }
+
   // Регистрация: получает IP USB-планшета, включает TCP, возвращает IP
   Future<String?> registerViaUsb(String usbDeviceId) async {
     final adb = await _getAdb();

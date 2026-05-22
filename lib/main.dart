@@ -16,6 +16,8 @@ import 'logger.dart';
 import 'tray_manager.dart';
 import 'device_storage.dart';
 import 'media_config.dart';
+import 'backup_manager.dart';
+import 'autostart.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -320,6 +322,77 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (added > 0) await _refresh();
   }
 
+  Future<void> _showDeviceControls(SavedDevice dev) async {
+    final vol = await adb.getVolume(dev.ip);
+    final bright = await adb.getBrightness(dev.ip);
+    if (!mounted) return;
+
+    int currentVol = vol;
+    int currentBright = bright;
+
+    await showDialog(
+      context: context,
+      builder: (c) => StatefulBuilder(
+        builder: (c, setLocal) => AlertDialog(
+          backgroundColor: const Color(0xFF2C2C2E),
+          title: Text(dev.name, style: const TextStyle(fontSize: 18)),
+          content: SizedBox(
+            width: 360,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Row(
+                  children: [
+                    const Icon(Icons.volume_up_rounded, color: Colors.white60),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Slider(
+                        value: currentVol.toDouble(),
+                        min: 0, max: 15, divisions: 15,
+                        label: "$currentVol",
+                        activeColor: Colors.blue,
+                        onChanged: (v) => setLocal(() => currentVol = v.round()),
+                        onChangeEnd: (v) async {
+                          await adb.setVolume(dev.ip, v.round());
+                        },
+                      ),
+                    ),
+                    SizedBox(width: 36, child: Text("$currentVol/15",
+                        style: const TextStyle(color: Colors.white54, fontSize: 12))),
+                  ],
+                ),
+                const SizedBox(height: 20),
+                Row(
+                  children: [
+                    const Icon(Icons.brightness_6_rounded, color: Colors.white60),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Slider(
+                        value: currentBright.toDouble(),
+                        min: 1, max: 255, divisions: 50,
+                        label: "${(currentBright * 100 ~/ 255)}%",
+                        activeColor: Colors.amber,
+                        onChanged: (v) => setLocal(() => currentBright = v.round()),
+                        onChangeEnd: (v) async {
+                          await adb.setBrightness(dev.ip, v.round());
+                        },
+                      ),
+                    ),
+                    SizedBox(width: 36, child: Text("${currentBright * 100 ~/ 255}%",
+                        style: const TextStyle(color: Colors.white54, fontSize: 12))),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(c), child: const Text("Закрыть")),
+          ],
+        ),
+      ),
+    );
+  }
+
   Future<void> _syncAndPlay(SavedDevice dev) async {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -591,6 +664,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
               const SizedBox(width: 8),
               _smallAppleBtn(Icons.sync_rounded, isOnline ? () => _syncOnly(dev) : null,
                   tooltip: "Только синхронизация (без перезапуска)"),
+              const SizedBox(width: 8),
+              _smallAppleBtn(Icons.tune_rounded, isOnline ? () => _showDeviceControls(dev) : null,
+                  tooltip: "Громкость и яркость"),
               const SizedBox(width: 8),
               _smallAppleBtn(Icons.power_settings_new_rounded, isOnline ? () {
                 AppLogger.log("Выключение экрана на ${dev.ip}");
@@ -1145,6 +1221,7 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   final _timeController = TextEditingController(text: "22:00");
   bool autoOffEnabled = false;
+  bool autoStartEnabled = false;
   String? localIp;
   List<SavedDevice> savedDevices = [];
 
@@ -1154,6 +1231,72 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _loadSettings();
     _getHostIp();
     _loadDevices();
+    _loadAutoStart();
+  }
+
+  Future<void> _loadAutoStart() async {
+    final enabled = await AutoStart.isEnabled();
+    if (mounted) setState(() => autoStartEnabled = enabled);
+  }
+
+  Future<void> _toggleAutoStart(bool value) async {
+    final ok = value ? await AutoStart.enable() : await AutoStart.disable();
+    if (!mounted) return;
+    if (ok) {
+      setState(() => autoStartEnabled = value);
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(value ? "Автозапуск включён" : "Автозапуск отключён"),
+        backgroundColor: Colors.blue.shade700,
+      ));
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: const Text("Не удалось изменить автозапуск"),
+        backgroundColor: Colors.red.shade700,
+      ));
+    }
+  }
+
+  Future<void> _exportBackup() async {
+    final path = await BackupManager.export();
+    if (!mounted) return;
+    if (path != null) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text("Бэкап сохранён: $path"),
+        backgroundColor: Colors.green.shade700,
+      ));
+    }
+  }
+
+  Future<void> _importBackup() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        backgroundColor: const Color(0xFF2C2C2E),
+        title: const Text("Импорт бэкапа?"),
+        content: const Text("Текущие настройки и список планшетов будут перезаписаны.\n\nВидеофайлы не затрагиваются."),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(c, false), child: const Text("Отмена")),
+          TextButton(onPressed: () => Navigator.pop(c, true),
+              child: const Text("Импортировать", style: TextStyle(color: Colors.orange))),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    final count = await BackupManager.import();
+    if (!mounted) return;
+    if (count != null) {
+      await _loadSettings();
+      await _loadDevices();
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text("Восстановлено: $count планшетов"),
+        backgroundColor: Colors.green.shade700,
+      ));
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: const Text("Не удалось импортировать"),
+        backgroundColor: Colors.red.shade700,
+      ));
+    }
   }
 
   Future<void> _loadDevices() async {
@@ -1305,6 +1448,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
               )),
             ],
+            const Divider(height: 32, color: Colors.white10),
+            _settingRow("Запускать при входе в систему",
+                Switch(value: autoStartEnabled, activeColor: Colors.blue,
+                    onChanged: _toggleAutoStart)),
             const SizedBox(height: 20),
             SizedBox(
               width: double.infinity,
@@ -1315,6 +1462,47 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
                 child: const Text("Сохранить", style: TextStyle(fontWeight: FontWeight.bold)),
               ),
+            ),
+          ]),
+
+          const SizedBox(height: 20),
+
+          _sectionCard("Резервное копирование", [
+            const Text(
+              "Экспорт сохраняет список планшетов, расписание и пути к папкам в один JSON-файл.\nИмпорт переносит настройки на другой Mac/Windows.",
+              style: TextStyle(color: Colors.white60, fontSize: 12),
+            ),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: _exportBackup,
+                    icon: const Icon(Icons.file_download_outlined, size: 18),
+                    label: const Text("Экспорт"),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.white70,
+                      side: const BorderSide(color: Colors.white24),
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: _importBackup,
+                    icon: const Icon(Icons.file_upload_outlined, size: 18),
+                    label: const Text("Импорт"),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.orange,
+                      side: const BorderSide(color: Colors.orange),
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                    ),
+                  ),
+                ),
+              ],
             ),
           ]),
 
