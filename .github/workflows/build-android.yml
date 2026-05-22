@@ -1,0 +1,85 @@
+name: Build Android Player APK
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'android-player/**'
+      - '.github/workflows/build-android.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platforms;android-33 build-tools;34.0.0'
+
+      - name: Compile Java
+        working-directory: android-player
+        run: |
+          mkdir -p classes
+          javac --release 11 -classpath "$ANDROID_SDK_ROOT/platforms/android-33/android.jar" \
+            -Xlint:-options -d classes \
+            src/com/brandmen/ads/MainActivity.java \
+            src/com/brandmen/ads/BootReceiver.java
+
+      - name: Convert to DEX
+        working-directory: android-player
+        run: |
+          $ANDROID_SDK_ROOT/build-tools/34.0.0/d8 \
+            --min-api 21 \
+            --lib "$ANDROID_SDK_ROOT/platforms/android-33/android.jar" \
+            --output . \
+            classes/com/brandmen/ads/*.class
+
+      - name: Pack APK
+        working-directory: android-player
+        run: |
+          mkdir -p out
+          cp resources/AndroidManifest.xml out/
+          cp resources/resources.arsc out/
+          cp classes.dex out/
+          cd out
+          zip -r0q ../brandmen-unaligned.apk .
+          cd ..
+          $ANDROID_SDK_ROOT/build-tools/34.0.0/zipalign -f 4 \
+            brandmen-unaligned.apk brandmen-aligned.apk
+
+      - name: Sign APK
+        working-directory: android-player
+        run: |
+          $ANDROID_SDK_ROOT/build-tools/34.0.0/apksigner sign \
+            --ks release.keystore \
+            --ks-pass pass:brandmen123 \
+            --key-pass pass:brandmen123 \
+            --v1-signing-enabled true \
+            --v2-signing-enabled true \
+            --v3-signing-enabled true \
+            --out BrandmenAds.apk \
+            brandmen-aligned.apk
+          $ANDROID_SDK_ROOT/build-tools/34.0.0/apksigner verify -v BrandmenAds.apk
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: BrandmenAds-APK
+          path: android-player/BrandmenAds.apk
+          retention-days: 30
+
+      - name: Create Release on tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: android-player/BrandmenAds.apk
