@@ -230,24 +230,30 @@ class AdbManager {
     await _run(adb, ['-s', id, 'shell', 'input', 'keyevent', 'KEYCODE_SLEEP']);
   }
 
-  // Громкость 0..15 (поток MUSIC)
+  // Громкость 0..15 (поток MUSIC). На MIUI требуется --show, иначе тихо игнорится.
   Future<void> setVolume(String ip, int level) async {
     final adb = await _getAdb();
     final id = '$ip:5555';
     final clamped = level.clamp(0, 15);
-    await _run(adb,
-        ['-s', id, 'shell', 'cmd', 'audio', 'set-volume', '3', '$clamped']);
+    await _run(adb, [
+      '-s', id, 'shell', 'cmd', 'media_session', 'volume',
+      '--stream', '3', '--set', '$clamped', '--show'
+    ]);
   }
 
   Future<int> getVolume(String ip) async {
     final adb = await _getAdb();
     final id = '$ip:5555';
-    final r = await _run(
-        adb, ['-s', id, 'shell', 'cmd', 'audio', 'get-volume', '3'],
-        timeout: const Duration(seconds: 4));
-    final match = RegExp(r'\d+').firstMatch(r.stdout.toString());
-    if (match != null) return int.tryParse(match.group(0)!) ?? 8;
-    return 8;
+    final r = await _run(adb, [
+      '-s', id, 'shell', 'cmd', 'media_session', 'volume',
+      '--stream', '3', '--get'
+    ], timeout: const Duration(seconds: 4));
+    final out = r.stdout.toString() + r.stderr.toString();
+    // Вывод примерно: "volume is 8 in range [0..15]"
+    final match = RegExp(r'volume is (\d+)').firstMatch(out);
+    if (match != null) return int.tryParse(match.group(1)!) ?? 8;
+    final any = RegExp(r'\d+').firstMatch(out);
+    return any != null ? (int.tryParse(any.group(0)!) ?? 8) : 8;
   }
 
   // Яркость 0..255
