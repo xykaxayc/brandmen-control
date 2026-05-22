@@ -31,18 +31,14 @@ class BackupManager {
       fileName: fileName,
       type: FileType.custom,
       allowedExtensions: ['json'],
-      bytes: utf8.encode(json),
     );
     if (path != null) {
       try {
-        final f = File(path);
-        if (!await f.exists() || await f.length() != utf8.encode(json).length) {
-          await f.writeAsString(json);
-        }
+        await File(path).writeAsString(json);
+        AppLogger.log("Бэкап сохранён: $path");
       } catch (e) {
         AppLogger.log("Бэкап: ошибка записи $e");
       }
-      AppLogger.log("Бэкап сохранён: $path");
     }
     return path;
   }
