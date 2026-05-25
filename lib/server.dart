@@ -4,13 +4,34 @@ import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart' as io;
 import 'package:path/path.dart' as p;
 import 'dart:convert';
+import 'package:crypto/crypto.dart';
+import 'package:nsd/nsd.dart';
 import 'media_config.dart';
 
 const int kServerPort = 5010;
 const _videoExts = ['.mp4', '.mkv', '.mov', '.avi', '.wmv', '.flv', '.webm'];
 
+final Map<String, String> _hashCache = {};
+
+Future<String> _getFileHash(File file) async {
+  try {
+    final stat = await file.stat();
+    final cacheKey = "${file.path}_${stat.modified.millisecondsSinceEpoch}_${stat.size}";
+    if (_hashCache.containsKey(cacheKey)) {
+      return _hashCache[cacheKey]!;
+    }
+    final hash = await md5.bind(file.openRead()).first;
+    final h = hash.toString();
+    _hashCache[cacheKey] = h;
+    return h;
+  } catch (e) {
+    return "";
+  }
+}
+
 class BrandmenServer {
   late HttpServer _server;
+  Registration? _registration;
 
   Future<void> start() async {
     final handler = const Pipeline()
@@ -31,12 +52,15 @@ class BrandmenServer {
         final playlist = allFiles
             .where((f) => p.basename(f.path).toLowerCase() == 'playlist.m3u');
 
-        final files = [...videos, ...playlist]
-            .map((f) => {
-                  "name": p.basename(f.path),
-                  "size": f.lengthSync(),
-                })
-            .toList();
+        final files = [];
+        for (var f in [...videos, ...playlist]) {
+          files.add({
+            "name": p.basename(f.path),
+            "size": f.lengthSync(),
+            "md5": await _getFileHash(f),
+          });
+        }
+        
         return Response.ok(jsonEncode({"files": files}),
             headers: {'content-type': 'application/json; charset=utf-8'});
       }
@@ -74,6 +98,15 @@ class BrandmenServer {
 
     _server = await io.serve(handler, InternetAddress.anyIPv4, kServerPort);
     AppLogger.log('Сервер запущен: ${_server.address.address}:${_server.port}');
+
+    try {
+      _registration = await register(
+        Service(name: 'BrandmenServer', type: '_brandmen._tcp', port: kServerPort),
+      );
+      AppLogger.log('mDNS сервис зарегистрирован: _brandmen._tcp');
+    } catch (e) {
+      AppLogger.log('Ошибка регистрации mDNS: $e');
+    }
   }
 
   static String _mimeFor(String name) {
@@ -99,6 +132,9 @@ class BrandmenServer {
   }
 
   Future<void> stop() async {
+    if (_registration != null) {
+      await unregister(_registration!);
+    }
     await _server.close();
   }
 }
