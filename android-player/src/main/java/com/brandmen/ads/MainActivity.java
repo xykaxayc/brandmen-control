@@ -321,15 +321,7 @@ public class MainActivity extends Activity {
         pairBtn.setTextColor(Color.parseColor("#007AFF"));
         pairBtn.setTextSize(13);
         pairBtn.setPadding(0, 10, 0, 10);
-        pairBtn.setOnClickListener(v -> {
-            String ip = ipInput.getText().toString().trim();
-            if (ip.contains(":")) ip = ip.substring(0, ip.indexOf(':'));
-            if (ip.isEmpty()) {
-                pairStatus.setText("Сначала введите IP");
-                return;
-            }
-            doPairing(ip, pairBtn, pairStatus);
-        });
+        pairBtn.setOnClickListener(v -> startPairingFlow(ipInput, pairBtn, pairStatus));
         pairRow.addView(pairBtn);
 
         // Разделитель 2
@@ -409,91 +401,142 @@ public class MainActivity extends Activity {
         return div;
     }
 
-    private void doPairing(String serverIp, TextView btn, TextView status) {
+    // Полный флоу сопряжения: пинг сохранённого IP → если недоступен, UDP-поиск → регистрация
+    private void startPairingFlow(EditText ipInput, TextView btn, TextView status) {
         btn.setEnabled(false);
         btn.setText("⏳");
-        status.setText("Отправляю запрос...");
+        status.setText("Ищу сервер...");
         status.setTextColor(Color.parseColor("#99FFFFFF"));
+
         new Thread(() -> {
-            try {
-                // Проверяем, активен ли режим сопряжения
-                java.net.URL statusUrl = new java.net.URL("http://" + serverIp + ":5010/api/pairing-status");
-                java.net.HttpURLConnection sc = (java.net.HttpURLConnection) statusUrl.openConnection();
-                sc.setConnectTimeout(4000);
-                sc.setReadTimeout(4000);
-                int code = sc.getResponseCode();
-                if (code != 200) {
-                    runOnUiThread(() -> {
-                        status.setText("Сервер не отвечает");
-                        btn.setText("🔗 Сопряжение");
-                        btn.setEnabled(true);
-                    });
-                    return;
-                }
-                java.io.BufferedReader br = new java.io.BufferedReader(
-                        new java.io.InputStreamReader(sc.getInputStream(), "UTF-8"));
-                StringBuilder sb = new StringBuilder();
-                String line;
-                while ((line = br.readLine()) != null) sb.append(line);
-                org.json.JSONObject resp = new org.json.JSONObject(sb.toString());
-                boolean active = resp.optBoolean("active", false);
+            // Шаг 1: попробовать текущий IP из поля
+            String savedIp = ipInput.getText().toString().trim();
+            if (savedIp.contains(":")) savedIp = savedIp.substring(0, savedIp.indexOf(':'));
+            String reachableIp = savedIp.isEmpty() ? null : tryPing(savedIp);
 
-                if (!active) {
-                    runOnUiThread(() -> {
-                        status.setText("Включите режим сопряжения на компьютере");
-                        status.setTextColor(Color.parseColor("#FF9F0A"));
-                        btn.setText("🔗 Повторить");
-                        btn.setEnabled(true);
-                    });
-                    return;
-                }
+            // Шаг 2: если не пингуется — UDP broadcast
+            if (reachableIp == null) {
+                runOnUiThread(() -> status.setText("Не нашёл по IP, пробую поиск..."));
+                reachableIp = udpDiscover();
+            }
 
-                // Режим активен — отправляем регистрацию
-                String deviceName = android.os.Build.MANUFACTURER + " " + android.os.Build.MODEL;
-                String body = "{\"name\":\"" + deviceName.replace("\"", "") + "\"}";
-                java.net.URL regUrl = new java.net.URL("http://" + serverIp + ":5010/api/register");
-                java.net.HttpURLConnection rc = (java.net.HttpURLConnection) regUrl.openConnection();
-                rc.setRequestMethod("POST");
-                rc.setDoOutput(true);
-                rc.setConnectTimeout(4000);
-                rc.setReadTimeout(4000);
-                rc.setRequestProperty("Content-Type", "application/json");
-                byte[] data = body.getBytes("UTF-8");
-                rc.setRequestProperty("Content-Length", String.valueOf(data.length));
-                rc.getOutputStream().write(data);
-                int regCode = rc.getResponseCode();
-
-                if (regCode == 200) {
-                    prefs.edit().putString("server_ip", serverIp).apply();
-                    runOnUiThread(() -> {
-                        status.setText("✓ Добавлен в приложение");
-                        status.setTextColor(Color.parseColor("#34C759"));
-                        btn.setText("✓");
-                        btn.setTextColor(Color.parseColor("#34C759"));
-                        btn.setEnabled(false);
-                    });
-                } else if (regCode == 403) {
-                    runOnUiThread(() -> {
-                        status.setText("Режим сопряжения истёк, повторите на компьютере");
-                        status.setTextColor(Color.parseColor("#FF9F0A"));
-                        btn.setText("🔗 Повторить");
-                        btn.setEnabled(true);
-                    });
-                } else {
-                    runOnUiThread(() -> {
-                        status.setText("Ошибка: " + regCode);
-                        btn.setText("🔗 Повторить");
-                        btn.setEnabled(true);
-                    });
-                }
-            } catch (Exception e) {
+            if (reachableIp == null) {
+                final String hint = savedIp.isEmpty()
+                        ? "Убедитесь, что компьютер в той же сети"
+                        : "Не удалось найти сервер (" + savedIp + ")";
                 runOnUiThread(() -> {
-                    status.setText("Нет связи с " + serverIp);
+                    status.setText(hint);
+                    btn.setText("🔗 Повторить");
+                    btn.setEnabled(true);
+                });
+                return;
+            }
+
+            final String foundIp = reachableIp;
+            runOnUiThread(() -> {
+                ipInput.setText(foundIp);
+                status.setText("Найден " + foundIp + ", регистрирую...");
+            });
+
+            // Шаг 3: проверить паринг-мод и зарегистрироваться
+            doPairingRequest(foundIp, btn, status);
+        }, "PairingFlow").start();
+    }
+
+    private String tryPing(String ip) {
+        try {
+            java.net.URL url = new java.net.URL("http://" + ip + ":5010/api/ping");
+            java.net.HttpURLConnection c = (java.net.HttpURLConnection) url.openConnection();
+            c.setConnectTimeout(2000);
+            c.setReadTimeout(2000);
+            return c.getResponseCode() == 200 ? ip : null;
+        } catch (Exception e) { return null; }
+    }
+
+    private String udpDiscover() {
+        try (java.net.DatagramSocket socket = new java.net.DatagramSocket(DiscoveryListener.PORT)) {
+            socket.setSoTimeout(6000);
+            byte[] buf = new byte[512];
+            java.net.DatagramPacket packet = new java.net.DatagramPacket(buf, buf.length);
+            socket.receive(packet);
+            String body = new String(packet.getData(), 0, packet.getLength(), "UTF-8");
+            org.json.JSONObject json = new org.json.JSONObject(body);
+            if ("brandmen-control".equals(json.optString("service"))) {
+                return packet.getAddress().getHostAddress();
+            }
+        } catch (Exception ignored) {}
+        return null;
+    }
+
+    private void doPairingRequest(String serverIp, TextView btn, TextView status) {
+        try {
+            // Проверяем режим сопряжения
+            java.net.URL statusUrl = new java.net.URL("http://" + serverIp + ":5010/api/pairing-status");
+            java.net.HttpURLConnection sc = (java.net.HttpURLConnection) statusUrl.openConnection();
+            sc.setConnectTimeout(4000);
+            sc.setReadTimeout(4000);
+            java.io.BufferedReader br = new java.io.BufferedReader(
+                    new java.io.InputStreamReader(sc.getInputStream(), "UTF-8"));
+            StringBuilder sb = new StringBuilder();
+            String line;
+            while ((line = br.readLine()) != null) sb.append(line);
+            boolean active = new org.json.JSONObject(sb.toString()).optBoolean("active", false);
+
+            if (!active) {
+                runOnUiThread(() -> {
+                    status.setText("Нажмите «Режим сопряжения» на компьютере, потом повторите");
+                    status.setTextColor(Color.parseColor("#FF9F0A"));
+                    btn.setText("🔗 Повторить");
+                    btn.setEnabled(true);
+                });
+                return;
+            }
+
+            // Отправляем регистрацию
+            String deviceName = android.os.Build.MANUFACTURER + " " + android.os.Build.MODEL;
+            String body2 = "{\"name\":\"" + deviceName.replace("\"", "") + "\"}";
+            java.net.URL regUrl = new java.net.URL("http://" + serverIp + ":5010/api/register");
+            java.net.HttpURLConnection rc = (java.net.HttpURLConnection) regUrl.openConnection();
+            rc.setRequestMethod("POST");
+            rc.setDoOutput(true);
+            rc.setConnectTimeout(4000);
+            rc.setReadTimeout(4000);
+            rc.setRequestProperty("Content-Type", "application/json");
+            byte[] data = body2.getBytes("UTF-8");
+            rc.setRequestProperty("Content-Length", String.valueOf(data.length));
+            rc.getOutputStream().write(data);
+            int regCode = rc.getResponseCode();
+
+            if (regCode == 200) {
+                prefs.edit().putString("server_ip", serverIp).apply();
+                runOnUiThread(() -> {
+                    status.setText("✓ Добавлен в приложение");
+                    status.setTextColor(Color.parseColor("#34C759"));
+                    btn.setText("✓");
+                    btn.setTextColor(Color.parseColor("#34C759"));
+                    btn.setEnabled(false);
+                });
+            } else if (regCode == 403) {
+                runOnUiThread(() -> {
+                    status.setText("Режим сопряжения истёк — повторите на компьютере");
+                    status.setTextColor(Color.parseColor("#FF9F0A"));
+                    btn.setText("🔗 Повторить");
+                    btn.setEnabled(true);
+                });
+            } else {
+                runOnUiThread(() -> {
+                    status.setText("Ошибка сервера: " + regCode);
                     btn.setText("🔗 Повторить");
                     btn.setEnabled(true);
                 });
             }
-        }, "DoPairing").start();
+        } catch (Exception e) {
+            runOnUiThread(() -> {
+                status.setText("Ошибка: " + e.getMessage());
+                btn.setText("🔗 Повторить");
+                btn.setEnabled(true);
+            });
+        }
     }
 
     private void registerWithServer(String serverIp) {
