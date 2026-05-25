@@ -11,6 +11,7 @@ import 'package:intl/intl.dart';
 import 'package:desktop_drop/desktop_drop.dart';
 
 import 'server.dart';
+import 'discovery.dart';
 import 'adb_manager.dart';
 import 'logger.dart';
 import 'tray_manager.dart';
@@ -37,6 +38,7 @@ Future<void> _startServer() async {
   } catch (e) {
     AppLogger.log("Ошибка запуска сервера: $e");
   }
+  DiscoveryBeacon().start();
 }
 
 class BrandmenApp extends StatelessWidget {

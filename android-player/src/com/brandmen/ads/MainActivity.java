@@ -441,18 +441,30 @@ public class MainActivity extends Activity {
     }
 
     // ---- Настройки ----
+    private DiscoveryListener activeDiscovery;
+
     private void showSettings() {
         int dp = dp(1);
         LinearLayout content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
         content.setPadding(28 * dp, 20 * dp, 28 * dp, 8 * dp);
 
+        // Заголовок IP
         TextView ipLabel = new TextView(this);
-        ipLabel.setText("IP адрес Mac");
+        ipLabel.setText("IP адрес компьютера");
         ipLabel.setTextColor(TEXT_PRIMARY);
         ipLabel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
         ipLabel.setTypeface(Typeface.DEFAULT_BOLD);
         content.addView(ipLabel);
+
+        // Строка: поле ввода + кнопка "Найти"
+        LinearLayout ipRow = new LinearLayout(this);
+        ipRow.setOrientation(LinearLayout.HORIZONTAL);
+        ipRow.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams ipRowLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        ipRowLp.topMargin = 8 * dp;
+        content.addView(ipRow, ipRowLp);
 
         final EditText ipInput = new EditText(this);
         ipInput.setText(prefs.getString(KEY_SERVER_IP, DEFAULT_SERVER_IP));
@@ -460,12 +472,30 @@ public class MainActivity extends Activity {
         ipInput.setInputType(InputType.TYPE_CLASS_TEXT);
         ipInput.setTextColor(TEXT_PRIMARY);
         ipInput.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
-        LinearLayout.LayoutParams ipLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        ipLp.topMargin = 8 * dp;
-        ipLp.bottomMargin = 20 * dp;
-        content.addView(ipInput, ipLp);
+        ipRow.addView(ipInput, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
+        // Статус поиска
+        final TextView searchStatus = new TextView(this);
+        searchStatus.setText("");
+        searchStatus.setTextColor(ACCENT_BLUE);
+        searchStatus.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+        LinearLayout.LayoutParams ssLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        ssLp.topMargin = 4 * dp;
+        ssLp.bottomMargin = 16 * dp;
+        content.addView(searchStatus, ssLp);
+
+        // Кнопка "Найти автоматически"
+        TextView findBtn = new TextView(this);
+        findBtn.setText("🔍 Найти");
+        findBtn.setTextColor(ACCENT_BLUE);
+        findBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        findBtn.setPadding(12 * dp, 6 * dp, 4 * dp, 6 * dp);
+        findBtn.setOnClickListener(v -> startDiscovery(ipInput, findBtn, searchStatus));
+        ipRow.addView(findBtn);
+
+        // Папка
         TextView folderLabel = new TextView(this);
         folderLabel.setText("Папка с видео на планшете");
         folderLabel.setTextColor(TEXT_PRIMARY);
@@ -498,10 +528,10 @@ public class MainActivity extends Activity {
                 .setTitle("Настройки · v" + MediaServer.VERSION)
                 .setView(content)
                 .setPositiveButton("Сохранить", (dialog, which) -> {
+                    if (activeDiscovery != null) { activeDiscovery.cancel(); activeDiscovery = null; }
                     String ip = ipInput.getText().toString().trim();
                     String folder = folderInput.getText().toString().trim();
                     if (folder.isEmpty()) folder = DEFAULT_MEDIA_FOLDER;
-                    // Убираем :порт если случайно ввели
                     if (ip.contains(":")) ip = ip.substring(0, ip.indexOf(':'));
                     prefs.edit()
                             .putString(KEY_SERVER_IP, ip)
@@ -511,8 +541,38 @@ public class MainActivity extends Activity {
                     loadVideos();
                     refreshPlaylistItems();
                 })
-                .setNegativeButton("Отмена", null)
+                .setNegativeButton("Отмена", (dialog, which) -> {
+                    if (activeDiscovery != null) { activeDiscovery.cancel(); activeDiscovery = null; }
+                })
                 .show();
+    }
+
+    private void startDiscovery(EditText ipInput, TextView findBtn, TextView statusText) {
+        if (activeDiscovery != null) activeDiscovery.cancel();
+        activeDiscovery = new DiscoveryListener();
+        findBtn.setText("⏳");
+        findBtn.setEnabled(false);
+        statusText.setText("Ищу компьютер в сети...");
+        activeDiscovery.findAsync(new DiscoveryListener.Callback() {
+            @Override public void onFound(String ip) {
+                runOnUiThread(() -> {
+                    ipInput.setText(ip);
+                    findBtn.setText("✓");
+                    findBtn.setTextColor(ACCENT_GREEN);
+                    statusText.setText("Найден: " + ip);
+                    activeDiscovery = null;
+                });
+            }
+            @Override public void onTimeout() {
+                runOnUiThread(() -> {
+                    findBtn.setText("🔍 Найти");
+                    findBtn.setEnabled(true);
+                    findBtn.setTextColor(ACCENT_BLUE);
+                    statusText.setText("Не найден. Убедитесь, что Brandmen Control запущен.");
+                    activeDiscovery = null;
+                });
+            }
+        });
     }
 
     // ---- Воспроизведение ----
