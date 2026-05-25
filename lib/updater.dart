@@ -12,10 +12,11 @@ const String kAppVersion =
 
 const String _kRepo = 'xykaxayc/brandmen-control';
 
-// /releases?per_page=1 возвращает последний релиз ВКЛЮЧАЯ pre-release,
-// в отличие от /releases/latest который игнорирует pre-release.
+// Берём несколько последних релизов (включая pre-release). Каждый workflow
+// (Win/Mac/APK) собирается по своему path-фильтру, поэтому самый свежий релиз
+// может не содержать нужный ассет — ищем новейший релиз, где он ЕСТЬ.
 const String _kReleasesUrl =
-    'https://api.github.com/repos/$_kRepo/releases?per_page=1';
+    'https://api.github.com/repos/$_kRepo/releases?per_page=15';
 
 class UpdateInfo {
   final String version;
@@ -41,27 +42,18 @@ class AppUpdater {
 
   static Future<UpdateInfo?> checkForUpdate() async {
     try {
-      final data = await _fetchLatestRelease();
-      if (data == null) return null;
-
-      final tag = (data['tag_name'] as String? ?? '').replaceFirst('v', '');
-      final changelog = (data['body'] as String? ?? '').trim();
-      if (!_isNewer(tag, kAppVersion)) return null;
-
-      final assets = (data['assets'] as List?) ?? [];
-      String? url;
-      if (Platform.isWindows) {
-        url = _findAssetUrl(assets, 'windows');
-      } else if (Platform.isMacOS) {
-        url = _findAssetUrl(assets, 'macos');
-      }
-      if (url == null) return null;
-
+      if (!Platform.isWindows && !Platform.isMacOS) return null;
+      final keyword = Platform.isWindows ? 'windows' : 'macos';
+      final r = await _findNewestRelease(
+        currentVersion: kAppVersion,
+        matches: (name) => name.contains(keyword) && name.endsWith('.zip'),
+      );
+      if (r == null) return null;
       return UpdateInfo(
-          version: tag,
-          tag: data['tag_name'] as String,
-          downloadUrl: url,
-          changelog: changelog);
+          version: r['version']!,
+          tag: r['tag']!,
+          downloadUrl: r['url']!,
+          changelog: r['changelog']!);
     } catch (e) {
       AppLogger.log('Проверка обновлений: $e');
       return null;
@@ -73,18 +65,12 @@ class AppUpdater {
   static Future<ApkUpdateInfo?> checkApkUpdate(
       {String currentApkVersion = '0.0.0'}) async {
     try {
-      final data = await _fetchLatestRelease();
-      if (data == null) return null;
-
-      final tag = (data['tag_name'] as String? ?? '').replaceFirst('v', '');
-      if (!_isNewer(tag, currentApkVersion)) return null;
-
-      final assets = (data['assets'] as List?) ?? [];
-      final url = _findAssetUrl(assets, 'brandmenads', ext: '.apk') ??
-          _findAssetUrl(assets, '', ext: '.apk');
-      if (url == null) return null;
-
-      return ApkUpdateInfo(version: tag, downloadUrl: url);
+      final r = await _findNewestRelease(
+        currentVersion: currentApkVersion,
+        matches: (name) => name.endsWith('.apk'),
+      );
+      if (r == null) return null;
+      return ApkUpdateInfo(version: r['version']!, downloadUrl: r['url']!);
     } catch (e) {
       AppLogger.log('Проверка APK обновления: $e');
       return null;
@@ -143,27 +129,43 @@ class AppUpdater {
 
   // ── Внутренние хелперы ──────────────────────────────────────────────────
 
-  static Future<Map<String, dynamic>?> _fetchLatestRelease() async {
+  static Future<List<dynamic>> _fetchReleases() async {
     final response = await http.get(
       Uri.parse(_kReleasesUrl),
       headers: {'User-Agent': 'BrandmenControl/$kAppVersion'},
     ).timeout(const Duration(seconds: 10));
 
-    if (response.statusCode != 200) return null;
+    if (response.statusCode != 200) return [];
     final list = jsonDecode(response.body);
-    if (list is! List || list.isEmpty) return null;
-    return list.first as Map<String, dynamic>;
+    return list is List ? list : [];
   }
 
-  static String? _findAssetUrl(List assets, String keyword,
-      {String? ext}) {
-    for (final a in assets) {
-      final name = (a['name'] as String? ?? '').toLowerCase();
-      final matchesKeyword =
-          keyword.isEmpty || name.contains(keyword.toLowerCase());
-      final matchesExt = ext == null || name.endsWith(ext.toLowerCase());
-      if (matchesKeyword && matchesExt) {
-        return a['browser_download_url'] as String?;
+  // Ищет новейший релиз (свежее currentVersion), содержащий подходящий ассет.
+  // Релизы из API идут от новых к старым, поэтому первое совпадение — нужное.
+  static Future<Map<String, String>?> _findNewestRelease({
+    required String currentVersion,
+    required bool Function(String nameLower) matches,
+  }) async {
+    final releases = await _fetchReleases();
+    for (final rel in releases) {
+      if (rel is! Map) continue;
+      final rawTag = rel['tag_name'] as String? ?? '';
+      final version = rawTag.replaceFirst('v', '');
+      if (!_isNewer(version, currentVersion)) continue;
+      final assets = (rel['assets'] as List?) ?? [];
+      for (final a in assets) {
+        final name = (a['name'] as String? ?? '').toLowerCase();
+        if (matches(name)) {
+          final url = a['browser_download_url'] as String?;
+          if (url != null) {
+            return {
+              'tag': rawTag,
+              'version': version,
+              'url': url,
+              'changelog': (rel['body'] as String? ?? '').trim(),
+            };
+          }
+        }
       }
     }
     return null;
@@ -186,7 +188,10 @@ class AppUpdater {
 
       final total = response.contentLength;
       int received = 0;
-      final sink = File(destPath).openWrite();
+      final destFile = File(destPath);
+      // getTemporaryDirectory() возвращает путь, но сама папка может не существовать
+      await destFile.parent.create(recursive: true);
+      final sink = destFile.openWrite();
       await for (final chunk in response) {
         sink.add(chunk);
         received += chunk.length;
