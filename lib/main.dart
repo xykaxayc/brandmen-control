@@ -1627,6 +1627,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   bool _pairingActive = false;
   int _pairingSecondsLeft = 0;
+  final Set<String> _connectingIps = {};
   Timer? _pairingTimer;
 
   @override
@@ -1797,6 +1798,30 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (newName != null && newName.isNotEmpty) {
       await DeviceStorage.rename(dev.ip, newName);
       _loadDevices();
+    }
+  }
+
+  Future<void> _connectAdb(SavedDevice dev) async {
+    if (_connectingIps.contains(dev.ip)) return;
+    setState(() => _connectingIps.add(dev.ip));
+    final adb = AdbManager();
+    final status = await adb.checkDevice(dev.ip);
+    if (!mounted) return;
+    setState(() => _connectingIps.remove(dev.ip));
+    if (status.adbOnline) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('${dev.name}: ADB подключён (${dev.ip}:5555)'),
+        backgroundColor: Colors.green.shade700,
+      ));
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(
+          '${dev.name}: не удалось подключить ADB.\n'
+          'Убедитесь что на планшете включён режим разработчика и отладка по WiFi.',
+        ),
+        backgroundColor: Colors.orange.shade700,
+        duration: const Duration(seconds: 6),
+      ));
     }
   }
 
@@ -2476,6 +2501,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                     fontSize: 12, color: Colors.white38)),
                           ],
                         ),
+                      ),
+                      Tooltip(
+                        message: 'Подключить ADB по WiFi',
+                        child: _connectingIps.contains(dev.ip)
+                            ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: Padding(
+                                  padding: EdgeInsets.all(11),
+                                  child: CircularProgressIndicator(
+                                      strokeWidth: 2, color: Colors.blue),
+                                ),
+                              )
+                            : IconButton(
+                                icon: const Icon(Icons.wifi_tethering_rounded,
+                                    color: Colors.blue, size: 18),
+                                onPressed: () => _connectAdb(dev),
+                              ),
                       ),
                       IconButton(
                         icon: const Icon(Icons.edit_rounded,
