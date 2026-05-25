@@ -1,33 +1,55 @@
 package com.brandmen.ads;
 
+import android.content.Context;
+import android.os.Handler;
+import android.os.Looper;
 import java.io.*;
 import java.net.*;
 import java.util.*;
 
 /**
- * Minimal HTTP server (port 5011) for direct WiFi file transfer.
- * No external dependencies — pure Java sockets.
+ * Minimal HTTP server (port 5011) for direct WiFi file transfer and remote control.
  *
  * Endpoints:
- *   GET  /version          — {"version":"0.42.0"}
- *   GET  /files            — JSON list of video files with sizes
- *   GET  /file/<name>      — download a file
- *   POST /upload/<name>    — upload a file (Content-Length required)
- *   DELETE /file/<name>    — delete a file
- *   GET  /ping             — {"ok":true}
+ *   GET  /version                   — {"version":"0.42.0"}
+ *   GET  /files                     — JSON list of video files with sizes
+ *   GET  /file/<name>               — download a file
+ *   POST /upload/<name>             — upload a file (Content-Length required)
+ *   DELETE /file/<name>             — delete a file
+ *   GET  /ping                      — {"ok":true}
+ *   POST /api/control/wake          — wake screen
+ *   POST /api/control/sleep         — sleep screen (requires device admin)
+ *   POST /api/control/volume?level= — set volume (0..volumeMax)
+ *   POST /api/control/brightness?level= — set brightness (0..255)
+ *   POST /api/control/launch        — reload playlist and play
+ *   GET  /api/control/status        — {"volume":8,"volumeMax":15,"brightness":128}
  */
 public class MediaServer {
     public static final int PORT = 5011;
-    // Версия встраивается CI через sed при каждой сборке
     public static final String VERSION = "0.0.0";
 
+    public interface ControlCallback {
+        void onWake();
+        void onSleep();
+        void onVolume(int level);
+        void onBrightness(int level);
+        void onLaunch();
+        int getVolume();
+        int getVolumeMax();
+        int getBrightness();
+    }
+
     private final String mediaDir;
+    private final ControlCallback callback;
+    private final Handler mainHandler;
     private ServerSocket serverSocket;
     private Thread acceptThread;
     private volatile boolean running;
 
-    public MediaServer(String mediaDir) {
+    public MediaServer(Context context, String mediaDir, ControlCallback callback) {
         this.mediaDir = mediaDir;
+        this.callback = callback;
+        this.mainHandler = new Handler(Looper.getMainLooper());
     }
 
     public void start() throws IOException {
@@ -64,16 +86,33 @@ public class MediaServer {
             InputStream in = socket.getInputStream();
             OutputStream out = new BufferedOutputStream(socket.getOutputStream());
 
-            // Read request line
             String requestLine = readAsciiLine(in);
             if (requestLine == null || requestLine.isEmpty()) return;
             String[] parts = requestLine.split(" ");
             if (parts.length < 2) return;
             String method = parts[0].toUpperCase();
             String rawPath = parts[1];
+
+            // Split path and query string
+            String[] pathAndQuery = rawPath.split("\\?", 2);
             String path;
-            try { path = URLDecoder.decode(rawPath, "UTF-8"); }
-            catch (Exception e) { path = rawPath; }
+            try { path = URLDecoder.decode(pathAndQuery[0], "UTF-8"); }
+            catch (Exception e) { path = pathAndQuery[0]; }
+
+            Map<String, String> params = new HashMap<>();
+            if (pathAndQuery.length > 1) {
+                for (String kv : pathAndQuery[1].split("&")) {
+                    int eq = kv.indexOf('=');
+                    if (eq > 0) {
+                        try {
+                            params.put(
+                                URLDecoder.decode(kv.substring(0, eq), "UTF-8"),
+                                URLDecoder.decode(kv.substring(eq + 1), "UTF-8")
+                            );
+                        } catch (Exception ignored) {}
+                    }
+                }
+            }
 
             // Read headers
             int contentLength = -1;
@@ -89,6 +128,19 @@ public class MediaServer {
                 }
             }
 
+            // Read body for small POST requests (control API)
+            String body = "";
+            if (contentLength > 0 && contentLength <= 4096) {
+                byte[] bodyBytes = new byte[contentLength];
+                int total = 0;
+                while (total < contentLength) {
+                    int n = in.read(bodyBytes, total, contentLength - total);
+                    if (n < 0) break;
+                    total += n;
+                }
+                body = new String(bodyBytes, 0, total, "UTF-8");
+            }
+
             // Route
             if (method.equals("GET") && path.equals("/ping")) {
                 sendJson(out, 200, "{\"ok\":true}");
@@ -102,6 +154,8 @@ public class MediaServer {
                 handleUpload(in, out, sanitize(path.substring(8)), contentLength);
             } else if (method.equals("DELETE") && path.startsWith("/file/")) {
                 handleDelete(out, sanitize(path.substring(6)));
+            } else if (path.startsWith("/api/control/")) {
+                handleControl(method, path.substring("/api/control/".length()), params, body, out);
             } else {
                 sendText(out, 404, "Not Found");
             }
@@ -111,7 +165,56 @@ public class MediaServer {
         }
     }
 
-    // ---- Handlers ----
+    // ---- Control handlers ----
+
+    private void handleControl(String method, String action, Map<String, String> params,
+                               String body, OutputStream out) throws IOException {
+        if (action.equals("status") && method.equals("GET")) {
+            if (callback == null) { sendJson(out, 200, "{\"volume\":8,\"volumeMax\":15,\"brightness\":128}"); return; }
+            int vol = callback.getVolume();
+            int volMax = callback.getVolumeMax();
+            int bright = callback.getBrightness();
+            sendJson(out, 200, "{\"volume\":" + vol + ",\"volumeMax\":" + volMax + ",\"brightness\":" + bright + "}");
+            return;
+        }
+        if (!method.equals("POST")) { sendText(out, 405, "Method Not Allowed"); return; }
+        if (callback == null) { sendJson(out, 503, "{\"error\":\"no_callback\"}"); return; }
+
+        switch (action) {
+            case "wake":
+                mainHandler.post(callback::onWake);
+                sendJson(out, 200, "{\"ok\":true}");
+                break;
+            case "sleep":
+                mainHandler.post(callback::onSleep);
+                sendJson(out, 200, "{\"ok\":true}");
+                break;
+            case "launch":
+                mainHandler.post(callback::onLaunch);
+                sendJson(out, 200, "{\"ok\":true}");
+                break;
+            case "volume": {
+                int level = parseParam(params.get("level"), parseJsonInt(body, "level", -1));
+                if (level < 0) { sendJson(out, 400, "{\"error\":\"missing level\"}"); return; }
+                final int l = level;
+                mainHandler.post(() -> callback.onVolume(l));
+                sendJson(out, 200, "{\"ok\":true}");
+                break;
+            }
+            case "brightness": {
+                int level = parseParam(params.get("level"), parseJsonInt(body, "level", -1));
+                if (level < 0) { sendJson(out, 400, "{\"error\":\"missing level\"}"); return; }
+                final int l = level;
+                mainHandler.post(() -> callback.onBrightness(l));
+                sendJson(out, 200, "{\"ok\":true}");
+                break;
+            }
+            default:
+                sendText(out, 404, "Not Found");
+        }
+    }
+
+    // ---- File handlers ----
 
     private void handleListFiles(OutputStream out) throws IOException {
         File dir = new File(mediaDir);
@@ -185,6 +288,17 @@ public class MediaServer {
 
     // ---- Helpers ----
 
+    private static int parseParam(String paramVal, int fallback) {
+        if (paramVal == null) return fallback;
+        try { return Integer.parseInt(paramVal.trim()); } catch (NumberFormatException e) { return fallback; }
+    }
+
+    private static int parseJsonInt(String body, String key, int defaultVal) {
+        if (body == null || body.isEmpty()) return defaultVal;
+        try { return new org.json.JSONObject(body).optInt(key, defaultVal); }
+        catch (Exception e) { return defaultVal; }
+    }
+
     private void sendJson(OutputStream out, int code, String body) throws IOException {
         byte[] data = body.getBytes("UTF-8");
         String header = "HTTP/1.1 " + code + " " + statusText(code) + "\r\n"
@@ -211,11 +325,12 @@ public class MediaServer {
             case 200: return "OK";
             case 400: return "Bad Request";
             case 404: return "Not Found";
+            case 405: return "Method Not Allowed";
+            case 503: return "Service Unavailable";
             default: return "Error";
         }
     }
 
-    /** Read one ASCII line (up to \n), discarding \r. Returns "" on blank line. */
     private static String readAsciiLine(InputStream in) throws IOException {
         StringBuilder sb = new StringBuilder();
         int b;
@@ -227,7 +342,6 @@ public class MediaServer {
         return sb.toString();
     }
 
-    /** Strip path separators — prevent directory traversal. */
     private static String sanitize(String name) {
         return new File(name).getName();
     }

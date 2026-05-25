@@ -24,7 +24,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
-public class MainActivity extends Activity {
+public class MainActivity extends Activity implements MediaServer.ControlCallback {
     private VideoView videoView;
     private List<File> videoFiles = new ArrayList<>();
     private int currentIndex = 0;
@@ -50,6 +50,10 @@ public class MainActivity extends Activity {
     private static final String SERVICE_TYPE = "_brandmen._tcp.";
     private android.net.wifi.WifiManager.MulticastLock multicastLock;
 
+    private MediaServer mediaServer;
+    private android.app.admin.DevicePolicyManager dpm;
+    private android.content.ComponentName adminComponent;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -63,6 +67,16 @@ public class MainActivity extends Activity {
 
         nsdManager = (NsdManager) getSystemService(Context.NSD_SERVICE);
         initializeDiscoveryListener();
+
+        dpm = (android.app.admin.DevicePolicyManager) getSystemService(DEVICE_POLICY_SERVICE);
+        adminComponent = new android.content.ComponentName(this, DeviceAdminReceiver.class);
+
+        try {
+            mediaServer = new MediaServer(this, ADS_DIR, this);
+            mediaServer.start();
+        } catch (Exception e) {
+            android.util.Log.e("MainActivity", "MediaServer start failed: " + e.getMessage());
+        }
 
         rootLayout = new FrameLayout(this);
         rootLayout.setBackgroundColor(Color.BLACK);
@@ -326,6 +340,35 @@ public class MainActivity extends Activity {
 
         // Разделитель 2
         content.addView(makeDivider());
+
+        // Строка администратора устройства (для выключения экрана)
+        if (dpm != null && !dpm.isAdminActive(adminComponent)) {
+            LinearLayout adminRow = new LinearLayout(this);
+            adminRow.setOrientation(LinearLayout.HORIZONTAL);
+            adminRow.setGravity(Gravity.CENTER_VERTICAL);
+            content.addView(adminRow, new LinearLayout.LayoutParams(-1, -2));
+
+            TextView adminStatus = new TextView(this);
+            adminStatus.setText("Выключение экрана недоступно");
+            adminStatus.setTextColor(Color.parseColor("#FF9F0A"));
+            adminStatus.setTextSize(12);
+            adminRow.addView(adminStatus, new LinearLayout.LayoutParams(0, -2, 1));
+
+            TextView adminBtn = new TextView(this);
+            adminBtn.setText("Активировать");
+            adminBtn.setTextColor(Color.parseColor("#007AFF"));
+            adminBtn.setTextSize(13);
+            adminBtn.setPadding(0, 10, 0, 10);
+            adminBtn.setOnClickListener(v -> {
+                Intent intent = new Intent(android.app.admin.DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN);
+                intent.putExtra(android.app.admin.DevicePolicyManager.EXTRA_DEVICE_ADMIN, adminComponent);
+                intent.putExtra(android.app.admin.DevicePolicyManager.EXTRA_ADD_EXPLANATION,
+                    "Нужно для удалённого выключения экрана");
+                startActivity(intent);
+            });
+            adminRow.addView(adminBtn);
+            content.addView(makeDivider());
+        }
 
         // Строка обновления
         LinearLayout updateRow = new LinearLayout(this);
@@ -839,6 +882,78 @@ public class MainActivity extends Activity {
 
     @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         if (requestCode == 100) startPlayback();
+    }
+
+    @Override protected void onDestroy() {
+        if (mediaServer != null) mediaServer.stop();
+        super.onDestroy();
+    }
+
+    // ---- MediaServer.ControlCallback ----
+
+    @Override public void onWake() {
+        android.os.PowerManager pm = (android.os.PowerManager) getSystemService(POWER_SERVICE);
+        android.os.PowerManager.WakeLock wl = pm.newWakeLock(
+            android.os.PowerManager.FULL_WAKE_LOCK |
+            android.os.PowerManager.ACQUIRE_CAUSES_WAKEUP |
+            android.os.PowerManager.ON_AFTER_RELEASE,
+            "Brandmen::RemoteWake");
+        wl.acquire(10_000L);
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            android.app.KeyguardManager km = (android.app.KeyguardManager) getSystemService(KEYGUARD_SERVICE);
+            km.requestDismissKeyguard(this, null);
+        }
+    }
+
+    @Override public void onSleep() {
+        if (dpm != null && dpm.isAdminActive(adminComponent)) {
+            dpm.lockNow();
+        } else {
+            // Device admin not active — prompt user to activate it
+            Intent intent = new Intent(android.app.admin.DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN);
+            intent.putExtra(android.app.admin.DevicePolicyManager.EXTRA_DEVICE_ADMIN, adminComponent);
+            intent.putExtra(android.app.admin.DevicePolicyManager.EXTRA_ADD_EXPLANATION,
+                "Нужно для удалённого выключения экрана");
+            startActivity(intent);
+        }
+    }
+
+    @Override public void onVolume(int level) {
+        int max = audioManager.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC);
+        audioManager.setStreamVolume(android.media.AudioManager.STREAM_MUSIC,
+            Math.max(0, Math.min(level, max)), 0);
+    }
+
+    @Override public void onBrightness(int level) {
+        WindowManager.LayoutParams lp = getWindow().getAttributes();
+        lp.screenBrightness = Math.max(0.01f, Math.min(level / 255.0f, 1.0f));
+        getWindow().setAttributes(lp);
+    }
+
+    @Override public void onLaunch() {
+        loadVideos();
+        currentIndex = 0;
+        playNext();
+    }
+
+    @Override public int getVolume() {
+        return audioManager.getStreamVolume(android.media.AudioManager.STREAM_MUSIC);
+    }
+
+    @Override public int getVolumeMax() {
+        return audioManager.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC);
+    }
+
+    @Override public int getBrightness() {
+        float b = getWindow().getAttributes().screenBrightness;
+        if (b < 0) {
+            try {
+                return Settings.System.getInt(getContentResolver(),
+                    Settings.System.SCREEN_BRIGHTNESS, 128);
+            } catch (Exception e) { return 128; }
+        }
+        return (int) (b * 255);
     }
 
     private void startPlayback() { loadVideos(); playNext(); resetHideTimer(); }

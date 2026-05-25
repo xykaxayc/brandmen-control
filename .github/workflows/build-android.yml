@@ -49,6 +49,14 @@ jobs:
           sed -i 's/VERSION = "0\.0\.0"/VERSION = "${{ steps.ver.outputs.version }}"/' \
             src/main/java/com/brandmen/ads/MediaServer.java
 
+      - name: Compile resources
+        working-directory: android-player
+        run: |
+          mkdir -p compiled_res
+          $ANDROID_SDK_ROOT/build-tools/34.0.0/aapt2 compile \
+            src/main/res/xml/device_admin.xml \
+            -o compiled_res/
+
       - name: Compile Java
         working-directory: android-player
         run: |
@@ -57,6 +65,7 @@ jobs:
             -Xlint:-options -d classes \
             src/main/java/com/brandmen/ads/MediaServer.java \
             src/main/java/com/brandmen/ads/BootReceiver.java \
+            src/main/java/com/brandmen/ads/DeviceAdminReceiver.java \
             src/main/java/com/brandmen/ads/DiscoveryListener.java \
             src/main/java/com/brandmen/ads/UpdateChecker.java \
             src/main/java/com/brandmen/ads/MainActivity.java
@@ -79,6 +88,7 @@ jobs:
             -o brandmen-base.apk \
             -I "$ANDROID_SDK_ROOT/platforms/android-33/android.jar" \
             --manifest src/main/AndroidManifest.xml \
+            -R compiled_res/*.flat \
             --min-sdk-version 21 \
             --target-sdk-version 33 \
             --version-code "$COUNT" \

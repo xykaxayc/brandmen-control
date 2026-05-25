@@ -282,32 +282,29 @@ class AdbManager {
 
   // Будит экран, опционально запускает плеер заново (force-stop + monkey)
   Future<void> wakeUp(String ip, {bool launchPlayer = false}) async {
+    final httpClient = DeviceHttp(ip);
+    final woke = await httpClient.wake();
+    if (launchPlayer) {
+      final launched = await httpClient.launch();
+      if (launched) return;
+    } else if (woke) {
+      return;
+    }
+    // ADB fallback
     final adb = await _getAdb();
     final id = '$ip:5555';
     await _retry(
       'wakeUp $ip',
-      () =>
-          _run(adb, ['-s', id, 'shell', 'input', 'keyevent', 'KEYCODE_WAKEUP']),
+      () => _run(adb, ['-s', id, 'shell', 'input', 'keyevent', 'KEYCODE_WAKEUP']),
       _ok,
     );
     await _run(adb, ['-s', id, 'shell', 'wm', 'dismiss-keyguard']);
     if (launchPlayer) {
-      await _run(
-          adb, ['-s', id, 'shell', 'am', 'force-stop', 'com.brandmen.ads'],
+      await _run(adb, ['-s', id, 'shell', 'am', 'force-stop', 'com.brandmen.ads'],
           timeout: const Duration(seconds: 4));
-      await _run(
-          adb,
-          [
-            '-s',
-            id,
-            'shell',
-            'monkey',
-            '-p',
-            'com.brandmen.ads',
-            '-c',
-            'android.intent.category.LAUNCHER',
-            '1'
-          ],
+      await _run(adb,
+          ['-s', id, 'shell', 'monkey', '-p', 'com.brandmen.ads',
+           '-c', 'android.intent.category.LAUNCHER', '1'],
           timeout: const Duration(seconds: 6));
     }
   }
@@ -556,97 +553,65 @@ class AdbManager {
   }
 
   Future<void> sleep(String ip) async {
+    if (await DeviceHttp(ip).httpSleep()) return;
+    // ADB fallback
     final adb = await _getAdb();
     final id = '$ip:5555';
     await _retry(
       'sleep $ip',
-      () =>
-          _run(adb, ['-s', id, 'shell', 'input', 'keyevent', 'KEYCODE_SLEEP']),
+      () => _run(adb, ['-s', id, 'shell', 'input', 'keyevent', 'KEYCODE_SLEEP']),
       _ok,
       attempts: 2,
     );
   }
 
-  // Громкость 0..15 (поток MUSIC). На MIUI требуется --show, иначе тихо игнорится.
   Future<void> setVolume(String ip, int level) async {
+    if (await DeviceHttp(ip).setVolumeHttp(level)) return;
+    // ADB fallback
     final adb = await _getAdb();
     final id = '$ip:5555';
-    final clamped = level.clamp(0, 15);
     await _run(adb, [
-      '-s',
-      id,
-      'shell',
-      'cmd',
-      'media_session',
-      'volume',
-      '--stream',
-      '3',
-      '--set',
-      '$clamped',
-      '--show'
+      '-s', id, 'shell', 'cmd', 'media_session', 'volume',
+      '--stream', '3', '--set', '${level.clamp(0, 15)}', '--show'
     ]);
   }
 
   Future<int> getVolume(String ip) async {
+    final status = await DeviceHttp(ip).controlStatus();
+    if (status != null) return status['volume']!;
+    // ADB fallback
     final adb = await _getAdb();
     final id = '$ip:5555';
-    final r = await _run(
-        adb,
-        [
-          '-s',
-          id,
-          'shell',
-          'cmd',
-          'media_session',
-          'volume',
-          '--stream',
-          '3',
-          '--get'
-        ],
+    final r = await _run(adb,
+        ['-s', id, 'shell', 'cmd', 'media_session', 'volume', '--stream', '3', '--get'],
         timeout: const Duration(seconds: 4));
     final out = r.stdout.toString() + r.stderr.toString();
-    // Вывод примерно: "volume is 8 in range [0..15]"
     final match = RegExp(r'volume is (\d+)').firstMatch(out);
     if (match != null) return int.tryParse(match.group(1)!) ?? 8;
     final any = RegExp(r'\d+').firstMatch(out);
     return any != null ? (int.tryParse(any.group(0)!) ?? 8) : 8;
   }
 
-  // Яркость 0..255
   Future<void> setBrightness(String ip, int level) async {
+    if (await DeviceHttp(ip).setBrightnessHttp(level)) return;
+    // ADB fallback
     final adb = await _getAdb();
     final id = '$ip:5555';
-    final clamped = level.clamp(1, 255);
-    await _run(adb, [
-      '-s',
-      id,
-      'shell',
-      'settings',
-      'put',
-      'system',
-      'screen_brightness_mode',
-      '0'
-    ]);
-    await _run(adb, [
-      '-s',
-      id,
-      'shell',
-      'settings',
-      'put',
-      'system',
-      'screen_brightness',
-      '$clamped'
-    ]);
+    await _run(adb, ['-s', id, 'shell', 'settings', 'put', 'system', 'screen_brightness_mode', '0']);
+    await _run(adb, ['-s', id, 'shell', 'settings', 'put', 'system',
+        'screen_brightness', '${level.clamp(1, 255)}']);
   }
 
   Future<int> getBrightness(String ip) async {
+    final status = await DeviceHttp(ip).controlStatus();
+    if (status != null) return status['brightness']!;
+    // ADB fallback
     final adb = await _getAdb();
     final id = '$ip:5555';
     final r = await _run(adb,
         ['-s', id, 'shell', 'settings', 'get', 'system', 'screen_brightness'],
         timeout: const Duration(seconds: 4));
-    final v = int.tryParse(r.stdout.toString().trim());
-    return v ?? 128;
+    return int.tryParse(r.stdout.toString().trim()) ?? 128;
   }
 
   // Регистрация: получает IP USB-планшета, включает TCP, возвращает IP

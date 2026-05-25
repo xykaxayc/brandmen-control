@@ -150,4 +150,45 @@ class DeviceHttp {
       return null;
     }
   }
+
+  // ---- Remote control ----
+
+  /// Читает текущий статус планшета: volume, volumeMax, brightness.
+  Future<Map<String, int>?> controlStatus() async {
+    try {
+      final r = await http
+          .get(Uri.parse('$_base/api/control/status'))
+          .timeout(const Duration(seconds: 3));
+      if (r.statusCode == 200) {
+        final j = jsonDecode(r.body) as Map<String, dynamic>;
+        return {
+          'volume': (j['volume'] as num).toInt(),
+          'volumeMax': (j['volumeMax'] as num? ?? 15).toInt(),
+          'brightness': (j['brightness'] as num).toInt(),
+        };
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  Future<bool> controlAction(String action, [Map<String, dynamic>? body]) async {
+    try {
+      final r = await http
+          .post(
+            Uri.parse('$_base/api/control/$action'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode(body ?? {}),
+          )
+          .timeout(const Duration(seconds: 3));
+      return r.statusCode == 200;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<bool> wake() => controlAction('wake');
+  Future<bool> httpSleep() => controlAction('sleep');
+  Future<bool> launch() => controlAction('launch');
+  Future<bool> setVolumeHttp(int level) => controlAction('volume', {'level': level});
+  Future<bool> setBrightnessHttp(int level) => controlAction('brightness', {'level': level});
 }
