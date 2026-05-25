@@ -1584,6 +1584,173 @@ class _SettingsScreenState extends State<SettingsScreen> {
     mainState?._showUpdateDialog(info);
   }
 
+  Future<void> _checkAndUpdateApk() async {
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+      content: Text("Проверяю версию APK на планшетах..."),
+      duration: Duration(seconds: 2),
+    ));
+
+    String lowestVersion = '99.99.99';
+    final List<String> reachableIps = [];
+
+    for (final dev in savedDevices) {
+      final ver = await AdbManager.getApkVersion(dev.ip);
+      if (ver != '0.0.0') {
+        reachableIps.add(dev.ip);
+        final p1 = ver.split('.').map((s) => int.tryParse(s) ?? 0).toList();
+        final pl = lowestVersion.split('.').map((s) => int.tryParse(s) ?? 0).toList();
+        bool isLower = false;
+        for (int i = 0; i < 3; i++) {
+          final v1 = i < p1.length ? p1[i] : 0;
+          final vl = i < pl.length ? pl[i] : 0;
+          if (v1 < vl) { isLower = true; break; }
+          if (v1 > vl) break;
+        }
+        if (isLower) lowestVersion = ver;
+      }
+    }
+
+    if (!mounted) return;
+
+    if (reachableIps.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: const Text("Нет планшетов с доступным HTTP-сервером"),
+        backgroundColor: Colors.orange.shade700,
+      ));
+      return;
+    }
+
+    final currentVersion = lowestVersion == '99.99.99' ? '0.0.0' : lowestVersion;
+    final apkInfo = await AppUpdater.checkApkUpdate(currentApkVersion: currentVersion);
+    if (!mounted) return;
+
+    if (apkInfo == null) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text("APK актуален (v$currentVersion) на ${reachableIps.length} планшетах"),
+        backgroundColor: Colors.green.shade700,
+      ));
+      return;
+    }
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        backgroundColor: const Color(0xFF2C2C2E),
+        title: Row(
+          children: [
+            const Icon(Icons.android_rounded, color: Colors.greenAccent, size: 22),
+            const SizedBox(width: 10),
+            Text("APK ${apkInfo.version}"),
+          ],
+        ),
+        content: Text(
+          "Обновить Brandmen Ads до v${apkInfo.version} на ${reachableIps.length} планшетах?\nТекущая версия: $currentVersion",
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(c, false),
+            child: const Text("Отмена", style: TextStyle(color: Colors.white54)),
+          ),
+          ElevatedButton.icon(
+            onPressed: () => Navigator.pop(c, true),
+            icon: const Icon(Icons.system_update_rounded, size: 18),
+            label: const Text("Обновить"),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.greenAccent,
+              foregroundColor: Colors.black,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            ),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true || !mounted) return;
+
+    final dlProgress = ValueNotifier<double>(0);
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (c) => ValueListenableBuilder<double>(
+        valueListenable: dlProgress,
+        builder: (_, val, __) => AlertDialog(
+          backgroundColor: const Color(0xFF2C2C2E),
+          title: const Text("Скачиваю APK..."),
+          content: SizedBox(
+            width: 340,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                LinearProgressIndicator(value: val, backgroundColor: Colors.white12, color: Colors.greenAccent),
+                const SizedBox(height: 8),
+                Text("${(val * 100).round()}%",
+                    style: const TextStyle(color: Colors.white54, fontSize: 12)),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+
+    final apkFile = await AppUpdater.downloadApk(apkInfo, (v) => dlProgress.value = v);
+    if (mounted) Navigator.of(context, rootNavigator: true).pop();
+    dlProgress.dispose();
+
+    if (!mounted) return;
+
+    if (apkFile == null) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: const Text("Не удалось скачать APK"),
+        backgroundColor: Colors.red.shade700,
+      ));
+      return;
+    }
+
+    final instProgress = ValueNotifier<String>("Подготовка...");
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (c) => ValueListenableBuilder<String>(
+        valueListenable: instProgress,
+        builder: (_, msg, __) => AlertDialog(
+          backgroundColor: const Color(0xFF2C2C2E),
+          title: const Text("Установка APK"),
+          content: Row(
+            children: [
+              const SizedBox(width: 20, height: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.greenAccent)),
+              const SizedBox(width: 16),
+              Expanded(child: Text(msg, style: const TextStyle(fontSize: 13))),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    final adb = AdbManager();
+    int installed = 0;
+    int failed = 0;
+    for (int i = 0; i < reachableIps.length; i++) {
+      final ip = reachableIps[i];
+      final devName = savedDevices.firstWhere((d) => d.ip == ip,
+          orElse: () => SavedDevice(ip: ip, name: ip)).name;
+      instProgress.value = "(${i + 1}/${reachableIps.length}) $devName...";
+      final ok = await adb.installApk(ip, apkFile.path);
+      if (ok) { installed++; } else { failed++; }
+    }
+
+    await apkFile.delete().catchError((_) => apkFile);
+    if (mounted) Navigator.of(context, rootNavigator: true).pop();
+    instProgress.dispose();
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text("APK установлен: $installed${failed > 0 ? ", ошибок: $failed" : ""}"),
+      backgroundColor: installed > 0 ? Colors.green.shade700 : Colors.red.shade700,
+      duration: const Duration(seconds: 6),
+    ));
+  }
+
   Future<void> _addManually() async {
     final controller = TextEditingController();
     final ip = await showDialog<String>(
@@ -1689,6 +1856,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 style: OutlinedButton.styleFrom(
                   foregroundColor: Colors.blue,
                   side: const BorderSide(color: Colors.blue),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              height: 44,
+              child: OutlinedButton.icon(
+                onPressed: savedDevices.isEmpty ? null : _checkAndUpdateApk,
+                icon: const Icon(Icons.android_rounded, size: 18),
+                label: const Text("Обновить APK на планшетах"),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: Colors.greenAccent,
+                  side: const BorderSide(color: Colors.greenAccent),
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                 ),
               ),

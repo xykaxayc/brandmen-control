@@ -9,6 +9,7 @@ import java.util.*;
  * No external dependencies — pure Java sockets.
  *
  * Endpoints:
+ *   GET  /version          — {"version":"0.42.0"}
  *   GET  /files            — JSON list of video files with sizes
  *   GET  /file/<name>      — download a file
  *   POST /upload/<name>    — upload a file (Content-Length required)
@@ -17,6 +18,8 @@ import java.util.*;
  */
 public class MediaServer {
     public static final int PORT = 5011;
+    // Версия встраивается CI через sed при каждой сборке
+    public static final String VERSION = "0.0.0";
 
     private final String mediaDir;
     private ServerSocket serverSocket;
@@ -89,6 +92,8 @@ public class MediaServer {
             // Route
             if (method.equals("GET") && path.equals("/ping")) {
                 sendJson(out, 200, "{\"ok\":true}");
+            } else if (method.equals("GET") && path.equals("/version")) {
+                sendJson(out, 200, "{\"version\":\"" + VERSION + "\"}");
             } else if (method.equals("GET") && path.equals("/files")) {
                 handleListFiles(out);
             } else if (method.equals("GET") && path.startsWith("/file/")) {

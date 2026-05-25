@@ -11,12 +11,25 @@ on:
       - '.github/workflows/build-windows.yml'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: windows-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get version
+        id: ver
+        shell: bash
+        run: |
+          COUNT=$(git rev-list --count HEAD)
+          echo "version=0.$COUNT.0" >> $GITHUB_OUTPUT
+          echo "tag=v0.$COUNT.0" >> $GITHUB_OUTPUT
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -24,18 +37,11 @@ jobs:
           channel: 'stable'
           cache: true
 
-      - name: Flutter version
-        run: flutter --version
-
       - name: Get dependencies
         run: flutter pub get
 
       - name: Build Windows release
-        run: flutter build windows --release
-
-      - name: List build output
-        run: dir build\windows\x64\runner\Release
-        shell: cmd
+        run: flutter build windows --release --dart-define=APP_VERSION=${{ steps.ver.outputs.version }}
 
       - name: Bundle ADB platform-tools
         shell: powershell
@@ -59,8 +65,11 @@ jobs:
           path: BrandmenControl-Windows.zip
           retention-days: 30
 
-      - name: Create Release on tag
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Create or update release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: "Build ${{ steps.ver.outputs.version }}"
+          prerelease: true
+          generate_release_notes: false
           files: BrandmenControl-Windows.zip

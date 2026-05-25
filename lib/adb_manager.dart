@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'package:http/http.dart' as http;
 import 'package:path/path.dart' as p;
@@ -456,6 +457,32 @@ class AdbManager {
         .where((e) => e.value == 'device' && !e.key.contains(':'))
         .map((e) => e.key)
         .toList();
+  }
+
+  // Возвращает версию APK с планшета через HTTP /version, или '0.0.0' если недоступен
+  static Future<String> getApkVersion(String ip) async {
+    try {
+      final response = await http
+          .get(Uri.parse('http://$ip:$kDeviceHttpPort/version'))
+          .timeout(const Duration(seconds: 5));
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body) as Map<String, dynamic>;
+        return (data['version'] as String? ?? '0.0.0');
+      }
+    } catch (_) {}
+    return '0.0.0';
+  }
+
+  // Устанавливает APK на планшет через ADB install -r
+  Future<bool> installApk(String ip, String apkPath) async {
+    final adb = await _getAdb();
+    final id = '$ip:5555';
+    final r = await _run(adb, ['-s', id, 'install', '-r', apkPath],
+        timeout: const Duration(minutes: 5));
+    final out = r.stdout.toString() + r.stderr.toString();
+    final success = r.exitCode == 0 && out.toLowerCase().contains('success');
+    if (!success) AppLogger.log('installApk $ip: code=${r.exitCode} $out');
+    return success;
   }
 
   Future<String?> takeScreenshot(String ip, String savePath) async {

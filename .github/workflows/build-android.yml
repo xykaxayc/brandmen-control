@@ -8,12 +8,24 @@ on:
       - '.github/workflows/build-android.yml'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get version
+        id: ver
+        run: |
+          COUNT=$(git rev-list --count HEAD)
+          echo "version=0.$COUNT.0" >> $GITHUB_OUTPUT
+          echo "tag=v0.$COUNT.0" >> $GITHUB_OUTPUT
 
       - name: Setup JDK 17
         uses: actions/setup-java@v4
@@ -25,6 +37,11 @@ jobs:
         uses: android-actions/setup-android@v3
         with:
           packages: 'platforms;android-33 build-tools;34.0.0'
+
+      - name: Embed version into MediaServer
+        run: |
+          sed -i 's/VERSION = "0\.0\.0"/VERSION = "${{ steps.ver.outputs.version }}"/' \
+            android-player/src/com/brandmen/ads/MediaServer.java
 
       - name: Compile Java
         working-directory: android-player
@@ -79,8 +96,11 @@ jobs:
           path: android-player/BrandmenAds.apk
           retention-days: 30
 
-      - name: Create Release on tag
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Create or update release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: "Build ${{ steps.ver.outputs.version }}"
+          prerelease: true
+          generate_release_notes: false
           files: android-player/BrandmenAds.apk
