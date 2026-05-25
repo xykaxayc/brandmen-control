@@ -13,6 +13,13 @@ class DeviceStatus {
   DeviceStatus({required this.ip, required this.online, this.battery = "??"});
 }
 
+// Результат установки APK на планшет
+enum ApkInstallResult {
+  installed,           // adb install -r прошёл успешно
+  pushedToDownloads,   // авто-установка не удалась, но файл в /sdcard/Download
+  failed,              // не удалось ни установить, ни скопировать
+}
+
 class AdbManager {
   static String? _adbPath;
 
@@ -473,16 +480,33 @@ class AdbManager {
     return '0.0.0';
   }
 
-  // Устанавливает APK на планшет через ADB install -r
-  Future<bool> installApk(String ip, String apkPath) async {
+  // Устанавливает APK: всегда кладёт копию в /sdcard/Download (ручной фолбэк
+  // на случай если установка по ADB запрещена политикой устройства), плюс
+  // пробует авто-установку через adb install -r.
+  Future<ApkInstallResult> installApk(String ip, String apkPath) async {
     final adb = await _getAdb();
     final id = '$ip:5555';
+
+    // 1. Копия в «Загрузки» — гарантированный ручной способ установки
+    final push = await _run(
+        adb, ['-s', id, 'push', apkPath, '/sdcard/Download/BrandmenAds.apk'],
+        timeout: const Duration(minutes: 5));
+    final pushOk = push.exitCode == 0;
+    if (!pushOk) {
+      AppLogger.log('installApk $ip: push в Download не удался: '
+          '${push.stdout}${push.stderr}');
+    }
+
+    // 2. Пробуем установить автоматически
     final r = await _run(adb, ['-s', id, 'install', '-r', apkPath],
         timeout: const Duration(minutes: 5));
     final out = r.stdout.toString() + r.stderr.toString();
-    final success = r.exitCode == 0 && out.toLowerCase().contains('success');
-    if (!success) AppLogger.log('installApk $ip: code=${r.exitCode} $out');
-    return success;
+    final installed = r.exitCode == 0 && out.toLowerCase().contains('success');
+    if (installed) return ApkInstallResult.installed;
+
+    AppLogger.log('installApk $ip: авто-установка не удалась '
+        '(code=${r.exitCode} $out)');
+    return pushOk ? ApkInstallResult.pushedToDownloads : ApkInstallResult.failed;
   }
 
   Future<String?> takeScreenshot(String ip, String savePath) async {

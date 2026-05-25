@@ -1839,10 +1839,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
       return;
     }
 
-    // ── Шаг 5: установка через ADB ────────────────────────────────────────
+    // ── Шаг 5: установка (авто через ADB + копия в «Загрузки») ─────────────
     final adb = AdbManager();
-    int installed = 0;
-    final List<String> failedDevices = [];
+    final List<String> autoInstalled = [];
+    final List<String> manualNeeded = [];
+    final List<String> failed = [];
 
     for (int i = 0; i < reachableIps.length; i++) {
       final ip = reachableIps[i];
@@ -1850,8 +1851,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
           orElse: () => SavedDevice(ip: ip, name: ip)).name;
       progress.value = (i + 1) / reachableIps.length;
       dlStatus.value = 'Устанавливаю на $devName\n(${i + 1}/${reachableIps.length})...';
-      final ok = await adb.installApk(ip, apkFile.path);
-      if (ok) { installed++; } else { failedDevices.add(devName); }
+      final res = await adb.installApk(ip, apkFile.path);
+      switch (res) {
+        case ApkInstallResult.installed:
+          autoInstalled.add(devName);
+          break;
+        case ApkInstallResult.pushedToDownloads:
+          manualNeeded.add(devName);
+          break;
+        case ApkInstallResult.failed:
+          failed.add(devName);
+          break;
+      }
     }
 
     await apkFile.delete().catchError((_) => apkFile);
@@ -1861,24 +1872,64 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
     if (!mounted) return;
 
-    final allOk = failedDevices.isEmpty;
+    final lines = <Widget>[];
+    if (autoInstalled.isNotEmpty) {
+      lines.add(_resultLine(Icons.check_circle_rounded, Colors.greenAccent,
+          'Установлено автоматически', autoInstalled.join(', ')));
+    }
+    if (manualNeeded.isNotEmpty) {
+      lines.add(_resultLine(Icons.download_done_rounded, Colors.orange,
+          'Файл в «Загрузках» — установите вручную (тап по BrandmenAds.apk)',
+          manualNeeded.join(', ')));
+    }
+    if (failed.isNotEmpty) {
+      lines.add(_resultLine(Icons.error_outline_rounded, Colors.redAccent,
+          'Ошибка', failed.join(', ')));
+    }
+
+    final allAuto = manualNeeded.isEmpty && failed.isEmpty;
     showDialog(
       context: context,
       builder: (c) => AlertDialog(
         backgroundColor: const Color(0xFF2C2C2E),
         title: Row(children: [
-          Icon(allOk ? Icons.check_circle_rounded : Icons.warning_rounded,
-              color: allOk ? Colors.greenAccent : Colors.orange, size: 22),
+          Icon(allAuto ? Icons.check_circle_rounded : Icons.info_outline_rounded,
+              color: allAuto ? Colors.greenAccent : Colors.orange, size: 22),
           const SizedBox(width: 10),
-          Text(allOk ? 'Готово' : 'Частично', style: const TextStyle(fontSize: 16)),
+          Text('APK v${apkInfo.version}', style: const TextStyle(fontSize: 16)),
         ]),
-        content: Text(
-          allOk
-            ? 'APK v${apkInfo.version} установлен на $installed планшетах.'
-            : 'Успешно: $installed\nОшибка: ${failedDevices.join(", ")}',
-          style: const TextStyle(color: Colors.white70, fontSize: 13),
+        content: SizedBox(
+          width: 380,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: lines,
+          ),
         ),
         actions: [TextButton(onPressed: () => Navigator.pop(c), child: const Text('OK'))],
+      ),
+    );
+  }
+
+  Widget _resultLine(IconData icon, Color color, String title, String devices) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, color: color, size: 18),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title, style: TextStyle(color: color, fontSize: 13, fontWeight: FontWeight.w600)),
+                const SizedBox(height: 2),
+                Text(devices, style: const TextStyle(color: Colors.white60, fontSize: 12)),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
