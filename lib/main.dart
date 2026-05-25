@@ -93,6 +93,9 @@ class _MainScreenState extends State<MainScreen> {
   String? _lastTriggerMinute;
   final adb = AdbManager();
   final tray = TrayManager();
+  StreamSubscription<DeviceRegistration>? _regSub;
+  final _settingsKey = GlobalKey<_SettingsScreenState>();
+
   @override
   void initState() {
     super.initState();
@@ -102,6 +105,21 @@ class _MainScreenState extends State<MainScreen> {
       if (mounted) setState(() {});
     });
     _checkForUpdate();
+    _regSub = globalServer?.onDeviceRegistered.listen(_onDeviceRegistered);
+  }
+
+  Future<void> _onDeviceRegistered(DeviceRegistration reg) async {
+    await DeviceStorage.add(reg.ip, name: reg.name);
+    globalServer?.stopPairing();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text('Планшет добавлен: ${reg.name} (${reg.ip})'),
+      backgroundColor: Colors.green.shade700,
+      duration: const Duration(seconds: 5),
+    ));
+    setState(() => _selectedIndex = 2);
+    _settingsKey.currentState?._stopPairing();
+    _settingsKey.currentState?._loadDevices();
   }
 
   Future<void> _checkForUpdate() async {
@@ -237,6 +255,7 @@ class _MainScreenState extends State<MainScreen> {
   @override
   void dispose() {
     _schedulerTimer?.cancel();
+    _regSub?.cancel();
     super.dispose();
   }
 
@@ -266,7 +285,7 @@ class _MainScreenState extends State<MainScreen> {
     final List<Widget> screens = [
       const DashboardScreen(),
       const MediaScreen(),
-      const SettingsScreen(),
+      SettingsScreen(key: _settingsKey),
     ];
 
     return Scaffold(
@@ -1605,7 +1624,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _pairingActive = false;
   int _pairingSecondsLeft = 0;
   Timer? _pairingTimer;
-  StreamSubscription<DeviceRegistration>? _regSub;
 
   @override
   void initState() {
@@ -1614,23 +1632,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _getHostIp();
     _loadDevices();
     _loadAutoStart();
-    _regSub = globalServer?.onDeviceRegistered.listen((reg) {
-      if (mounted) {
-        _loadDevices();
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text('Планшет добавлен: ${reg.name} (${reg.ip})'),
-          backgroundColor: Colors.green.shade700,
-          duration: const Duration(seconds: 4),
-        ));
-        _stopPairing();
-      }
-    });
   }
 
   @override
   void dispose() {
     _pairingTimer?.cancel();
-    _regSub?.cancel();
     super.dispose();
   }
 
