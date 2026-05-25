@@ -23,9 +23,19 @@ echo [4/4] Creating Standalone Bundle...
 mkdir dist
 xcopy /s /e "build\windows\x64\runner\Release\*" "dist\"
 
+echo [5/4] Downloading ADB platform-tools for Windows...
+powershell -Command "Invoke-WebRequest -Uri 'https://dl.google.com/android/repository/platform-tools-latest-windows.zip' -OutFile 'platform-tools.zip' -UseBasicParsing"
+if %ERRORLEVEL% NEQ 0 (
+    echo ! ADB download failed. Add ADB manually to dist\platform-tools\
+    goto :done
+)
+powershell -Command "Expand-Archive -Path 'platform-tools.zip' -DestinationPath 'dist' -Force"
+del platform-tools.zip
+
+:done
 echo ========================================
-echo   DONE! Your portable app is in "dist" folder.
-echo   You can copy the "dist" folder to any PC.
+echo   DONE! Portable app is in "dist" folder.
+echo   ADB bundled in dist\platform-tools\adb.exe
 echo   Run "brandmen_windows.exe" to start.
 echo ========================================
 pause

@@ -37,6 +37,15 @@ jobs:
         run: dir build\windows\x64\runner\Release
         shell: cmd
 
+      - name: Bundle ADB platform-tools
+        shell: powershell
+        run: |
+          Invoke-WebRequest -Uri 'https://dl.google.com/android/repository/platform-tools-latest-windows.zip' `
+            -OutFile 'platform-tools.zip' -UseBasicParsing
+          Expand-Archive -Path 'platform-tools.zip' `
+            -DestinationPath 'build\windows\x64\runner\Release' -Force
+          Remove-Item 'platform-tools.zip'
+
       - name: Zip release
         run: |
           cd build\windows\x64\runner\Release

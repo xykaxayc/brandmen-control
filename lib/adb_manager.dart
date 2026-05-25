@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'package:http/http.dart' as http;
 import 'package:path/path.dart' as p;
 import 'logger.dart';
 
@@ -17,9 +18,18 @@ class AdbManager {
     if (_adbPath != null) return _adbPath!;
     final candidates = <String>[];
     if (Platform.isWindows) {
+      final exeDir = p.dirname(Platform.resolvedExecutable);
+      final appData = Platform.environment['APPDATA'] ?? '';
       final userProfile = Platform.environment['USERPROFILE'] ?? '';
       final localAppData = Platform.environment['LOCALAPPDATA'] ?? '';
       candidates.addAll([
+        // Рядом с exe (портативная сборка — бандл из CI)
+        p.join(exeDir, 'platform-tools', 'adb.exe'),
+        p.join(exeDir, 'adb.exe'),
+        // Авто-скачанный при первом запуске
+        if (appData.isNotEmpty)
+          p.join(appData, 'Brandmen', 'platform-tools', 'adb.exe'),
+        // Стандартные места установки
         'C:\\platform-tools\\adb.exe',
         'C:\\Android\\platform-tools\\adb.exe',
         'C:\\Program Files (x86)\\Android\\android-sdk\\platform-tools\\adb.exe',
@@ -42,8 +52,52 @@ class AdbManager {
         return path;
       }
     }
+    // На Windows — попробуем скачать автоматически
+    if (Platform.isWindows) {
+      final downloaded = await _downloadAdbWindows();
+      if (downloaded != null) {
+        _adbPath = downloaded;
+        return downloaded;
+      }
+    }
     _adbPath = Platform.isWindows ? 'adb.exe' : 'adb';
     return _adbPath!;
+  }
+
+  static Future<String?> _downloadAdbWindows() async {
+    const url =
+        'https://dl.google.com/android/repository/platform-tools-latest-windows.zip';
+    try {
+      final appData = Platform.environment['APPDATA'] ?? '';
+      if (appData.isEmpty) return null;
+      final targetDir = p.join(appData, 'Brandmen', 'platform-tools');
+      final adbPath = p.join(targetDir, 'adb.exe');
+      if (await File(adbPath).exists()) return adbPath;
+
+      AppLogger.log('ADB не найден, скачиваю platform-tools...');
+      final response =
+          await http.get(Uri.parse(url)).timeout(const Duration(minutes: 5));
+      if (response.statusCode != 200) return null;
+
+      final zipPath = p.join(Directory.systemTemp.path, 'platform-tools-win.zip');
+      await File(zipPath).writeAsBytes(response.bodyBytes);
+
+      final extractTo = p.join(appData, 'Brandmen');
+      await Directory(extractTo).create(recursive: true);
+      final res = await Process.run('powershell', [
+        '-Command',
+        'Expand-Archive -Path "$zipPath" -DestinationPath "$extractTo" -Force',
+      ]);
+      await File(zipPath).delete().catchError((_) => File(zipPath));
+
+      if (res.exitCode == 0 && await File(adbPath).exists()) {
+        AppLogger.log('ADB скачан: $adbPath');
+        return adbPath;
+      }
+    } catch (e) {
+      AppLogger.log('Ошибка скачивания ADB: $e');
+    }
+    return null;
   }
 
   static Future<ProcessResult> _run(String adb, List<String> args,
@@ -160,14 +214,18 @@ class AdbManager {
   }
 
   // Прямая синхронизация: пушит видео и playlist.m3u через ADB на планшет.
-  // Возвращает количество скачанных файлов.
-  Future<int> syncDeviceDirect(String ip, String localDir) async {
+  // Возвращает список имён отправленных файлов. onProgress — колбэк прогресса.
+  Future<List<String>> syncDeviceDirect(
+    String ip,
+    String localDir, {
+    void Function(int done, int total, String filename)? onProgress,
+  }) async {
     final adb = await _getAdb();
     final id = '$ip:5555';
     final localFolder = Directory(localDir);
     if (!await localFolder.exists()) {
       AppLogger.log("Sync $ip: локальная папка не найдена");
-      return 0;
+      return [];
     }
 
     await _run(adb, ['-s', id, 'shell', 'mkdir', '-p', _remoteDir],
@@ -194,21 +252,34 @@ class AdbManager {
           ['.mp4', '.mkv', '.mov', '.avi', '.webm'].contains(p.extension(name));
     }).toList();
 
-    int pushed = 0;
-    for (final f in localFiles) {
+    final List<String> pushed = [];
+    final videoFiles = localFiles.where((f) {
+      final ext = p.extension(p.basename(f.path)).toLowerCase();
+      return ext != '.m3u';
+    }).toList();
+    final playlistFiles = localFiles.where((f) {
+      return p.basename(f.path).toLowerCase() == 'playlist.m3u';
+    }).toList();
+    final allOrdered = [...videoFiles, ...playlistFiles];
+
+    for (int i = 0; i < allOrdered.length; i++) {
+      final f = allOrdered[i];
       final name = p.basename(f.path);
       final localSize = await f.length();
       final isPlaylist = name.toLowerCase() == 'playlist.m3u';
 
+      onProgress?.call(i, allOrdered.length, name);
+
       // playlist.m3u пушим ВСЕГДА (содержимое могло изменится при том же размере)
       if (!isPlaylist && remoteSizes[name] == localSize) continue;
 
-      AppLogger.log("Sync $ip: push $name");
+      AppLogger.log("Sync $ip: push $name (${(localSize / 1024 / 1024).toStringAsFixed(1)} MB)");
       final res = await _run(
           adb, ['-s', id, 'push', f.path, '$_remoteDir/$name'],
           timeout: const Duration(seconds: 300));
-      if (res.exitCode == 0) pushed++;
+      if (res.exitCode == 0 && !isPlaylist) pushed.add(name);
     }
+    onProgress?.call(allOrdered.length, allOrdered.length, '');
 
     final localNames = localFiles.map((f) => p.basename(f.path)).toSet();
     for (final remoteName in remoteSizes.keys) {

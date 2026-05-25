@@ -18,6 +18,7 @@ import 'device_storage.dart';
 import 'media_config.dart';
 import 'backup_manager.dart';
 import 'autostart.dart';
+import 'updater.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -96,10 +97,122 @@ class _MainScreenState extends State<MainScreen> {
     tray.init(() {
       if (mounted) setState(() {});
     });
+    _checkForUpdate();
+  }
+
+  Future<void> _checkForUpdate() async {
+    await Future.delayed(const Duration(seconds: 5));
+    final info = await AppUpdater.checkForUpdate();
+    if (info == null || !mounted) return;
+    _showUpdateDialog(info);
+  }
+
+  void _showUpdateDialog(UpdateInfo info) {
+    showDialog(
+      context: context,
+      builder: (c) => AlertDialog(
+        backgroundColor: const Color(0xFF2C2C2E),
+        title: Row(
+          children: [
+            const Icon(Icons.system_update_rounded, color: Colors.blue, size: 22),
+            const SizedBox(width: 10),
+            Text('Обновление ${info.version}', style: const TextStyle(fontSize: 17)),
+          ],
+        ),
+        content: SizedBox(
+          width: 420,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Текущая версия: $kAppVersion',
+                  style: const TextStyle(color: Colors.white54, fontSize: 12)),
+              if (info.changelog.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                const Text('Что нового:', style: TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.bold)),
+                const SizedBox(height: 4),
+                Text(info.changelog, style: const TextStyle(color: Colors.white60, fontSize: 12)),
+              ],
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(c),
+            child: const Text('Позже', style: TextStyle(color: Colors.white54)),
+          ),
+          ElevatedButton.icon(
+            onPressed: () {
+              Navigator.pop(c);
+              _runUpdate(info);
+            },
+            icon: const Icon(Icons.download_rounded, size: 18),
+            label: const Text('Обновить'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.blue,
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _runUpdate(UpdateInfo info) {
+    double progress = 0;
+    String status = '';
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (c) => StatefulBuilder(
+        builder: (c, setLocal) {
+          return AlertDialog(
+            backgroundColor: const Color(0xFF2C2C2E),
+            title: const Text('Обновление...'),
+            content: SizedBox(
+              width: 380,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  LinearProgressIndicator(
+                    value: progress,
+                    backgroundColor: Colors.white12,
+                    color: Colors.blue,
+                  ),
+                  const SizedBox(height: 12),
+                  Text(status, style: const TextStyle(color: Colors.white60, fontSize: 12)),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+
+    AppUpdater.downloadAndApply(info, (p, s) {
+      if (mounted) {
+        setState(() { progress = p; status = s; });
+      }
+    }).then((ok) {
+      if (!ok && mounted) {
+        Navigator.of(context, rootNavigator: true).pop();
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: const Text('Не удалось обновить. Скачайте вручную с GitHub.'),
+          backgroundColor: Colors.red.shade700,
+          duration: const Duration(seconds: 6),
+        ));
+      }
+    });
   }
 
   Future<void> _cleanupOnStart() async {
     await adb.cleanupOffline();
+    final saved = await DeviceStorage.load();
+    if (saved.isNotEmpty) {
+      AppLogger.log("Переподключение ${saved.length} устройств по WiFi...");
+      await adb.checkAll(saved.map((d) => d.ip).toList());
+    }
   }
 
   @override
@@ -407,18 +520,43 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Future<void> _syncAndPlay(SavedDevice dev) async {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text("Синхронизация ${dev.name}..."),
-      duration: const Duration(seconds: 2),
-      backgroundColor: Colors.blue.shade700,
-    ));
+    final progress = ValueNotifier<String>("Подключение...");
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (c) => ValueListenableBuilder<String>(
+        valueListenable: progress,
+        builder: (_, msg, __) => AlertDialog(
+          backgroundColor: const Color(0xFF2C2C2E),
+          title: Text("${dev.name}", style: const TextStyle(fontSize: 16)),
+          content: Row(
+            children: [
+              const SizedBox(width: 20, height: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.blue)),
+              const SizedBox(width: 16),
+              Expanded(child: Text(msg, style: const TextStyle(fontSize: 13))),
+            ],
+          ),
+        ),
+      ),
+    );
     final mediaDir = await MediaConfig.resolveDir();
-    final pushed = await adb.syncDeviceDirect(dev.ip, mediaDir);
+    final pushed = await adb.syncDeviceDirect(dev.ip, mediaDir,
+      onProgress: (done, total, file) {
+        if (file.isNotEmpty) progress.value = "($done/$total) $file";
+      },
+    );
     await adb.wakeUp(dev.ip, launchPlayer: true);
+    if (mounted) Navigator.of(context, rootNavigator: true).pop();
+    progress.dispose();
     if (!mounted) return;
+    final summary = pushed.isEmpty
+        ? "Все файлы актуальны, запущено"
+        : "Загружено ${pushed.length}: ${pushed.join(', ')}";
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text("${dev.name}: загружено $pushed, запущено"),
+      content: Text("${dev.name}: $summary"),
       backgroundColor: Colors.green.shade700,
+      duration: const Duration(seconds: 6),
     ));
   }
 
@@ -435,31 +573,69 @@ class _DashboardScreenState extends State<DashboardScreen> {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: Text("Синхронизация ${online.length} устройств..."),
       backgroundColor: Colors.blue.shade700,
+      duration: const Duration(seconds: 2),
     ));
+
+    final Map<String, List<String>> results = {};
     await Future.wait(online.map((dev) async {
-      await adb.syncDeviceDirect(dev.ip, mediaDir);
+      final pushed = await adb.syncDeviceDirect(dev.ip, mediaDir);
       await adb.wakeUp(dev.ip, launchPlayer: true);
+      results[dev.name] = pushed;
     }));
+
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text("Запущено на ${online.length} устройствах"),
-      backgroundColor: Colors.green.shade700,
-    ));
+    final lines = results.entries.map((e) =>
+        e.value.isEmpty ? "${e.key}: актуально" : "${e.key}: ${e.value.length} файлов"
+    ).join('\n');
+    showDialog(
+      context: context,
+      builder: (c) => AlertDialog(
+        backgroundColor: const Color(0xFF2C2C2E),
+        title: const Text("Синхронизация завершена"),
+        content: Text(lines, style: const TextStyle(fontSize: 13)),
+        actions: [TextButton(onPressed: () => Navigator.pop(c), child: const Text("OK"))],
+      ),
+    );
   }
 
   Future<void> _syncOnly(SavedDevice dev) async {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text("Синхронизация ${dev.name}..."),
-      duration: const Duration(seconds: 2),
-      backgroundColor: Colors.blue.shade700,
-    ));
+    final progress = ValueNotifier<String>("Подключение...");
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (c) => ValueListenableBuilder<String>(
+        valueListenable: progress,
+        builder: (_, msg, __) => AlertDialog(
+          backgroundColor: const Color(0xFF2C2C2E),
+          title: Text(dev.name, style: const TextStyle(fontSize: 16)),
+          content: Row(
+            children: [
+              const SizedBox(width: 20, height: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.blue)),
+              const SizedBox(width: 16),
+              Expanded(child: Text(msg, style: const TextStyle(fontSize: 13))),
+            ],
+          ),
+        ),
+      ),
+    );
     final mediaDir = await MediaConfig.resolveDir();
-    final pushed = await adb.syncDeviceDirect(dev.ip, mediaDir);
+    final pushed = await adb.syncDeviceDirect(dev.ip, mediaDir,
+      onProgress: (done, total, file) {
+        if (file.isNotEmpty) progress.value = "($done/$total) $file";
+      },
+    );
+    if (mounted) Navigator.of(context, rootNavigator: true).pop();
+    progress.dispose();
     if (!mounted) return;
+    final summary = pushed.isEmpty
+        ? "Все файлы актуальны"
+        : "Загружено ${pushed.length}: ${pushed.join(', ')}";
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text("${dev.name}: загружено $pushed файлов"),
+      content: Text("${dev.name}: $summary"),
       backgroundColor: Colors.green.shade700,
+      duration: const Duration(seconds: 6),
     ));
   }
 
@@ -1390,6 +1566,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
+  Future<void> _checkUpdate() async {
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+      content: Text("Проверяю обновления..."),
+      duration: Duration(seconds: 2),
+    ));
+    final info = await AppUpdater.checkForUpdate();
+    if (!mounted) return;
+    if (info == null) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text("У вас последняя версия ($kAppVersion)"),
+        backgroundColor: Colors.green.shade700,
+      ));
+      return;
+    }
+    final mainState = context.findAncestorStateOfType<_MainScreenState>();
+    mainState?._showUpdateDialog(info);
+  }
+
   Future<void> _addManually() async {
     final controller = TextEditingController();
     final ip = await showDialog<String>(
@@ -1473,6 +1667,30 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 style: ElevatedButton.styleFrom(backgroundColor: Colors.blue, foregroundColor: Colors.white,
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
                 child: const Text("Сохранить", style: TextStyle(fontWeight: FontWeight.bold)),
+              ),
+            ),
+          ]),
+
+          const SizedBox(height: 20),
+
+          _sectionCard("О программе", [
+            _settingRow(
+              "Версия",
+              Text(kAppVersion, style: const TextStyle(color: Colors.white54, fontSize: 14)),
+            ),
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              height: 44,
+              child: OutlinedButton.icon(
+                onPressed: _checkUpdate,
+                icon: const Icon(Icons.system_update_rounded, size: 18),
+                label: const Text("Проверить обновления"),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: Colors.blue,
+                  side: const BorderSide(color: Colors.blue),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                ),
               ),
             ),
           ]),

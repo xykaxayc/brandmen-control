@@ -116,7 +116,11 @@ public class MainActivity extends Activity {
         });
         videoView.setOnErrorListener(new MediaPlayer.OnErrorListener() {
             @Override public boolean onError(MediaPlayer mp, int what, int extra) {
-                next();
+                String failedName = (currentIndex < videoFiles.size())
+                        ? videoFiles.get(currentIndex).getName() : "?";
+                runOnUiThread(() -> Toast.makeText(MainActivity.this,
+                        "Не удалось воспроизвести: " + failedName, Toast.LENGTH_SHORT).show());
+                uiHandler.postDelayed(() -> next(), 800);
                 return true;
             }
         });
@@ -545,9 +549,14 @@ public class MainActivity extends Activity {
         if (currentIndex < 0) currentIndex = 0;
         File f = videoFiles.get(currentIndex);
         trackInfoText.setText((currentIndex + 1) + "/" + videoFiles.size() + " · " + f.getName());
-        videoView.setVideoPath(f.getAbsolutePath());
-        videoView.start();
-        playPauseBtn.setText("⏸");
+        videoView.stopPlayback();
+        videoView.setVideoURI(Uri.fromFile(f));
+        videoView.setOnPreparedListener(mp -> {
+            mp.setLooping(false);
+            videoView.start();
+            playPauseBtn.setText("⏸");
+        });
+        videoView.requestFocus();
         if (playlistVisible) refreshPlaylistItems();
     }
 
