@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'logger.dart';
 import 'package:shelf/shelf.dart';
@@ -29,9 +30,20 @@ Future<String> _getFileHash(File file) async {
   }
 }
 
+class DeviceRegistration {
+  final String ip;
+  final String name;
+  DeviceRegistration({required this.ip, required this.name});
+}
+
 class BrandmenServer {
   late HttpServer _server;
   Registration? _registration;
+
+  final _registrationController =
+      StreamController<DeviceRegistration>.broadcast();
+  Stream<DeviceRegistration> get onDeviceRegistered =>
+      _registrationController.stream;
 
   Future<void> start() async {
     final handler = const Pipeline()
@@ -87,6 +99,29 @@ class BrandmenServer {
             headers: {'content-type': 'application/json'});
       }
 
+      if (request.method == 'POST' && path == 'api/register') {
+        final connInfo =
+            request.context['shelf.io.connection_info'] as HttpConnectionInfo?;
+        final clientIp = connInfo?.remoteAddress.address ?? '';
+        String deviceName = clientIp;
+        try {
+          final body = await request.readAsString();
+          if (body.isNotEmpty) {
+            final json = jsonDecode(body) as Map<String, dynamic>;
+            deviceName = (json['name'] as String?)?.trim().isNotEmpty == true
+                ? json['name'] as String
+                : clientIp;
+          }
+        } catch (_) {}
+        if (clientIp.isNotEmpty) {
+          AppLogger.log('Устройство зарегистрировалось: $clientIp ($deviceName)');
+          _registrationController
+              .add(DeviceRegistration(ip: clientIp, name: deviceName));
+        }
+        return Response.ok('{"ok":true}',
+            headers: {'content-type': 'application/json'});
+      }
+
       if (path.isEmpty) {
         return Response.ok(
             'Brandmen Control Server\nport: $kServerPort\nfolder: $videoDir',
@@ -136,5 +171,6 @@ class BrandmenServer {
       await unregister(_registration!);
     }
     await _server.close();
+    await _registrationController.close();
   }
 }

@@ -140,6 +140,7 @@ public class MainActivity extends Activity {
                                         Toast.makeText(MainActivity.this, "Сервер найден: " + host, Toast.LENGTH_SHORT).show();
                                     }
                                 });
+                                registerWithServer(host);
                             }
                         }
                     });
@@ -357,6 +358,7 @@ public class MainActivity extends Activity {
                     findBtn.setTextColor(Color.parseColor("#34C759"));
                     activeDiscovery = null;
                 });
+                registerWithServer(ip);
             }
             @Override public void onTimeout() {
                 runOnUiThread(() -> {
@@ -369,6 +371,27 @@ public class MainActivity extends Activity {
                 });
             }
         });
+    }
+
+    private void registerWithServer(String serverIp) {
+        String deviceName = android.os.Build.MANUFACTURER + " " + android.os.Build.MODEL;
+        String body = "{\"name\":\"" + deviceName.replace("\"", "") + "\"}";
+        new Thread(() -> {
+            try {
+                java.net.URL url = new java.net.URL("http://" + serverIp + ":5010/api/register");
+                java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
+                conn.setRequestMethod("POST");
+                conn.setDoOutput(true);
+                conn.setConnectTimeout(3000);
+                conn.setReadTimeout(3000);
+                conn.setRequestProperty("Content-Type", "application/json");
+                byte[] data = body.getBytes("UTF-8");
+                conn.setRequestProperty("Content-Length", String.valueOf(data.length));
+                conn.getOutputStream().write(data);
+                conn.getResponseCode();
+                conn.disconnect();
+            } catch (Exception ignored) {}
+        }, "RegisterDevice").start();
     }
 
     private void checkUpdate(TextView btn, TextView statusText) {
@@ -495,6 +518,7 @@ public class MainActivity extends Activity {
     private void startSync() {
         final String ip = getServerIp();
         Toast.makeText(this, "Связь с " + ip + "...", Toast.LENGTH_SHORT).show();
+        registerWithServer(ip);
         new Thread(() -> {
             try {
                 URL url = new URL("http://" + ip + ":5010/api/sync/manifest");

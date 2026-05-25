@@ -28,11 +28,13 @@ void main() async {
   runApp(const BrandmenApp());
 }
 
+BrandmenServer? globalServer;
+
 Future<void> _startServer() async {
   try {
     await MediaConfig.resolveDir();
-    final server = BrandmenServer();
-    await server.start();
+    globalServer = BrandmenServer();
+    await globalServer!.start();
     AppLogger.log(
         "HTTP сервер запущен на порту 5010, папка: ${MediaConfig.current}");
   } catch (e) {
@@ -91,6 +93,7 @@ class _MainScreenState extends State<MainScreen> {
   String? _lastTriggerMinute;
   final adb = AdbManager();
   final tray = TrayManager();
+  StreamSubscription<DeviceRegistration>? _regSub;
 
   @override
   void initState() {
@@ -101,6 +104,24 @@ class _MainScreenState extends State<MainScreen> {
       if (mounted) setState(() {});
     });
     _checkForUpdate();
+    _listenForDeviceRegistrations();
+  }
+
+  void _listenForDeviceRegistrations() {
+    _regSub = globalServer?.onDeviceRegistered.listen((reg) async {
+      await DeviceStorage.add(reg.ip, name: reg.name);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Новый планшет: ${reg.name} (${reg.ip})'),
+        backgroundColor: Colors.green.shade700,
+        duration: const Duration(seconds: 5),
+        action: SnackBarAction(
+          label: 'OK',
+          textColor: Colors.white,
+          onPressed: () {},
+        ),
+      ));
+    });
   }
 
   Future<void> _checkForUpdate() async {
@@ -236,6 +257,7 @@ class _MainScreenState extends State<MainScreen> {
   @override
   void dispose() {
     _schedulerTimer?.cancel();
+    _regSub?.cancel();
     super.dispose();
   }
 
