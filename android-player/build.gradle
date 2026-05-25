@@ -1,0 +1,27 @@
+plugins {
+    id 'com.android.application' version '8.2.0'
+}
+
+android {
+    namespace "com.brandmen.ads"
+    compileSdk 33
+
+    defaultConfig {
+        applicationId "com.brandmen.ads"
+        minSdk 21
+        targetSdk 33
+        versionCode 1
+        versionName "1.0"
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+}
+
+repositories {
+    google()
+    mavenCentral()
+}
