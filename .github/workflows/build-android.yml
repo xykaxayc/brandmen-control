@@ -43,6 +43,12 @@ jobs:
         with:
           packages: 'platforms;android-33 build-tools;34.0.0'
 
+      - name: Set version
+        working-directory: android-player
+        run: |
+          sed -i 's/VERSION = "0\.0\.0"/VERSION = "${{ steps.ver.outputs.version }}"/' \
+            src/main/java/com/brandmen/ads/MediaServer.java
+
       - name: Compile Java
         working-directory: android-player
         run: |

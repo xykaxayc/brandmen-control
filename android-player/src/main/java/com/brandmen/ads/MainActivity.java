@@ -301,13 +301,39 @@ public class MainActivity extends Activity {
         searchStatus.setTextSize(11);
         content.addView(searchStatus, new LinearLayout.LayoutParams(-1, -2));
 
-        // Разделитель
-        View div = new View(this);
-        div.setBackgroundColor(Color.parseColor("#33FFFFFF"));
-        LinearLayout.LayoutParams divLp = new LinearLayout.LayoutParams(-1, 1);
-        divLp.topMargin = 20;
-        divLp.bottomMargin = 16;
-        content.addView(div, divLp);
+        // Разделитель 1
+        content.addView(makeDivider());
+
+        // Строка сопряжения
+        LinearLayout pairRow = new LinearLayout(this);
+        pairRow.setOrientation(LinearLayout.HORIZONTAL);
+        pairRow.setGravity(Gravity.CENTER_VERTICAL);
+        content.addView(pairRow, new LinearLayout.LayoutParams(-1, -2));
+
+        final TextView pairStatus = new TextView(this);
+        pairStatus.setText("Не добавлен в приложение");
+        pairStatus.setTextColor(Color.parseColor("#99FFFFFF"));
+        pairStatus.setTextSize(12);
+        pairRow.addView(pairStatus, new LinearLayout.LayoutParams(0, -2, 1));
+
+        final TextView pairBtn = new TextView(this);
+        pairBtn.setText("🔗 Сопряжение");
+        pairBtn.setTextColor(Color.parseColor("#007AFF"));
+        pairBtn.setTextSize(13);
+        pairBtn.setPadding(0, 10, 0, 10);
+        pairBtn.setOnClickListener(v -> {
+            String ip = ipInput.getText().toString().trim();
+            if (ip.contains(":")) ip = ip.substring(0, ip.indexOf(':'));
+            if (ip.isEmpty()) {
+                pairStatus.setText("Сначала введите IP");
+                return;
+            }
+            doPairing(ip, pairBtn, pairStatus);
+        });
+        pairRow.addView(pairBtn);
+
+        // Разделитель 2
+        content.addView(makeDivider());
 
         // Строка обновления
         LinearLayout updateRow = new LinearLayout(this);
@@ -371,6 +397,103 @@ public class MainActivity extends Activity {
                 });
             }
         });
+    }
+
+    private View makeDivider() {
+        View div = new View(this);
+        div.setBackgroundColor(Color.parseColor("#33FFFFFF"));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, 1);
+        lp.topMargin = 18;
+        lp.bottomMargin = 14;
+        div.setLayoutParams(lp);
+        return div;
+    }
+
+    private void doPairing(String serverIp, TextView btn, TextView status) {
+        btn.setEnabled(false);
+        btn.setText("⏳");
+        status.setText("Отправляю запрос...");
+        status.setTextColor(Color.parseColor("#99FFFFFF"));
+        new Thread(() -> {
+            try {
+                // Проверяем, активен ли режим сопряжения
+                java.net.URL statusUrl = new java.net.URL("http://" + serverIp + ":5010/api/pairing-status");
+                java.net.HttpURLConnection sc = (java.net.HttpURLConnection) statusUrl.openConnection();
+                sc.setConnectTimeout(4000);
+                sc.setReadTimeout(4000);
+                int code = sc.getResponseCode();
+                if (code != 200) {
+                    runOnUiThread(() -> {
+                        status.setText("Сервер не отвечает");
+                        btn.setText("🔗 Сопряжение");
+                        btn.setEnabled(true);
+                    });
+                    return;
+                }
+                java.io.BufferedReader br = new java.io.BufferedReader(
+                        new java.io.InputStreamReader(sc.getInputStream(), "UTF-8"));
+                StringBuilder sb = new StringBuilder();
+                String line;
+                while ((line = br.readLine()) != null) sb.append(line);
+                org.json.JSONObject resp = new org.json.JSONObject(sb.toString());
+                boolean active = resp.optBoolean("active", false);
+
+                if (!active) {
+                    runOnUiThread(() -> {
+                        status.setText("Включите режим сопряжения на компьютере");
+                        status.setTextColor(Color.parseColor("#FF9F0A"));
+                        btn.setText("🔗 Повторить");
+                        btn.setEnabled(true);
+                    });
+                    return;
+                }
+
+                // Режим активен — отправляем регистрацию
+                String deviceName = android.os.Build.MANUFACTURER + " " + android.os.Build.MODEL;
+                String body = "{\"name\":\"" + deviceName.replace("\"", "") + "\"}";
+                java.net.URL regUrl = new java.net.URL("http://" + serverIp + ":5010/api/register");
+                java.net.HttpURLConnection rc = (java.net.HttpURLConnection) regUrl.openConnection();
+                rc.setRequestMethod("POST");
+                rc.setDoOutput(true);
+                rc.setConnectTimeout(4000);
+                rc.setReadTimeout(4000);
+                rc.setRequestProperty("Content-Type", "application/json");
+                byte[] data = body.getBytes("UTF-8");
+                rc.setRequestProperty("Content-Length", String.valueOf(data.length));
+                rc.getOutputStream().write(data);
+                int regCode = rc.getResponseCode();
+
+                if (regCode == 200) {
+                    prefs.edit().putString("server_ip", serverIp).apply();
+                    runOnUiThread(() -> {
+                        status.setText("✓ Добавлен в приложение");
+                        status.setTextColor(Color.parseColor("#34C759"));
+                        btn.setText("✓");
+                        btn.setTextColor(Color.parseColor("#34C759"));
+                        btn.setEnabled(false);
+                    });
+                } else if (regCode == 403) {
+                    runOnUiThread(() -> {
+                        status.setText("Режим сопряжения истёк, повторите на компьютере");
+                        status.setTextColor(Color.parseColor("#FF9F0A"));
+                        btn.setText("🔗 Повторить");
+                        btn.setEnabled(true);
+                    });
+                } else {
+                    runOnUiThread(() -> {
+                        status.setText("Ошибка: " + regCode);
+                        btn.setText("🔗 Повторить");
+                        btn.setEnabled(true);
+                    });
+                }
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    status.setText("Нет связи с " + serverIp);
+                    btn.setText("🔗 Повторить");
+                    btn.setEnabled(true);
+                });
+            }
+        }, "DoPairing").start();
     }
 
     private void registerWithServer(String serverIp) {
