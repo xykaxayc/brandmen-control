@@ -67,17 +67,20 @@ jobs:
       - name: Pack APK
         working-directory: android-player
         run: |
-          mkdir -p out
-          cp src/main/AndroidManifest.xml out/
-          # If resources.arsc is missing, we might need to generate it or use a placeholder
-          # For now, let's assume it's part of the standard build or provided in resources
-          if [ -f resources/resources.arsc ]; then cp resources/resources.arsc out/; fi
-          cp classes.dex out/
-          cd out
-          zip -r0q ../brandmen-unaligned.apk .
-          cd ..
+          COUNT=$(git rev-list --count HEAD)
+          # aapt2 link компилирует манифест в бинарный формат и создаёт базовый APK
+          $ANDROID_SDK_ROOT/build-tools/34.0.0/aapt2 link \
+            -o brandmen-base.apk \
+            -I "$ANDROID_SDK_ROOT/platforms/android-33/android.jar" \
+            --manifest src/main/AndroidManifest.xml \
+            --min-sdk-version 21 \
+            --target-sdk-version 33 \
+            --version-code "$COUNT" \
+            --version-name "0.$COUNT.0"
+          # Добавляем DEX в APK
+          zip -j brandmen-base.apk classes.dex
           $ANDROID_SDK_ROOT/build-tools/34.0.0/zipalign -f 4 \
-            brandmen-unaligned.apk brandmen-aligned.apk
+            brandmen-base.apk brandmen-aligned.apk
 
       - name: Sign APK
         working-directory: android-player
@@ -86,6 +89,7 @@ jobs:
             --ks release.keystore \
             --ks-pass pass:brandmen123 \
             --key-pass pass:brandmen123 \
+            --min-sdk-version 21 \
             --v1-signing-enabled true \
             --v2-signing-enabled true \
             --v3-signing-enabled true \
