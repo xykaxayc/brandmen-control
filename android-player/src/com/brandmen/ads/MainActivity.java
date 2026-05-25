@@ -521,8 +521,38 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams hLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         hLp.topMargin = 6 * dp;
-        hLp.bottomMargin = 8 * dp;
+        hLp.bottomMargin = 16 * dp;
         content.addView(hint, hLp);
+
+        // Разделитель
+        View divider = new View(this);
+        divider.setBackgroundColor(DIVIDER);
+        content.addView(divider, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 1));
+
+        // Строка обновления
+        LinearLayout updateRow = new LinearLayout(this);
+        updateRow.setOrientation(LinearLayout.HORIZONTAL);
+        updateRow.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams urLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        urLp.topMargin = 14 * dp;
+        content.addView(updateRow, urLp);
+
+        final TextView updateStatus = new TextView(this);
+        updateStatus.setText("v" + MediaServer.VERSION);
+        updateStatus.setTextColor(TEXT_SECONDARY);
+        updateStatus.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        updateRow.addView(updateStatus, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        final TextView updateBtn = new TextView(this);
+        updateBtn.setText("Проверить обновление");
+        updateBtn.setTextColor(ACCENT_BLUE);
+        updateBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        updateBtn.setPadding(0, 6 * dp, 0, 6 * dp);
+        updateBtn.setOnClickListener(v -> checkUpdate(updateBtn, updateStatus));
+        updateRow.addView(updateBtn);
 
         new AlertDialog.Builder(this)
                 .setTitle("Настройки · v" + MediaServer.VERSION)
@@ -573,6 +603,79 @@ public class MainActivity extends Activity {
                 });
             }
         });
+    }
+
+    private void checkUpdate(TextView btn, TextView statusText) {
+        btn.setEnabled(false);
+        btn.setText("Проверяю...");
+        statusText.setText("v" + MediaServer.VERSION);
+        UpdateChecker.checkAsync(MediaServer.VERSION, new UpdateChecker.CheckCallback() {
+            @Override public void onUpdateAvailable(UpdateChecker.UpdateInfo info) {
+                runOnUiThread(() -> {
+                    statusText.setText("Доступно v" + info.version);
+                    statusText.setTextColor(ACCENT_GREEN);
+                    btn.setText("Скачать v" + info.version);
+                    btn.setEnabled(true);
+                    btn.setOnClickListener(v -> downloadUpdate(info, btn, statusText));
+                });
+            }
+            @Override public void onUpToDate() {
+                runOnUiThread(() -> {
+                    statusText.setText("Актуальная версия ✓");
+                    btn.setText("Проверить обновление");
+                    btn.setEnabled(true);
+                });
+            }
+            @Override public void onError(String message) {
+                runOnUiThread(() -> {
+                    statusText.setText("Ошибка проверки");
+                    btn.setText("Повторить");
+                    btn.setEnabled(true);
+                });
+            }
+        });
+    }
+
+    private void downloadUpdate(UpdateChecker.UpdateInfo info, TextView btn, TextView statusText) {
+        btn.setEnabled(false);
+        btn.setText("Скачиваю...");
+        File dest = new File(android.os.Environment.getExternalStoragePublicDirectory(
+                android.os.Environment.DIRECTORY_DOWNLOADS), "BrandmenAds.apk");
+        UpdateChecker.downloadAsync(info.downloadUrl, dest, new UpdateChecker.DownloadCallback() {
+            @Override public void onProgress(int percent) {
+                runOnUiThread(() -> btn.setText(percent + "%"));
+            }
+            @Override public void onDone(File apkFile) {
+                runOnUiThread(() -> {
+                    statusText.setText("Скачано → " + apkFile.getPath());
+                    btn.setText("Установить");
+                    btn.setEnabled(true);
+                    btn.setOnClickListener(v -> installApk(apkFile));
+                });
+            }
+            @Override public void onError(String message) {
+                runOnUiThread(() -> {
+                    statusText.setText("Ошибка скачивания");
+                    btn.setText("Повторить");
+                    btn.setEnabled(true);
+                    btn.setOnClickListener(vv -> downloadUpdate(info, btn, statusText));
+                });
+            }
+        });
+    }
+
+    private void installApk(File apkFile) {
+        try {
+            android.content.Intent intent = new android.content.Intent(
+                    android.content.Intent.ACTION_VIEW);
+            intent.setDataAndType(android.net.Uri.fromFile(apkFile),
+                    "application/vnd.android.package-archive");
+            intent.setFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(intent);
+        } catch (Exception e) {
+            Toast.makeText(this,
+                    "Откройте файл вручную: " + apkFile.getPath(), Toast.LENGTH_LONG).show();
+        }
     }
 
     // ---- Воспроизведение ----
