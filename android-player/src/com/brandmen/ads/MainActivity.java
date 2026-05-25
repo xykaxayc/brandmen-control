@@ -166,7 +166,7 @@ public class MainActivity extends Activity {
         textCol.setOrientation(LinearLayout.VERTICAL);
 
         trackInfoText = new TextView(this);
-        trackInfoText.setText("Brandmen Ads");
+        trackInfoText.setText("Brandmen Ads · v" + MediaServer.VERSION);
         trackInfoText.setTextColor(TEXT_PRIMARY);
         trackInfoText.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
         trackInfoText.setTypeface(Typeface.DEFAULT_BOLD);

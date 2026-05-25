@@ -1979,7 +1979,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
             const SizedBox(height: 4),
             const Text(
-              "Управление рекламными планшетами по WiFi через ADB и HTTP",
+              "Управление рекламными планшетами по WiFi через ADB и HTTP · 2026",
               style: TextStyle(color: Colors.white24, fontSize: 11),
             ),
             const SizedBox(height: 12),
