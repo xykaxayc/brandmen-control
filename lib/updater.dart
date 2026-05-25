@@ -235,19 +235,58 @@ class AppUpdater {
       await Process.start('cmd', ['/c', bat], mode: ProcessStartMode.detached);
     } else {
       final sh = p.join(tempDir, 'brandmen_apply_update.sh');
+      final log = p.join(tempDir, 'brandmen_update.log');
       final appBundle = p.normalize(p.join(exeDir, '..', '..'));
       final appParent = p.dirname(appBundle);
-      final srcApp = p.join(srcDir, p.basename(appBundle));
-      await File(sh).writeAsString('#!/bin/bash\n'
-              'set -e\n'
-              'sleep 2\n'
-              'rm -rf "$appBundle"\n'
-              'cp -R "$srcApp" "$appParent/"\n'
-              'open "$appBundle"\n'
-              'rm -- "\$0"\n'
-          .replaceAll(r'$srcApp', srcApp)
-          .replaceAll(r'$appParent', appParent)
-          .replaceAll(r'$appBundle', appBundle));
+
+      // Не полагаемся на совпадение имени — ищем любой .app в srcDir
+      final script = '''#!/bin/bash
+LOG="$log"
+exec > "\$LOG" 2>&1
+echo "=== Brandmen update \$(date) ==="
+echo "srcDir:    $srcDir"
+echo "appBundle: $appBundle"
+echo "appParent: $appParent"
+
+sleep 2
+
+# Найти .app в распакованной папке
+SRC_APP=\$(find "$srcDir" -maxdepth 2 -name "*.app" -type d | head -1)
+if [ -z "\$SRC_APP" ]; then
+  echo "ERROR: .app не найден в $srcDir, содержимое:"
+  ls -la "$srcDir" || true
+  exit 1
+fi
+echo "Найдено: \$SRC_APP"
+
+# Сначала копируем рядом под временным именем, потом атомарно меняем
+DEST_APP="$appParent/\$(basename "\$SRC_APP")"
+TMP_APP="\${DEST_APP}.update_tmp"
+
+echo "Копирую в \$TMP_APP ..."
+rm -rf "\$TMP_APP"
+cp -R "\$SRC_APP" "\$TMP_APP"
+if [ \$? -ne 0 ]; then
+  echo "ERROR: cp -R не удалось"
+  rm -rf "\$TMP_APP"
+  exit 1
+fi
+
+# Снимаем quarantine
+xattr -dr com.apple.quarantine "\$TMP_APP" 2>/dev/null || true
+
+# Заменяем старый .app
+echo "Заменяю $appBundle ..."
+rm -rf "$appBundle"
+mv "\$TMP_APP" "\$DEST_APP"
+
+echo "Запускаю \$DEST_APP ..."
+open "\$DEST_APP"
+echo "Готово"
+rm -- "\$0"
+''';
+
+      await File(sh).writeAsString(script);
       await Process.run('chmod', ['+x', sh]);
       await Process.start('bash', [sh], mode: ProcessStartMode.detached);
     }
