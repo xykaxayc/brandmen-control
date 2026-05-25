@@ -45,6 +45,18 @@ class BrandmenServer {
   Stream<DeviceRegistration> get onDeviceRegistered =>
       _registrationController.stream;
 
+  DateTime? _pairingUntil;
+
+  bool get pairingActive =>
+      _pairingUntil != null && DateTime.now().isBefore(_pairingUntil!);
+
+  void startPairing({Duration duration = const Duration(seconds: 30)}) {
+    _pairingUntil = DateTime.now().add(duration);
+    AppLogger.log('Режим сопряжения активен на ${duration.inSeconds}с');
+  }
+
+  void stopPairing() => _pairingUntil = null;
+
   Future<void> start() async {
     final handler = const Pipeline()
         .addMiddleware(logRequests())
@@ -100,6 +112,10 @@ class BrandmenServer {
       }
 
       if (request.method == 'POST' && path == 'api/register') {
+        if (!pairingActive) {
+          return Response.forbidden('{"error":"pairing_off"}',
+              headers: {'content-type': 'application/json'});
+        }
         final connInfo =
             request.context['shelf.io.connection_info'] as HttpConnectionInfo?;
         final clientIp = connInfo?.remoteAddress.address ?? '';
@@ -119,6 +135,12 @@ class BrandmenServer {
               .add(DeviceRegistration(ip: clientIp, name: deviceName));
         }
         return Response.ok('{"ok":true}',
+            headers: {'content-type': 'application/json'});
+      }
+
+      if (path == 'api/pairing-status') {
+        return Response.ok(
+            jsonEncode({'active': pairingActive}),
             headers: {'content-type': 'application/json'});
       }
 

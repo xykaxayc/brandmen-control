@@ -93,8 +93,6 @@ class _MainScreenState extends State<MainScreen> {
   String? _lastTriggerMinute;
   final adb = AdbManager();
   final tray = TrayManager();
-  StreamSubscription<DeviceRegistration>? _regSub;
-
   @override
   void initState() {
     super.initState();
@@ -104,24 +102,6 @@ class _MainScreenState extends State<MainScreen> {
       if (mounted) setState(() {});
     });
     _checkForUpdate();
-    _listenForDeviceRegistrations();
-  }
-
-  void _listenForDeviceRegistrations() {
-    _regSub = globalServer?.onDeviceRegistered.listen((reg) async {
-      await DeviceStorage.add(reg.ip, name: reg.name);
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text('Новый планшет: ${reg.name} (${reg.ip})'),
-        backgroundColor: Colors.green.shade700,
-        duration: const Duration(seconds: 5),
-        action: SnackBarAction(
-          label: 'OK',
-          textColor: Colors.white,
-          onPressed: () {},
-        ),
-      ));
-    });
   }
 
   Future<void> _checkForUpdate() async {
@@ -257,7 +237,6 @@ class _MainScreenState extends State<MainScreen> {
   @override
   void dispose() {
     _schedulerTimer?.cancel();
-    _regSub?.cancel();
     super.dispose();
   }
 
@@ -1623,6 +1602,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
   String? localIp;
   List<SavedDevice> savedDevices = [];
 
+  bool _pairingActive = false;
+  int _pairingSecondsLeft = 0;
+  Timer? _pairingTimer;
+  StreamSubscription<DeviceRegistration>? _regSub;
+
   @override
   void initState() {
     super.initState();
@@ -1630,6 +1614,45 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _getHostIp();
     _loadDevices();
     _loadAutoStart();
+    _regSub = globalServer?.onDeviceRegistered.listen((reg) {
+      if (mounted) {
+        _loadDevices();
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Планшет добавлен: ${reg.name} (${reg.ip})'),
+          backgroundColor: Colors.green.shade700,
+          duration: const Duration(seconds: 4),
+        ));
+        _stopPairing();
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _pairingTimer?.cancel();
+    _regSub?.cancel();
+    super.dispose();
+  }
+
+  void _startPairing() {
+    const seconds = 30;
+    globalServer?.startPairing(duration: const Duration(seconds: seconds));
+    setState(() {
+      _pairingActive = true;
+      _pairingSecondsLeft = seconds;
+    });
+    _pairingTimer?.cancel();
+    _pairingTimer = Timer.periodic(const Duration(seconds: 1), (t) {
+      if (!mounted) { t.cancel(); return; }
+      setState(() => _pairingSecondsLeft--);
+      if (_pairingSecondsLeft <= 0) _stopPairing();
+    });
+  }
+
+  void _stopPairing() {
+    _pairingTimer?.cancel();
+    globalServer?.stopPairing();
+    if (mounted) setState(() { _pairingActive = false; _pairingSecondsLeft = 0; });
   }
 
   Future<void> _loadAutoStart() async {
@@ -2464,6 +2487,53 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     style: TextStyle(color: Colors.white38)),
               ),
             const SizedBox(height: 8),
+            AnimatedContainer(
+              duration: const Duration(milliseconds: 300),
+              decoration: BoxDecoration(
+                color: _pairingActive
+                    ? Colors.blue.withValues(alpha: 0.15)
+                    : Colors.transparent,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                  color: _pairingActive ? Colors.blue : Colors.transparent,
+                  width: 1,
+                ),
+              ),
+              child: ListTile(
+                contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+                leading: Icon(
+                  _pairingActive
+                      ? Icons.bluetooth_searching_rounded
+                      : Icons.link_rounded,
+                  color: _pairingActive ? Colors.blue : Colors.white54,
+                ),
+                title: Text(
+                  _pairingActive
+                      ? 'Ожидаю планшет... $_pairingSecondsLeft с'
+                      : 'Режим сопряжения',
+                  style: TextStyle(
+                    color: _pairingActive ? Colors.blue : Colors.white70,
+                    fontSize: 14,
+                  ),
+                ),
+                subtitle: Text(
+                  _pairingActive
+                      ? 'Нажмите "Найти" на планшете'
+                      : 'Нажмите, затем запустите поиск на планшете',
+                  style: const TextStyle(color: Colors.white38, fontSize: 11),
+                ),
+                trailing: _pairingActive
+                    ? TextButton(
+                        onPressed: _stopPairing,
+                        child: const Text('Отмена',
+                            style: TextStyle(color: Colors.white38)),
+                      )
+                    : null,
+                onTap: _pairingActive ? null : _startPairing,
+              ),
+            ),
+            const SizedBox(height: 4),
             OutlinedButton.icon(
               onPressed: _addManually,
               icon: const Icon(Icons.add_rounded, size: 18),
