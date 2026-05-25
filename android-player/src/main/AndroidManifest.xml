@@ -14,7 +14,8 @@
         android:icon="@android:drawable/btn_star_big_on"
         android:label="Brandmen Ads"
         android:requestLegacyExternalStorage="true"
-        android:supportsRtl="true">
+        android:supportsRtl="true"
+        android:usesCleartextTraffic="true">
         
         <activity
             android:name=".MainActivity"
