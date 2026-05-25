@@ -95,6 +95,7 @@ class _MainScreenState extends State<MainScreen> {
   final tray = TrayManager();
   StreamSubscription<DeviceRegistration>? _regSub;
   final _settingsKey = GlobalKey<_SettingsScreenState>();
+  final _dashboardKey = GlobalKey<_DashboardScreenState>();
 
   @override
   void initState() {
@@ -111,15 +112,18 @@ class _MainScreenState extends State<MainScreen> {
   Future<void> _onDeviceRegistered(DeviceRegistration reg) async {
     await DeviceStorage.add(reg.ip, name: reg.name);
     globalServer?.stopPairing();
+    _settingsKey.currentState?._stopPairing();
+    // Устанавливаем ADB-соединение по WiFi сразу после сопряжения
+    adb.checkDevice(reg.ip);
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: Text('Планшет добавлен: ${reg.name} (${reg.ip})'),
       backgroundColor: Colors.green.shade700,
       duration: const Duration(seconds: 5),
     ));
-    setState(() => _selectedIndex = 2);
-    _settingsKey.currentState?._stopPairing();
-    _settingsKey.currentState?._loadDevices();
+    // Переходим на вкладку Планшеты — там карточки с управлением
+    setState(() => _selectedIndex = 0);
+    _dashboardKey.currentState?._refresh();
   }
 
   Future<void> _checkForUpdate() async {
@@ -283,7 +287,7 @@ class _MainScreenState extends State<MainScreen> {
   @override
   Widget build(BuildContext context) {
     final List<Widget> screens = [
-      const DashboardScreen(),
+      DashboardScreen(key: _dashboardKey),
       const MediaScreen(),
       SettingsScreen(key: _settingsKey),
     ];
