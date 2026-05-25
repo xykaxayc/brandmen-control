@@ -14,20 +14,20 @@ class AppLogger {
       await _checkCleanup();
       await log("--- ЗАПУСК ПРИЛОЖЕНИЯ ---");
     } catch (e) {
-      print("Не удалось инициализировать логгер: $e");
+      stderr.writeln("Не удалось инициализировать логгер: $e");
     }
   }
 
   static Future<void> log(String message) async {
     final timestamp = DateFormat('yyyy-MM-dd HH:mm:ss').format(DateTime.now());
     final entry = "[$timestamp] $message\n";
-    print(entry.trim());
+    stdout.writeln(entry.trim());
     final f = _logFile;
     if (f == null) return;
     try {
       await f.writeAsString(entry, mode: FileMode.append);
     } catch (e) {
-      print("Ошибка записи лога: $e");
+      stderr.writeln("Ошибка записи лога: $e");
     }
   }
 

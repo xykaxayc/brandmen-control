@@ -43,6 +43,7 @@ class AppUpdater {
   static Future<UpdateInfo?> checkForUpdate() async {
     try {
       if (!Platform.isWindows && !Platform.isMacOS) return null;
+      if (kAppVersion == '0.0.0') return null;
       final keyword = Platform.isWindows ? 'windows' : 'macos';
       final r = await _findNewestRelease(
         currentVersion: kAppVersion,
@@ -182,8 +183,7 @@ class AppUpdater {
       final req = await client.getUrl(Uri.parse(url));
       req.followRedirects = true;
       req.maxRedirects = 5;
-      final response = await req.close()
-          .timeout(const Duration(minutes: 15));
+      final response = await req.close().timeout(const Duration(minutes: 15));
       if (response.statusCode != 200) return false;
 
       final total = response.contentLength;
@@ -219,32 +219,34 @@ class AppUpdater {
     }
   }
 
-  static Future<void> _launchUpdateScript(
-      String srcDir, String exeDir) async {
+  static Future<void> _launchUpdateScript(String srcDir, String exeDir) async {
     final tempDir = Directory.systemTemp.path;
     if (Platform.isWindows) {
       final bat = p.join(tempDir, 'brandmen_apply_update.bat');
       final exePath = p.join(exeDir, 'brandmen_windows.exe');
       await File(bat).writeAsString('@echo off\r\n'
-          'timeout /t 2 /nobreak >nul\r\n'
-          'xcopy /s /e /y "$srcDir\\*" "$exeDir\\" >nul\r\n'
-          'start "" "$exePath"\r\n'
-          '(goto) 2>nul & del "%~f0"\r\n'
+              'timeout /t 2 /nobreak >nul\r\n'
+              'xcopy /s /e /y "$srcDir\\*" "$exeDir\\" >nul\r\n'
+              'start "" "$exePath"\r\n'
+              '(goto) 2>nul & del "%~f0"\r\n'
           .replaceAll(r'$srcDir', srcDir)
           .replaceAll(r'$exeDir', exeDir)
           .replaceAll(r'$exePath', exePath));
-      await Process.start('cmd', ['/c', bat],
-          mode: ProcessStartMode.detached);
+      await Process.start('cmd', ['/c', bat], mode: ProcessStartMode.detached);
     } else {
       final sh = p.join(tempDir, 'brandmen_apply_update.sh');
-      final appBundle = p.normalize(p.join(exeDir, '..', '..', '..'));
+      final appBundle = p.normalize(p.join(exeDir, '..', '..'));
+      final appParent = p.dirname(appBundle);
+      final srcApp = p.join(srcDir, p.basename(appBundle));
       await File(sh).writeAsString('#!/bin/bash\n'
-          'sleep 2\n'
-          'cp -R "$srcDir/"* "$exeDir/"\n'
-          'open "$appBundle"\n'
-          'rm -- "\$0"\n'
-          .replaceAll(r'$srcDir', srcDir)
-          .replaceAll(r'$exeDir', exeDir)
+              'set -e\n'
+              'sleep 2\n'
+              'rm -rf "$appBundle"\n'
+              'cp -R "$srcApp" "$appParent/"\n'
+              'open "$appBundle"\n'
+              'rm -- "\$0"\n'
+          .replaceAll(r'$srcApp', srcApp)
+          .replaceAll(r'$appParent', appParent)
           .replaceAll(r'$appBundle', appBundle));
       await Process.run('chmod', ['+x', sh]);
       await Process.start('bash', [sh], mode: ProcessStartMode.detached);
@@ -254,7 +256,7 @@ class AppUpdater {
 
   static bool _isNewer(String remote, String local) {
     if (remote.isEmpty || remote == '0.0.0') return false;
-    if (local.isEmpty || local == '0.0.0') return false;
+    if (local.isEmpty) return false;
     List<int> parse(String v) =>
         v.split('.').map((s) => int.tryParse(s) ?? 0).toList();
     final r = parse(remote);

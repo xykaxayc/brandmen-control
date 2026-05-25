@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'logger.dart';
 import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart' as io;
 import 'package:path/path.dart' as p;
@@ -27,8 +28,8 @@ class BrandmenServer {
         final allFiles = dir.listSync().whereType<File>().toList();
         final videos = allFiles.where(
             (f) => _videoExts.contains(p.extension(f.path).toLowerCase()));
-        final playlist = allFiles.where(
-            (f) => p.basename(f.path).toLowerCase() == 'playlist.m3u');
+        final playlist = allFiles
+            .where((f) => p.basename(f.path).toLowerCase() == 'playlist.m3u');
 
         final files = [...videos, ...playlist]
             .map((f) => {
@@ -72,7 +73,7 @@ class BrandmenServer {
     });
 
     _server = await io.serve(handler, InternetAddress.anyIPv4, kServerPort);
-    print('Сервер запущен: ${_server.address.address}:${_server.port}');
+    AppLogger.log('Сервер запущен: ${_server.address.address}:${_server.port}');
   }
 
   static String _mimeFor(String name) {

@@ -9,6 +9,14 @@ on:
       - 'pubspec.yaml'
       - 'pubspec.lock'
       - '.github/workflows/build-macos.yml'
+  pull_request:
+    branches: [main, master]
+    paths:
+      - 'lib/**'
+      - 'macos/**'
+      - 'pubspec.yaml'
+      - 'pubspec.lock'
+      - '.github/workflows/build-macos.yml'
   workflow_dispatch:
 
 permissions:
