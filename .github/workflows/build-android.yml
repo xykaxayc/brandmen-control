@@ -33,7 +33,8 @@ jobs:
           javac --release 11 -classpath "$ANDROID_SDK_ROOT/platforms/android-33/android.jar" \
             -Xlint:-options -d classes \
             src/com/brandmen/ads/MainActivity.java \
-            src/com/brandmen/ads/BootReceiver.java
+            src/com/brandmen/ads/BootReceiver.java \
+            src/com/brandmen/ads/MediaServer.java
 
       - name: Convert to DEX
         working-directory: android-player

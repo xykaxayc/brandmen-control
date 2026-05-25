@@ -74,6 +74,7 @@ public class MainActivity extends Activity {
     // ---- Состояние ----
     private SharedPreferences prefs;
     private AudioManager audioManager;
+    private MediaServer mediaServer;
     private VideoView videoView;
     private FrameLayout rootLayout;
     private LinearLayout controlsPanel;
@@ -131,6 +132,7 @@ public class MainActivity extends Activity {
             }
         });
 
+        startMediaServer();
         checkPermissions();
         startProgressUpdater();
     }
@@ -655,6 +657,22 @@ public class MainActivity extends Activity {
         loadVideos();
         play();
         resetHideTimer();
+    }
+
+    // ---- HTTP-сервер для передачи файлов по WiFi ----
+    private void startMediaServer() {
+        mediaServer = new MediaServer(getMediaFolder());
+        try {
+            mediaServer.start();
+        } catch (Exception e) {
+            android.util.Log.w("Brandmen", "MediaServer не запустился: " + e.getMessage());
+        }
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        if (mediaServer != null) mediaServer.stop();
     }
 
     // ---- Загрузка видео из выбранной папки ----

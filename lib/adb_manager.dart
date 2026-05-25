@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:http/http.dart' as http;
 import 'package:path/path.dart' as p;
 import 'logger.dart';
+import 'device_http.dart';
 
 class DeviceStatus {
   final String ip;
@@ -213,9 +214,74 @@ class AdbManager {
     }
   }
 
-  // Прямая синхронизация: пушит видео и playlist.m3u через ADB на планшет.
+  // Синхронизация: пробует HTTP (быстро, без ADB), иначе ADB.
   // Возвращает список имён отправленных файлов. onProgress — колбэк прогресса.
   Future<List<String>> syncDeviceDirect(
+    String ip,
+    String localDir, {
+    void Function(int done, int total, String filename)? onProgress,
+  }) async {
+    final httpOk = await DeviceHttp.isAvailable(ip);
+    if (httpOk) {
+      AppLogger.log('Sync $ip: используем HTTP (порт 5011)');
+      return _syncViaHttp(ip, localDir, onProgress: onProgress);
+    }
+    AppLogger.log('Sync $ip: HTTP недоступен, используем ADB');
+    return _syncViaAdb(ip, localDir, onProgress: onProgress);
+  }
+
+  Future<List<String>> _syncViaHttp(
+    String ip,
+    String localDir, {
+    void Function(int done, int total, String filename)? onProgress,
+  }) async {
+    final client = DeviceHttp(ip);
+    final localFolder = Directory(localDir);
+    if (!await localFolder.exists()) return [];
+
+    final remoteFiles = await client.listFiles();
+
+    final localFiles = localFolder.listSync().whereType<File>().where((f) {
+      final name = p.basename(f.path).toLowerCase();
+      if (name.startsWith('.')) return false;
+      return name == 'playlist.m3u' ||
+          ['.mp4', '.mkv', '.mov', '.avi', '.webm']
+              .contains(p.extension(name));
+    }).toList();
+
+    final List<String> pushed = [];
+    for (int i = 0; i < localFiles.length; i++) {
+      final f = localFiles[i];
+      final name = p.basename(f.path);
+      final isPlaylist = name.toLowerCase() == 'playlist.m3u';
+      final localSize = await f.length();
+
+      onProgress?.call(i, localFiles.length, name);
+
+      if (!isPlaylist && remoteFiles[name] == localSize) continue;
+
+      AppLogger.log(
+          'HTTP sync $ip: upload $name (${(localSize / 1024 / 1024).toStringAsFixed(1)} MB)');
+      final ok = await client.uploadFile(f);
+      if (ok && !isPlaylist) pushed.add(name);
+    }
+    onProgress?.call(localFiles.length, localFiles.length, '');
+
+    // Удаляем лишние файлы на устройстве
+    final localNames =
+        localFiles.map((f) => p.basename(f.path)).toSet();
+    for (final remoteName in remoteFiles.keys) {
+      if (!localNames.contains(remoteName) &&
+          ['.mp4', '.mkv', '.mov', '.avi', '.webm']
+              .contains(p.extension(remoteName).toLowerCase())) {
+        AppLogger.log('HTTP sync $ip: удаляю $remoteName');
+        await client.deleteFile(remoteName);
+      }
+    }
+    return pushed;
+  }
+
+  Future<List<String>> _syncViaAdb(
     String ip,
     String localDir, {
     void Function(int done, int total, String filename)? onProgress,
