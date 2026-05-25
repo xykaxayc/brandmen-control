@@ -495,7 +495,7 @@ public class MainActivity extends Activity {
         content.addView(hint, hLp);
 
         new AlertDialog.Builder(this)
-                .setTitle("Настройки")
+                .setTitle("Настройки · v" + MediaServer.VERSION)
                 .setView(content)
                 .setPositiveButton("Сохранить", (dialog, which) -> {
                     String ip = ipInput.getText().toString().trim();

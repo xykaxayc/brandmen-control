@@ -1845,6 +1845,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
               "Версия",
               Text(kAppVersion, style: const TextStyle(color: Colors.white54, fontSize: 14)),
             ),
+            const SizedBox(height: 4),
+            const Text(
+              "Управление рекламными планшетами по WiFi через ADB и HTTP",
+              style: TextStyle(color: Colors.white24, fontSize: 11),
+            ),
             const SizedBox(height: 12),
             SizedBox(
               width: double.infinity,
