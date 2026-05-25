@@ -174,21 +174,29 @@ class AppUpdater {
     String destPath,
     void Function(double) onProgress,
   ) async {
-    final request = http.Request('GET', Uri.parse(url));
-    final response =
-        await request.send().timeout(const Duration(minutes: 15));
-    if (response.statusCode != 200) return false;
+    // dart:io HttpClient следует 302-редиректам (GitHub releases → CDN)
+    final client = HttpClient();
+    try {
+      final req = await client.getUrl(Uri.parse(url));
+      req.followRedirects = true;
+      req.maxRedirects = 5;
+      final response = await req.close()
+          .timeout(const Duration(minutes: 15));
+      if (response.statusCode != 200) return false;
 
-    final total = response.contentLength ?? 0;
-    int received = 0;
-    final sink = File(destPath).openWrite();
-    await for (final chunk in response.stream) {
-      sink.add(chunk);
-      received += chunk.length;
-      if (total > 0) onProgress(received / total);
+      final total = response.contentLength;
+      int received = 0;
+      final sink = File(destPath).openWrite();
+      await for (final chunk in response) {
+        sink.add(chunk);
+        received += chunk.length;
+        if (total > 0) onProgress(received / total);
+      }
+      await sink.close();
+      return true;
+    } finally {
+      client.close();
     }
-    await sink.close();
-    return true;
   }
 
   static Future<bool> _extract(String zipPath, String destDir) async {
