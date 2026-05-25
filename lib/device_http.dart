@@ -14,31 +14,61 @@ class DeviceHttp {
 
   DeviceHttp(this.ip);
 
+  static Future<T> _retry<T>(
+    String label,
+    Future<T> Function() action,
+    bool Function(T value) isSuccess, {
+    int attempts = 3,
+    Duration delay = const Duration(milliseconds: 500),
+  }) async {
+    late T last;
+    for (int i = 1; i <= attempts; i++) {
+      last = await action();
+      if (isSuccess(last) || i == attempts) return last;
+      AppLogger.log('$label: попытка $i/$attempts не удалась, повтор...');
+      await Future.delayed(delay * i);
+    }
+    return last;
+  }
+
   /// Проверяет, запущен ли HTTP-сервер на планшете.
   static Future<bool> isAvailable(String ip) async {
-    try {
-      final r = await http
-          .get(Uri.parse('http://$ip:$kDeviceHttpPort/ping'))
-          .timeout(const Duration(seconds: 2));
-      return r.statusCode == 200;
-    } catch (_) {
-      return false;
-    }
+    return _retry(
+      'HTTP ping $ip',
+      () async {
+        try {
+          final r = await http
+              .get(Uri.parse('http://$ip:$kDeviceHttpPort/ping'))
+              .timeout(const Duration(seconds: 2));
+          return r.statusCode == 200;
+        } catch (_) {
+          return false;
+        }
+      },
+      (ok) => ok,
+      attempts: 2,
+    );
   }
 
   /// Список видеофайлов на планшете: { имя → размер_в_байтах }
-  Future<Map<String, int>> listFiles() async {
-    try {
-      final r = await http
-          .get(Uri.parse('$_base/files'))
-          .timeout(const Duration(seconds: 5));
-      if (r.statusCode != 200) return {};
-      final list = jsonDecode(r.body) as List;
-      return {for (final f in list) f['name'] as String: f['size'] as int};
-    } catch (e) {
-      AppLogger.log('DeviceHttp.listFiles $ip: $e');
-      return {};
-    }
+  Future<Map<String, int>?> listFiles() async {
+    return _retry<Map<String, int>?>(
+      'HTTP listFiles $ip',
+      () async {
+        try {
+          final r = await http
+              .get(Uri.parse('$_base/files'))
+              .timeout(const Duration(seconds: 5));
+          if (r.statusCode != 200) return null;
+          final list = jsonDecode(r.body) as List;
+          return {for (final f in list) f['name'] as String: f['size'] as int};
+        } catch (e) {
+          AppLogger.log('DeviceHttp.listFiles $ip: $e');
+          return null;
+        }
+      },
+      (files) => files != null,
+    );
   }
 
   /// Отправляет файл на планшет.
@@ -48,54 +78,67 @@ class DeviceHttp {
     void Function(int sent, int total)? onProgress,
   }) async {
     final name = p.basename(file.path);
+    final encodedName = Uri.encodeComponent(name);
     final size = await file.length();
-    try {
-      final request =
-          http.StreamedRequest('POST', Uri.parse('$_base/upload/$name'));
-      request.headers['Content-Length'] = size.toString();
-      request.headers['Content-Type'] = 'application/octet-stream';
-      request.headers['Connection'] = 'close';
+    return _retry(
+      'HTTP upload $ip/$name',
+      () async {
+        try {
+          final request = http.StreamedRequest(
+              'POST', Uri.parse('$_base/upload/$encodedName'));
+          request.headers['Content-Length'] = size.toString();
+          request.headers['Content-Type'] = 'application/octet-stream';
+          request.headers['Connection'] = 'close';
 
-      int sent = 0;
-      file.openRead().listen(
-        (chunk) {
-          request.sink.add(chunk);
-          sent += chunk.length;
-          onProgress?.call(sent, size);
-        },
-        onDone: request.sink.close,
-        onError: (e) => request.sink.close(),
-      );
+          int sent = 0;
+          await request.sink.addStream(file.openRead().map((chunk) {
+            sent += chunk.length;
+            onProgress?.call(sent, size);
+            return chunk;
+          }));
+          await request.sink.close();
 
-      final response =
-          await request.send().timeout(const Duration(minutes: 10));
-      await response.stream.drain<void>();
-      return response.statusCode == 200;
-    } catch (e) {
-      AppLogger.log('DeviceHttp.upload $name → $ip: $e');
-      return false;
-    }
+          final response =
+              await request.send().timeout(const Duration(minutes: 10));
+          await response.stream.drain<void>();
+          return response.statusCode == 200;
+        } catch (e) {
+          AppLogger.log('DeviceHttp.upload $name → $ip: $e');
+          return false;
+        }
+      },
+      (ok) => ok,
+    );
   }
 
   /// Удаляет файл на планшете.
   Future<bool> deleteFile(String name) async {
-    try {
-      final r = await http
-          .delete(Uri.parse('$_base/file/$name'))
-          .timeout(const Duration(seconds: 10));
-      return r.statusCode == 200;
-    } catch (e) {
-      AppLogger.log('DeviceHttp.delete $name on $ip: $e');
-      return false;
-    }
+    return _retry(
+      'HTTP delete $ip/$name',
+      () async {
+        try {
+          final encodedName = Uri.encodeComponent(name);
+          final r = await http
+              .delete(Uri.parse('$_base/file/$encodedName'))
+              .timeout(const Duration(seconds: 10));
+          return r.statusCode == 200;
+        } catch (e) {
+          AppLogger.log('DeviceHttp.delete $name on $ip: $e');
+          return false;
+        }
+      },
+      (ok) => ok,
+      attempts: 2,
+    );
   }
 
   /// Скачивает файл с планшета на Mac/Windows.
   Future<File?> downloadFile(String name, String destPath) async {
     try {
-      final request = http.Request('GET', Uri.parse('$_base/file/$name'));
-      final response =
-          await request.send().timeout(const Duration(minutes: 5));
+      final encodedName = Uri.encodeComponent(name);
+      final request =
+          http.Request('GET', Uri.parse('$_base/file/$encodedName'));
+      final response = await request.send().timeout(const Duration(minutes: 5));
       if (response.statusCode != 200) return null;
 
       final dest = File(destPath);

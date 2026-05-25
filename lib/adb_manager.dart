@@ -10,14 +10,48 @@ class DeviceStatus {
   final String ip;
   final bool online;
   final String battery;
-  DeviceStatus({required this.ip, required this.online, this.battery = "??"});
+  final bool httpAvailable;
+  final bool adbOnline;
+  final String? lastError;
+
+  DeviceStatus({
+    required this.ip,
+    required this.online,
+    this.battery = "??",
+    this.httpAvailable = false,
+    this.adbOnline = false,
+    this.lastError,
+  });
+
+  String get transport {
+    if (httpAvailable && adbOnline) return 'HTTP + ADB';
+    if (httpAvailable) return 'HTTP';
+    if (adbOnline) return 'ADB';
+    return 'offline';
+  }
+}
+
+class SyncResult {
+  final bool success;
+  final List<String> pushed;
+  final String? error;
+  final String transport;
+  final bool usedFallback;
+
+  const SyncResult({
+    required this.success,
+    required this.pushed,
+    this.error,
+    this.transport = 'none',
+    this.usedFallback = false,
+  });
 }
 
 // Результат установки APK на планшет
 enum ApkInstallResult {
-  installed,           // adb install -r прошёл успешно
-  pushedToDownloads,   // авто-установка не удалась, но файл в /sdcard/Download
-  failed,              // не удалось ни установить, ни скопировать
+  installed, // adb install -r прошёл успешно
+  pushedToDownloads, // авто-установка не удалась, но файл в /sdcard/Download
+  failed, // не удалось ни установить, ни скопировать
 }
 
 class AdbManager {
@@ -88,7 +122,8 @@ class AdbManager {
           await http.get(Uri.parse(url)).timeout(const Duration(minutes: 5));
       if (response.statusCode != 200) return null;
 
-      final zipPath = p.join(Directory.systemTemp.path, 'platform-tools-win.zip');
+      final zipPath =
+          p.join(Directory.systemTemp.path, 'platform-tools-win.zip');
       await File(zipPath).writeAsBytes(response.bodyBytes);
 
       final extractTo = p.join(appData, 'Brandmen');
@@ -120,6 +155,25 @@ class AdbManager {
     }
   }
 
+  static Future<T> _retry<T>(
+    String label,
+    Future<T> Function() action,
+    bool Function(T value) isSuccess, {
+    int attempts = 3,
+    Duration delay = const Duration(milliseconds: 700),
+  }) async {
+    late T last;
+    for (int i = 1; i <= attempts; i++) {
+      last = await action();
+      if (isSuccess(last) || i == attempts) return last;
+      AppLogger.log('$label: попытка $i/$attempts не удалась, повтор...');
+      await Future.delayed(delay * i);
+    }
+    return last;
+  }
+
+  static bool _ok(ProcessResult r) => r.exitCode == 0;
+
   // Список подключённых устройств в текущей ADB-сессии (id -> статус)
   Future<Map<String, String>> _listAdbDevices() async {
     final adb = await _getAdb();
@@ -129,7 +183,9 @@ class AdbManager {
     for (final line in out.split('\n')) {
       if (line.contains('\t')) {
         final parts = line.split('\t');
-        if (parts.length >= 2 && parts[0].trim().isNotEmpty && !parts[0].startsWith('List')) {
+        if (parts.length >= 2 &&
+            parts[0].trim().isNotEmpty &&
+            !parts[0].startsWith('List')) {
           map[parts[0].trim()] = parts[1].trim();
         }
       }
@@ -141,28 +197,44 @@ class AdbManager {
   Future<DeviceStatus> checkDevice(String ip) async {
     final adb = await _getAdb();
     final id = '$ip:5555';
+    final httpAvailableFuture = DeviceHttp.isAvailable(ip);
 
     final current = await _listAdbDevices();
     var status = current[id];
+    String? adbError;
 
     if (status != 'device') {
       // Пробуем переподключить
       await _run(adb, ['disconnect', id], timeout: const Duration(seconds: 2));
-      final connectResult = await _run(adb, ['connect', id], timeout: const Duration(seconds: 4));
+      final connectResult = await _retry(
+        'ADB connect $id',
+        () => _run(adb, ['connect', id], timeout: const Duration(seconds: 4)),
+        (r) =>
+            r.stdout.toString().toLowerCase().contains('connected') ||
+            r.stdout.toString().toLowerCase().contains('already connected'),
+      );
       final out = connectResult.stdout.toString().toLowerCase();
       if (!out.contains('connected')) {
-        return DeviceStatus(ip: ip, online: false);
+        adbError = connectResult.stderr.toString().trim().isEmpty
+            ? connectResult.stdout.toString().trim()
+            : connectResult.stderr.toString().trim();
       }
       // Проверяем заново
       final after = await _listAdbDevices();
       status = after[id];
-      if (status != 'device') {
-        return DeviceStatus(ip: ip, online: false);
-      }
     }
 
-    final battery = await _getBattery(id);
-    return DeviceStatus(ip: ip, online: true, battery: battery);
+    final adbOnline = status == 'device';
+    final httpAvailable = await httpAvailableFuture;
+    final battery = adbOnline ? await _getBattery(id) : "??";
+    return DeviceStatus(
+      ip: ip,
+      online: adbOnline || httpAvailable,
+      battery: battery,
+      httpAvailable: httpAvailable,
+      adbOnline: adbOnline,
+      lastError: adbOnline || httpAvailable ? null : adbError,
+    );
   }
 
   Future<String> _getBattery(String id) async {
@@ -212,19 +284,37 @@ class AdbManager {
   Future<void> wakeUp(String ip, {bool launchPlayer = false}) async {
     final adb = await _getAdb();
     final id = '$ip:5555';
-    await _run(adb, ['-s', id, 'shell', 'input', 'keyevent', 'KEYCODE_WAKEUP']);
+    await _retry(
+      'wakeUp $ip',
+      () =>
+          _run(adb, ['-s', id, 'shell', 'input', 'keyevent', 'KEYCODE_WAKEUP']),
+      _ok,
+    );
     await _run(adb, ['-s', id, 'shell', 'wm', 'dismiss-keyguard']);
     if (launchPlayer) {
-      await _run(adb, ['-s', id, 'shell', 'am', 'force-stop', 'com.brandmen.ads'],
+      await _run(
+          adb, ['-s', id, 'shell', 'am', 'force-stop', 'com.brandmen.ads'],
           timeout: const Duration(seconds: 4));
-      await _run(adb, ['-s', id, 'shell', 'monkey', '-p', 'com.brandmen.ads',
-          '-c', 'android.intent.category.LAUNCHER', '1'], timeout: const Duration(seconds: 6));
+      await _run(
+          adb,
+          [
+            '-s',
+            id,
+            'shell',
+            'monkey',
+            '-p',
+            'com.brandmen.ads',
+            '-c',
+            'android.intent.category.LAUNCHER',
+            '1'
+          ],
+          timeout: const Duration(seconds: 6));
     }
   }
 
   // Синхронизация: пробует HTTP (быстро, без ADB), иначе ADB.
-  // Возвращает список имён отправленных файлов. onProgress — колбэк прогресса.
-  Future<List<String>> syncDeviceDirect(
+  // Возвращает статус синхронизации и список имён отправленных файлов.
+  Future<SyncResult> syncDeviceDirect(
     String ip,
     String localDir, {
     void Function(int done, int total, String filename)? onProgress,
@@ -232,32 +322,69 @@ class AdbManager {
     final httpOk = await DeviceHttp.isAvailable(ip);
     if (httpOk) {
       AppLogger.log('Sync $ip: используем HTTP (порт 5011)');
-      return _syncViaHttp(ip, localDir, onProgress: onProgress);
+      final httpResult =
+          await _syncViaHttp(ip, localDir, onProgress: onProgress);
+      if (httpResult.success) return httpResult;
+
+      AppLogger.log(
+          'Sync $ip: HTTP не завершился, пробую ADB fallback: ${httpResult.error}');
+      final adbResult = await _syncViaAdb(ip, localDir, onProgress: onProgress);
+      if (adbResult.success) {
+        return SyncResult(
+          success: true,
+          pushed: adbResult.pushed,
+          transport: adbResult.transport,
+          usedFallback: true,
+        );
+      }
+      return SyncResult(
+        success: false,
+        pushed: [...httpResult.pushed, ...adbResult.pushed],
+        transport: 'HTTP -> ADB',
+        usedFallback: true,
+        error:
+            'HTTP: ${httpResult.error ?? 'ошибка'}; ADB: ${adbResult.error ?? 'ошибка'}',
+      );
     }
     AppLogger.log('Sync $ip: HTTP недоступен, используем ADB');
     return _syncViaAdb(ip, localDir, onProgress: onProgress);
   }
 
-  Future<List<String>> _syncViaHttp(
+  Future<SyncResult> _syncViaHttp(
     String ip,
     String localDir, {
     void Function(int done, int total, String filename)? onProgress,
   }) async {
     final client = DeviceHttp(ip);
     final localFolder = Directory(localDir);
-    if (!await localFolder.exists()) return [];
+    if (!await localFolder.exists()) {
+      return const SyncResult(
+        success: false,
+        pushed: [],
+        error: 'Локальная папка с видео не найдена',
+        transport: 'HTTP',
+      );
+    }
 
     final remoteFiles = await client.listFiles();
+    if (remoteFiles == null) {
+      return const SyncResult(
+        success: false,
+        pushed: [],
+        error: 'планшет не отдал список файлов',
+        transport: 'HTTP',
+      );
+    }
 
     final localFiles = localFolder.listSync().whereType<File>().where((f) {
       final name = p.basename(f.path).toLowerCase();
       if (name.startsWith('.')) return false;
       return name == 'playlist.m3u' ||
-          ['.mp4', '.mkv', '.mov', '.avi', '.webm']
-              .contains(p.extension(name));
+          ['.mp4', '.mkv', '.mov', '.avi', '.webm'].contains(p.extension(name));
     }).toList();
 
     final List<String> pushed = [];
+    final List<String> failed = [];
     for (int i = 0; i < localFiles.length; i++) {
       final f = localFiles[i];
       final name = p.basename(f.path);
@@ -272,24 +399,33 @@ class AdbManager {
           'HTTP sync $ip: upload $name (${(localSize / 1024 / 1024).toStringAsFixed(1)} MB)');
       final ok = await client.uploadFile(f);
       if (ok && !isPlaylist) pushed.add(name);
+      if (!ok) failed.add(name);
     }
     onProgress?.call(localFiles.length, localFiles.length, '');
 
     // Удаляем лишние файлы на устройстве
-    final localNames =
-        localFiles.map((f) => p.basename(f.path)).toSet();
+    final localNames = localFiles.map((f) => p.basename(f.path)).toSet();
     for (final remoteName in remoteFiles.keys) {
       if (!localNames.contains(remoteName) &&
           ['.mp4', '.mkv', '.mov', '.avi', '.webm']
               .contains(p.extension(remoteName).toLowerCase())) {
         AppLogger.log('HTTP sync $ip: удаляю $remoteName');
-        await client.deleteFile(remoteName);
+        final ok = await client.deleteFile(remoteName);
+        if (!ok) failed.add('удаление $remoteName');
       }
     }
-    return pushed;
+    if (failed.isNotEmpty) {
+      return SyncResult(
+        success: false,
+        pushed: pushed,
+        error: 'Не удалось передать: ${failed.join(', ')}',
+        transport: 'HTTP',
+      );
+    }
+    return SyncResult(success: true, pushed: pushed, transport: 'HTTP');
   }
 
-  Future<List<String>> _syncViaAdb(
+  Future<SyncResult> _syncViaAdb(
     String ip,
     String localDir, {
     void Function(int done, int total, String filename)? onProgress,
@@ -299,11 +435,28 @@ class AdbManager {
     final localFolder = Directory(localDir);
     if (!await localFolder.exists()) {
       AppLogger.log("Sync $ip: локальная папка не найдена");
-      return [];
+      return const SyncResult(
+        success: false,
+        pushed: [],
+        error: 'Локальная папка с видео не найдена',
+        transport: 'ADB',
+      );
     }
 
-    await _run(adb, ['-s', id, 'shell', 'mkdir', '-p', _remoteDir],
-        timeout: const Duration(seconds: 4));
+    final mkdir = await _retry(
+      'ADB mkdir $ip',
+      () => _run(adb, ['-s', id, 'shell', 'mkdir', '-p', _remoteDir],
+          timeout: const Duration(seconds: 4)),
+      _ok,
+    );
+    if (mkdir.exitCode != 0) {
+      return SyncResult(
+        success: false,
+        pushed: const [],
+        error: 'ADB недоступен: ${mkdir.stderr}${mkdir.stdout}',
+        transport: 'ADB',
+      );
+    }
 
     final lsRes = await _run(adb, ['-s', id, 'shell', 'ls', '-l', _remoteDir],
         timeout: const Duration(seconds: 6));
@@ -327,6 +480,7 @@ class AdbManager {
     }).toList();
 
     final List<String> pushed = [];
+    final List<String> failed = [];
     final videoFiles = localFiles.where((f) {
       final ext = p.extension(p.basename(f.path)).toLowerCase();
       return ext != '.m3u';
@@ -347,11 +501,20 @@ class AdbManager {
       // playlist.m3u пушим ВСЕГДА (содержимое могло изменится при том же размере)
       if (!isPlaylist && remoteSizes[name] == localSize) continue;
 
-      AppLogger.log("Sync $ip: push $name (${(localSize / 1024 / 1024).toStringAsFixed(1)} MB)");
-      final res = await _run(
-          adb, ['-s', id, 'push', f.path, '$_remoteDir/$name'],
-          timeout: const Duration(seconds: 300));
+      AppLogger.log(
+          "Sync $ip: push $name (${(localSize / 1024 / 1024).toStringAsFixed(1)} MB)");
+      final res = await _retry(
+        'ADB push $ip/$name',
+        () => _run(adb, ['-s', id, 'push', f.path, '$_remoteDir/$name'],
+            timeout: const Duration(seconds: 300)),
+        _ok,
+      );
       if (res.exitCode == 0 && !isPlaylist) pushed.add(name);
+      if (res.exitCode != 0) {
+        failed.add(name);
+        AppLogger.log(
+            "Sync $ip: push $name не удался: ${res.stdout}${res.stderr}");
+      }
     }
     onProgress?.call(allOrdered.length, allOrdered.length, '');
 
@@ -361,18 +524,47 @@ class AdbManager {
           ['.mp4', '.mkv', '.mov', '.avi', '.webm']
               .contains(p.extension(remoteName).toLowerCase())) {
         AppLogger.log("Sync $ip: удаляю $remoteName");
-        await _run(adb, ['-s', id, 'shell', 'rm', '$_remoteDir/$remoteName'],
-            timeout: const Duration(seconds: 5));
+        final quoted = _shellQuote('$_remoteDir/$remoteName');
+        final res = await _retry(
+          'ADB delete $ip/$remoteName',
+          () => _run(adb, ['-s', id, 'shell', 'rm', '-f', '--', quoted],
+              timeout: const Duration(seconds: 5)),
+          _ok,
+          attempts: 2,
+        );
+        if (res.exitCode != 0) {
+          failed.add('удаление $remoteName');
+          AppLogger.log(
+              "Sync $ip: удаление $remoteName не удалось: ${res.stdout}${res.stderr}");
+        }
       }
     }
 
-    return pushed;
+    if (failed.isNotEmpty) {
+      return SyncResult(
+        success: false,
+        pushed: pushed,
+        error: 'Не удалось передать: ${failed.join(', ')}',
+        transport: 'ADB',
+      );
+    }
+    return SyncResult(success: true, pushed: pushed, transport: 'ADB');
+  }
+
+  static String _shellQuote(String value) {
+    return "'${value.replaceAll("'", r"'\''")}'";
   }
 
   Future<void> sleep(String ip) async {
     final adb = await _getAdb();
     final id = '$ip:5555';
-    await _run(adb, ['-s', id, 'shell', 'input', 'keyevent', 'KEYCODE_SLEEP']);
+    await _retry(
+      'sleep $ip',
+      () =>
+          _run(adb, ['-s', id, 'shell', 'input', 'keyevent', 'KEYCODE_SLEEP']),
+      _ok,
+      attempts: 2,
+    );
   }
 
   // Громкость 0..15 (поток MUSIC). На MIUI требуется --show, иначе тихо игнорится.
@@ -381,18 +573,37 @@ class AdbManager {
     final id = '$ip:5555';
     final clamped = level.clamp(0, 15);
     await _run(adb, [
-      '-s', id, 'shell', 'cmd', 'media_session', 'volume',
-      '--stream', '3', '--set', '$clamped', '--show'
+      '-s',
+      id,
+      'shell',
+      'cmd',
+      'media_session',
+      'volume',
+      '--stream',
+      '3',
+      '--set',
+      '$clamped',
+      '--show'
     ]);
   }
 
   Future<int> getVolume(String ip) async {
     final adb = await _getAdb();
     final id = '$ip:5555';
-    final r = await _run(adb, [
-      '-s', id, 'shell', 'cmd', 'media_session', 'volume',
-      '--stream', '3', '--get'
-    ], timeout: const Duration(seconds: 4));
+    final r = await _run(
+        adb,
+        [
+          '-s',
+          id,
+          'shell',
+          'cmd',
+          'media_session',
+          'volume',
+          '--stream',
+          '3',
+          '--get'
+        ],
+        timeout: const Duration(seconds: 4));
     final out = r.stdout.toString() + r.stderr.toString();
     // Вывод примерно: "volume is 8 in range [0..15]"
     final match = RegExp(r'volume is (\d+)').firstMatch(out);
@@ -407,12 +618,24 @@ class AdbManager {
     final id = '$ip:5555';
     final clamped = level.clamp(1, 255);
     await _run(adb, [
-      '-s', id, 'shell', 'settings', 'put', 'system',
-      'screen_brightness_mode', '0'
+      '-s',
+      id,
+      'shell',
+      'settings',
+      'put',
+      'system',
+      'screen_brightness_mode',
+      '0'
     ]);
     await _run(adb, [
-      '-s', id, 'shell', 'settings', 'put', 'system',
-      'screen_brightness', '$clamped'
+      '-s',
+      id,
+      'shell',
+      'settings',
+      'put',
+      'system',
+      'screen_brightness',
+      '$clamped'
     ]);
   }
 
@@ -430,7 +653,8 @@ class AdbManager {
   Future<String?> registerViaUsb(String usbDeviceId) async {
     final adb = await _getAdb();
     try {
-      final ipResult = await _run(adb, ['-s', usbDeviceId, 'shell', 'ip', 'route']);
+      final ipResult =
+          await _run(adb, ['-s', usbDeviceId, 'shell', 'ip', 'route']);
       final ipOutput = ipResult.stdout.toString();
       String? ip;
       for (final line in ipOutput.split('\n')) {
@@ -447,9 +671,11 @@ class AdbManager {
       }
 
       AppLogger.log("USB ($usbDeviceId): IP=$ip, включаем TCP/IP...");
-      await _run(adb, ['-s', usbDeviceId, 'tcpip', '5555'], timeout: const Duration(seconds: 6));
+      await _run(adb, ['-s', usbDeviceId, 'tcpip', '5555'],
+          timeout: const Duration(seconds: 6));
       await Future.delayed(const Duration(seconds: 2));
-      await _run(adb, ['connect', '$ip:5555'], timeout: const Duration(seconds: 5));
+      await _run(adb, ['connect', '$ip:5555'],
+          timeout: const Duration(seconds: 5));
       AppLogger.log("USB: подключено $ip:5555");
       return ip;
     } catch (e) {
@@ -466,8 +692,8 @@ class AdbManager {
         .toList();
   }
 
-  // Возвращает версию APK с планшета через HTTP /version, или '0.0.0' если недоступен
-  static Future<String> getApkVersion(String ip) async {
+  // Возвращает версию APK с планшета через HTTP /version, или null если недоступен.
+  static Future<String?> getApkVersion(String ip) async {
     try {
       final response = await http
           .get(Uri.parse('http://$ip:$kDeviceHttpPort/version'))
@@ -477,7 +703,7 @@ class AdbManager {
         return (data['version'] as String? ?? '0.0.0');
       }
     } catch (_) {}
-    return '0.0.0';
+    return null;
   }
 
   // Устанавливает APK: всегда кладёт копию в /sdcard/Download (ручной фолбэк
@@ -506,7 +732,9 @@ class AdbManager {
 
     AppLogger.log('installApk $ip: авто-установка не удалась '
         '(code=${r.exitCode} $out)');
-    return pushOk ? ApkInstallResult.pushedToDownloads : ApkInstallResult.failed;
+    return pushOk
+        ? ApkInstallResult.pushedToDownloads
+        : ApkInstallResult.failed;
   }
 
   Future<String?> takeScreenshot(String ip, String savePath) async {
@@ -515,10 +743,12 @@ class AdbManager {
     try {
       await _run(adb, ['-s', id, 'shell', 'rm', '-f', '/sdcard/screen.png'],
           timeout: const Duration(seconds: 4));
-      final cap = await _run(adb, ['-s', id, 'shell', 'screencap', '-p', '/sdcard/screen.png'],
+      final cap = await _run(
+          adb, ['-s', id, 'shell', 'screencap', '-p', '/sdcard/screen.png'],
           timeout: const Duration(seconds: 6));
       if (cap.exitCode != 0) return null;
-      final pull = await _run(adb, ['-s', id, 'pull', '/sdcard/screen.png', savePath],
+      final pull = await _run(
+          adb, ['-s', id, 'pull', '/sdcard/screen.png', savePath],
           timeout: const Duration(seconds: 6));
       if (pull.exitCode != 0) return null;
       return savePath;
@@ -528,4 +758,3 @@ class AdbManager {
     }
   }
 }
-

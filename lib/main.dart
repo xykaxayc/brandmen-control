@@ -32,7 +32,8 @@ Future<void> _startServer() async {
     await MediaConfig.resolveDir();
     final server = BrandmenServer();
     await server.start();
-    AppLogger.log("HTTP сервер запущен на порту 5010, папка: ${MediaConfig.current}");
+    AppLogger.log(
+        "HTTP сервер запущен на порту 5010, папка: ${MediaConfig.current}");
   } catch (e) {
     AppLogger.log("Ошибка запуска сервера: $e");
   }
@@ -114,9 +115,11 @@ class _MainScreenState extends State<MainScreen> {
         backgroundColor: const Color(0xFF2C2C2E),
         title: Row(
           children: [
-            const Icon(Icons.system_update_rounded, color: Colors.blue, size: 22),
+            const Icon(Icons.system_update_rounded,
+                color: Colors.blue, size: 22),
             const SizedBox(width: 10),
-            Text('Обновление ${info.version}', style: const TextStyle(fontSize: 17)),
+            Text('Обновление ${info.version}',
+                style: const TextStyle(fontSize: 17)),
           ],
         ),
         content: SizedBox(
@@ -125,13 +128,19 @@ class _MainScreenState extends State<MainScreen> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('Текущая версия: $kAppVersion',
-                  style: const TextStyle(color: Colors.white54, fontSize: 12)),
+              const Text('Текущая версия: $kAppVersion',
+                  style: TextStyle(color: Colors.white54, fontSize: 12)),
               if (info.changelog.isNotEmpty) ...[
                 const SizedBox(height: 12),
-                const Text('Что нового:', style: TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.bold)),
+                const Text('Что нового:',
+                    style: TextStyle(
+                        color: Colors.white70,
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold)),
                 const SizedBox(height: 4),
-                Text(info.changelog, style: const TextStyle(color: Colors.white60, fontSize: 12)),
+                Text(info.changelog,
+                    style:
+                        const TextStyle(color: Colors.white60, fontSize: 12)),
               ],
             ],
           ),
@@ -151,7 +160,8 @@ class _MainScreenState extends State<MainScreen> {
             style: ElevatedButton.styleFrom(
               backgroundColor: Colors.blue,
               foregroundColor: Colors.white,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10)),
             ),
           ),
         ],
@@ -181,7 +191,9 @@ class _MainScreenState extends State<MainScreen> {
                     color: Colors.blue,
                   ),
                   const SizedBox(height: 12),
-                  Text(status, style: const TextStyle(color: Colors.white60, fontSize: 12)),
+                  Text(status,
+                      style:
+                          const TextStyle(color: Colors.white60, fontSize: 12)),
                 ],
               ),
             ),
@@ -192,13 +204,17 @@ class _MainScreenState extends State<MainScreen> {
 
     AppUpdater.downloadAndApply(info, (p, s) {
       if (mounted) {
-        setState(() { progress = p; status = s; });
+        setState(() {
+          progress = p;
+          status = s;
+        });
       }
     }).then((ok) {
       if (!ok && mounted) {
         Navigator.of(context, rootNavigator: true).pop();
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: const Text('Не удалось обновить. Скачайте вручную с GitHub.'),
+          content:
+              const Text('Не удалось обновить. Скачайте вручную с GitHub.'),
           backgroundColor: Colors.red.shade700,
           duration: const Duration(seconds: 6),
         ));
@@ -222,7 +238,8 @@ class _MainScreenState extends State<MainScreen> {
   }
 
   void _startScheduler() {
-    _schedulerTimer = Timer.periodic(const Duration(seconds: 30), (timer) async {
+    _schedulerTimer =
+        Timer.periodic(const Duration(seconds: 30), (timer) async {
       final prefs = await SharedPreferences.getInstance();
       final enabled = prefs.getBool('autoOffEnabled') ?? false;
       if (!enabled) return;
@@ -233,7 +250,8 @@ class _MainScreenState extends State<MainScreen> {
 
       if (currentTime == offTime && _lastTriggerMinute != currentTime) {
         _lastTriggerMinute = currentTime;
-        AppLogger.log("АВТОМАТИЧЕСКОЕ РАСПИСАНИЕ: Пора выключать экраны ($offTime)");
+        AppLogger.log(
+            "АВТОМАТИЧЕСКОЕ РАСПИСАНИЕ: Пора выключать экраны ($offTime)");
         final saved = await DeviceStorage.load();
         await adb.bulkSleep(saved.map((d) => d.ip).toList());
       }
@@ -256,14 +274,23 @@ class _MainScreenState extends State<MainScreen> {
             width: 220,
             padding: const EdgeInsets.symmetric(vertical: 20),
             decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.03),
+              color: Colors.white.withValues(alpha: 0.03),
               border: const Border(right: BorderSide(color: Colors.white10)),
             ),
             child: Column(
               children: [
                 const SizedBox(height: 30),
-                const Text("Brandmen", style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800, color: Colors.white)),
-                const Text("CONTROL", style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.blue, letterSpacing: 2)),
+                const Text("Brandmen",
+                    style: TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.w800,
+                        color: Colors.white)),
+                const Text("CONTROL",
+                    style: TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.blue,
+                        letterSpacing: 2)),
                 const SizedBox(height: 50),
                 _navItem(0, Icons.grid_view_rounded, "Планшеты"),
                 _navItem(1, Icons.play_circle_fill_rounded, "Медиатека"),
@@ -277,15 +304,19 @@ class _MainScreenState extends State<MainScreen> {
                     },
                     style: OutlinedButton.styleFrom(
                       side: const BorderSide(color: Colors.white10),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10)),
                       padding: const EdgeInsets.symmetric(vertical: 12),
                     ),
                     child: const Row(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        Icon(Icons.unfold_less_rounded, size: 16, color: Colors.white38),
+                        Icon(Icons.unfold_less_rounded,
+                            size: 16, color: Colors.white38),
                         SizedBox(width: 8),
-                        Text("В трей", style: TextStyle(color: Colors.white38, fontSize: 12)),
+                        Text("В трей",
+                            style:
+                                TextStyle(color: Colors.white38, fontSize: 12)),
                       ],
                     ),
                   ),
@@ -319,14 +350,22 @@ class _MainScreenState extends State<MainScreen> {
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
           decoration: BoxDecoration(
-            color: active ? Colors.blue.withOpacity(0.15) : Colors.transparent,
+            color: active
+                ? Colors.blue.withValues(alpha: 0.15)
+                : Colors.transparent,
             borderRadius: BorderRadius.circular(10),
           ),
           child: Row(
             children: [
-              Icon(icon, color: active ? Colors.blue : Colors.white60, size: 20),
+              Icon(icon,
+                  color: active ? Colors.blue : Colors.white60, size: 20),
               const SizedBox(width: 12),
-              Text(label, style: TextStyle(color: active ? Colors.white : Colors.white60, fontSize: 14, fontWeight: active ? FontWeight.w600 : FontWeight.normal)),
+              Text(label,
+                  style: TextStyle(
+                      color: active ? Colors.white : Colors.white60,
+                      fontSize: 14,
+                      fontWeight:
+                          active ? FontWeight.w600 : FontWeight.normal)),
             ],
           ),
         ),
@@ -354,7 +393,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
   void initState() {
     super.initState();
     _refresh();
-    _screenshotTimer = Timer.periodic(const Duration(minutes: 5), (timer) => _captureAll());
+    _screenshotTimer =
+        Timer.periodic(const Duration(minutes: 5), (timer) => _captureAll());
   }
 
   @override
@@ -367,7 +407,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final tempDir = await getTemporaryDirectory();
     for (final dev in saved) {
       if (statuses[dev.ip]?.online != true) continue;
-      final path = p.join(tempDir.path, "thumb_${dev.ip.replaceAll('.', '_')}.png");
+      final path =
+          p.join(tempDir.path, "thumb_${dev.ip.replaceAll('.', '_')}.png");
       final result = await adb.takeScreenshot(dev.ip, path);
       if (result != null && mounted) {
         setState(() {
@@ -405,8 +446,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
         builder: (c) => AlertDialog(
           backgroundColor: const Color(0xFF2C2C2E),
           title: const Text("Нет USB устройств"),
-          content: const Text("Подключите планшет через USB и включите отладку по USB на нём."),
-          actions: [TextButton(onPressed: () => Navigator.pop(c), child: const Text("OK"))],
+          content: const Text(
+              "Подключите планшет через USB и включите отладку по USB на нём."),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(c), child: const Text("OK"))
+          ],
         ),
       );
       return;
@@ -418,7 +463,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
       final ip = await adb.registerViaUsb(id);
       if (!mounted) return;
       if (ip != null) {
-        await DeviceStorage.add(ip, name: "Планшет ${(await DeviceStorage.load()).length + 1}");
+        final nextIndex = (await DeviceStorage.load()).length + 1;
+        await DeviceStorage.add(ip, name: "Планшет $nextIndex");
+        if (!mounted) return;
         added++;
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
           content: Text("Планшет $ip зарегистрирован и сохранён"),
@@ -456,54 +503,69 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 activeTrackColor: Colors.blue,
                 inactiveTrackColor: Colors.white24,
                 thumbColor: Colors.white,
-                overlayColor: Colors.blue.withOpacity(0.2),
+                overlayColor: Colors.blue.withValues(alpha: 0.2),
                 trackHeight: 4,
                 thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 10),
                 valueIndicatorColor: Colors.blue,
-                valueIndicatorTextStyle: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                valueIndicatorTextStyle: const TextStyle(
+                    color: Colors.white, fontWeight: FontWeight.bold),
               ),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Row(
                     children: [
-                      const Icon(Icons.volume_up_rounded, color: Colors.white70),
+                      const Icon(Icons.volume_up_rounded,
+                          color: Colors.white70),
                       const SizedBox(width: 12),
                       Expanded(
                         child: Slider(
                           value: currentVol.toDouble(),
-                          min: 0, max: 15, divisions: 15,
+                          min: 0,
+                          max: 15,
+                          divisions: 15,
                           label: "$currentVol",
-                          onChanged: (v) => setLocal(() => currentVol = v.round()),
+                          onChanged: (v) =>
+                              setLocal(() => currentVol = v.round()),
                           onChangeEnd: (v) async {
                             await adb.setVolume(dev.ip, v.round());
                           },
                         ),
                       ),
-                      SizedBox(width: 44, child: Text("$currentVol/15",
-                          style: const TextStyle(color: Colors.white70, fontSize: 12),
-                          textAlign: TextAlign.right)),
+                      SizedBox(
+                          width: 44,
+                          child: Text("$currentVol/15",
+                              style: const TextStyle(
+                                  color: Colors.white70, fontSize: 12),
+                              textAlign: TextAlign.right)),
                     ],
                   ),
                   const SizedBox(height: 24),
                   Row(
                     children: [
-                      const Icon(Icons.brightness_6_rounded, color: Colors.white70),
+                      const Icon(Icons.brightness_6_rounded,
+                          color: Colors.white70),
                       const SizedBox(width: 12),
                       Expanded(
                         child: Slider(
                           value: currentBright.toDouble(),
-                          min: 1, max: 255, divisions: 50,
+                          min: 1,
+                          max: 255,
+                          divisions: 50,
                           label: "${(currentBright * 100 ~/ 255)}%",
-                          onChanged: (v) => setLocal(() => currentBright = v.round()),
+                          onChanged: (v) =>
+                              setLocal(() => currentBright = v.round()),
                           onChangeEnd: (v) async {
                             await adb.setBrightness(dev.ip, v.round());
                           },
                         ),
                       ),
-                      SizedBox(width: 44, child: Text("${currentBright * 100 ~/ 255}%",
-                          style: const TextStyle(color: Colors.white70, fontSize: 12),
-                          textAlign: TextAlign.right)),
+                      SizedBox(
+                          width: 44,
+                          child: Text("${currentBright * 100 ~/ 255}%",
+                              style: const TextStyle(
+                                  color: Colors.white70, fontSize: 12),
+                              textAlign: TextAlign.right)),
                     ],
                   ),
                 ],
@@ -511,7 +573,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ),
           ),
           actions: [
-            TextButton(onPressed: () => Navigator.pop(c), child: const Text("Закрыть")),
+            TextButton(
+                onPressed: () => Navigator.pop(c),
+                child: const Text("Закрыть")),
           ],
         ),
       ),
@@ -528,11 +592,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
         valueListenable: progress,
         builder: (_, msg, __) => AlertDialog(
           backgroundColor: const Color(0xFF2C2C2E),
-          title: Text("${dev.name}", style: const TextStyle(fontSize: 16)),
+          title: Text(dev.name, style: const TextStyle(fontSize: 16)),
           content: Row(
             children: [
-              const SizedBox(width: 20, height: 20,
-                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.blue)),
+              const SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(
+                      strokeWidth: 2, color: Colors.blue)),
               const SizedBox(width: 16),
               Expanded(child: Text(msg, style: const TextStyle(fontSize: 13))),
             ],
@@ -541,18 +608,37 @@ class _DashboardScreenState extends State<DashboardScreen> {
       ),
     );
     final mediaDir = await MediaConfig.resolveDir();
-    final pushed = await adb.syncDeviceDirect(dev.ip, mediaDir,
+    final result = await adb.syncDeviceDirect(
+      dev.ip,
+      mediaDir,
       onProgress: (done, total, file) {
         if (file.isNotEmpty) progress.value = "($done/$total) $file";
       },
     );
-    await adb.wakeUp(dev.ip, launchPlayer: true);
+    if (!result.success) {
+      if (mounted) Navigator.of(context, rootNavigator: true).pop();
+      progress.dispose();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(
+            "${dev.name}: ${result.error ?? 'синхронизация не выполнена'}"),
+        backgroundColor: Colors.red.shade700,
+        duration: const Duration(seconds: 6),
+      ));
+      return;
+    }
+    final canLaunch = statuses[dev.ip]?.adbOnline ?? false;
+    if (canLaunch) {
+      await adb.wakeUp(dev.ip, launchPlayer: true);
+    }
     if (mounted) Navigator.of(context, rootNavigator: true).pop();
     progress.dispose();
     if (!mounted) return;
-    final summary = pushed.isEmpty
-        ? "Все файлы актуальны, запущено"
-        : "Загружено ${pushed.length}: ${pushed.join(', ')}";
+    final launchText = canLaunch ? ", запущено" : ", ADB недоступен";
+    final fallbackText = result.usedFallback ? " через fallback" : "";
+    final summary = result.pushed.isEmpty
+        ? "Все файлы актуальны$launchText"
+        : "Загружено ${result.pushed.length}$fallbackText: ${result.pushed.join(', ')}";
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: Text("${dev.name}: $summary"),
       backgroundColor: Colors.green.shade700,
@@ -570,30 +656,43 @@ class _DashboardScreenState extends State<DashboardScreen> {
       return;
     }
     final mediaDir = await MediaConfig.resolveDir();
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: Text("Синхронизация ${online.length} устройств..."),
       backgroundColor: Colors.blue.shade700,
       duration: const Duration(seconds: 2),
     ));
 
-    final Map<String, List<String>> results = {};
+    final Map<String, SyncResult> results = {};
     await Future.wait(online.map((dev) async {
-      final pushed = await adb.syncDeviceDirect(dev.ip, mediaDir);
-      await adb.wakeUp(dev.ip, launchPlayer: true);
-      results[dev.name] = pushed;
+      final result = await adb.syncDeviceDirect(dev.ip, mediaDir);
+      if (result.success && (statuses[dev.ip]?.adbOnline ?? false)) {
+        await adb.wakeUp(dev.ip, launchPlayer: true);
+      }
+      results[dev.name] = result;
     }));
 
     if (!mounted) return;
-    final lines = results.entries.map((e) =>
-        e.value.isEmpty ? "${e.key}: актуально" : "${e.key}: ${e.value.length} файлов"
-    ).join('\n');
+    final lines = results.entries.map((e) {
+      final r = e.value;
+      if (!r.success) {
+        return "${e.key}: ошибка - ${r.error ?? 'синхронизация не выполнена'}";
+      }
+      final transport =
+          r.usedFallback ? '${r.transport}, fallback' : r.transport;
+      return r.pushed.isEmpty
+          ? "${e.key}: актуально ($transport)"
+          : "${e.key}: ${r.pushed.length} файлов ($transport)";
+    }).join('\n');
     showDialog(
       context: context,
       builder: (c) => AlertDialog(
         backgroundColor: const Color(0xFF2C2C2E),
         title: const Text("Синхронизация завершена"),
         content: Text(lines, style: const TextStyle(fontSize: 13)),
-        actions: [TextButton(onPressed: () => Navigator.pop(c), child: const Text("OK"))],
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(c), child: const Text("OK"))
+        ],
       ),
     );
   }
@@ -611,8 +710,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
           title: Text(dev.name, style: const TextStyle(fontSize: 16)),
           content: Row(
             children: [
-              const SizedBox(width: 20, height: 20,
-                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.blue)),
+              const SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(
+                      strokeWidth: 2, color: Colors.blue)),
               const SizedBox(width: 16),
               Expanded(child: Text(msg, style: const TextStyle(fontSize: 13))),
             ],
@@ -621,7 +723,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
       ),
     );
     final mediaDir = await MediaConfig.resolveDir();
-    final pushed = await adb.syncDeviceDirect(dev.ip, mediaDir,
+    final result = await adb.syncDeviceDirect(
+      dev.ip,
+      mediaDir,
       onProgress: (done, total, file) {
         if (file.isNotEmpty) progress.value = "($done/$total) $file";
       },
@@ -629,9 +733,18 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (mounted) Navigator.of(context, rootNavigator: true).pop();
     progress.dispose();
     if (!mounted) return;
-    final summary = pushed.isEmpty
+    if (!result.success) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(
+            "${dev.name}: ${result.error ?? 'синхронизация не выполнена'}"),
+        backgroundColor: Colors.red.shade700,
+        duration: const Duration(seconds: 6),
+      ));
+      return;
+    }
+    final summary = result.pushed.isEmpty
         ? "Все файлы актуальны"
-        : "Загружено ${pushed.length}: ${pushed.join(', ')}";
+        : "Загружено ${result.pushed.length}: ${result.pushed.join(', ')}";
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: Text("${dev.name}: $summary"),
       backgroundColor: Colors.green.shade700,
@@ -641,17 +754,21 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   void _endShift() async {
     final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (c) => AlertDialog(
-        backgroundColor: const Color(0xFF2C2C2E),
-        title: const Text("Завершить смену?"),
-        content: const Text("Все экраны планшетов будут выключены."),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(c, false), child: const Text("Отмена")),
-          TextButton(onPressed: () => Navigator.pop(c, true), child: const Text("Выключить всё", style: TextStyle(color: Colors.redAccent))),
-        ],
-      )
-    );
+        context: context,
+        builder: (c) => AlertDialog(
+              backgroundColor: const Color(0xFF2C2C2E),
+              title: const Text("Завершить смену?"),
+              content: const Text("Все экраны планшетов будут выключены."),
+              actions: [
+                TextButton(
+                    onPressed: () => Navigator.pop(c, false),
+                    child: const Text("Отмена")),
+                TextButton(
+                    onPressed: () => Navigator.pop(c, true),
+                    child: const Text("Выключить всё",
+                        style: TextStyle(color: Colors.redAccent))),
+              ],
+            ));
 
     if (confirmed == true) {
       AppLogger.log("МАССОВОЕ ВЫКЛЮЧЕНИЕ: Завершение смены");
@@ -679,8 +796,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Text("Устройства", style: TextStyle(fontSize: 34, fontWeight: FontWeight.w700, letterSpacing: -1)),
-                  Text("$onlineCount из ${saved.length} в сети", style: const TextStyle(color: Colors.white38, fontSize: 14)),
+                  const Text("Устройства",
+                      style: TextStyle(
+                          fontSize: 34,
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: -1)),
+                  Text("$onlineCount из ${saved.length} в сети",
+                      style:
+                          const TextStyle(color: Colors.white38, fontSize: 14)),
                 ],
               ),
               Wrap(
@@ -690,14 +813,20 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   OutlinedButton.icon(
                     onPressed: _isRegistering ? null : _registerViaUsb,
                     icon: _isRegistering
-                      ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(color: Colors.greenAccent, strokeWidth: 2))
-                      : const Icon(Icons.usb_rounded),
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(
+                                color: Colors.greenAccent, strokeWidth: 2))
+                        : const Icon(Icons.usb_rounded),
                     label: const Text("USB"),
                     style: OutlinedButton.styleFrom(
                       foregroundColor: Colors.greenAccent,
                       side: const BorderSide(color: Colors.greenAccent),
-                      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 18, vertical: 16),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
                     ),
                   ),
                   OutlinedButton.icon(
@@ -707,8 +836,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     style: OutlinedButton.styleFrom(
                       foregroundColor: Colors.blue,
                       side: const BorderSide(color: Colors.blue),
-                      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 18, vertical: 16),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
                     ),
                   ),
                   OutlinedButton.icon(
@@ -718,21 +849,29 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     style: OutlinedButton.styleFrom(
                       foregroundColor: Colors.redAccent,
                       side: const BorderSide(color: Colors.redAccent),
-                      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 18, vertical: 16),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
                     ),
                   ),
                   ElevatedButton.icon(
                     onPressed: _isLoading ? null : _refresh,
                     icon: _isLoading
-                      ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
-                      : const Icon(Icons.refresh_rounded),
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(
+                                color: Colors.white, strokeWidth: 2))
+                        : const Icon(Icons.refresh_rounded),
                     label: const Text("Обновить"),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.blue,
                       foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 18, vertical: 16),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
                     ),
                   ),
                 ],
@@ -742,22 +881,24 @@ class _DashboardScreenState extends State<DashboardScreen> {
           const SizedBox(height: 40),
           Expanded(
             child: saved.isEmpty
-              ? _emptyState()
-              : LayoutBuilder(
-                  builder: (context, constraints) {
-                    final cols = (constraints.maxWidth / 280).floor().clamp(1, 6);
-                    return GridView.builder(
-                      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                        crossAxisCount: cols,
-                        crossAxisSpacing: 20,
-                        mainAxisSpacing: 20,
-                        childAspectRatio: 1.05,
-                      ),
-                      itemCount: saved.length,
-                      itemBuilder: (context, index) => _deviceCard(saved[index]),
-                    );
-                  },
-                ),
+                ? _emptyState()
+                : LayoutBuilder(
+                    builder: (context, constraints) {
+                      final cols =
+                          (constraints.maxWidth / 280).floor().clamp(1, 6);
+                      return GridView.builder(
+                        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                          crossAxisCount: cols,
+                          crossAxisSpacing: 20,
+                          mainAxisSpacing: 20,
+                          childAspectRatio: 1.05,
+                        ),
+                        itemCount: saved.length,
+                        itemBuilder: (context, index) =>
+                            _deviceCard(saved[index]),
+                      );
+                    },
+                  ),
           )
         ],
       ),
@@ -769,9 +910,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(Icons.tablet_android_rounded, size: 80, color: Colors.white.withOpacity(0.1)),
+          Icon(Icons.tablet_android_rounded,
+              size: 80, color: Colors.white.withValues(alpha: 0.1)),
           const SizedBox(height: 20),
-          const Text("Нет зарегистрированных планшетов", style: TextStyle(color: Colors.white54, fontSize: 18)),
+          const Text("Нет зарегистрированных планшетов",
+              style: TextStyle(color: Colors.white54, fontSize: 18)),
           const SizedBox(height: 8),
           const Text("Подключите планшет через USB и нажмите «Добавить по USB»",
               style: TextStyle(color: Colors.white24, fontSize: 13)),
@@ -783,13 +926,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Widget _deviceCard(SavedDevice dev) {
     final status = statuses[dev.ip];
     final isOnline = status?.online ?? false;
+    final canControl = status?.adbOnline ?? false;
     final bat = int.tryParse(status?.battery ?? "0") ?? 0;
 
     return Container(
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.05),
+        color: Colors.white.withValues(alpha: 0.05),
         borderRadius: BorderRadius.circular(24),
-        border: Border.all(color: isOnline ? Colors.green.withOpacity(0.2) : Colors.white.withOpacity(0.05)),
+        border: Border.all(
+            color: isOnline
+                ? Colors.green.withValues(alpha: 0.2)
+                : Colors.white.withValues(alpha: 0.05)),
       ),
       padding: const EdgeInsets.all(20),
       child: Column(
@@ -809,18 +956,26 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     ),
                   ),
                   const SizedBox(width: 8),
-                  Text(isOnline ? "Online" : "Offline",
-                      style: TextStyle(fontSize: 11, color: isOnline ? Colors.greenAccent : Colors.white38)),
+                  Text(isOnline ? status?.transport ?? "Online" : "Offline",
+                      style: TextStyle(
+                          fontSize: 11,
+                          color:
+                              isOnline ? Colors.greenAccent : Colors.white38)),
                 ],
               ),
               if (isOnline)
                 Row(
                   children: [
-                    Icon(bat < 20 ? Icons.battery_alert_rounded : Icons.battery_charging_full_rounded,
-                        size: 14, color: bat < 20 ? Colors.redAccent : Colors.white24),
+                    Icon(
+                        bat < 20
+                            ? Icons.battery_alert_rounded
+                            : Icons.battery_charging_full_rounded,
+                        size: 14,
+                        color: bat < 20 ? Colors.redAccent : Colors.white24),
                     const SizedBox(width: 4),
                     Text("${status?.battery ?? "??"}%",
-                        style: TextStyle(fontSize: 12,
+                        style: TextStyle(
+                            fontSize: 12,
                             color: bat < 20 ? Colors.redAccent : Colors.white24,
                             fontWeight: FontWeight.bold)),
                   ],
@@ -834,32 +989,48 @@ class _DashboardScreenState extends State<DashboardScreen> {
               child: AspectRatio(
                 aspectRatio: 16 / 9,
                 child: _thumbnails.containsKey(dev.ip)
-                    ? Image.file(File(_thumbnails[dev.ip]!), fit: BoxFit.cover, key: ValueKey(_thumbnails[dev.ip]))
-                    : Container(color: Colors.black26, child: Icon(
-                        isOnline ? Icons.videocam_off_rounded : Icons.wifi_off_rounded,
-                        color: Colors.white10)),
+                    ? Image.file(File(_thumbnails[dev.ip]!),
+                        fit: BoxFit.cover, key: ValueKey(_thumbnails[dev.ip]))
+                    : Container(
+                        color: Colors.black26,
+                        child: Icon(
+                            isOnline
+                                ? Icons.videocam_off_rounded
+                                : Icons.wifi_off_rounded,
+                            color: Colors.white10)),
               ),
             ),
           ),
           const SizedBox(height: 12),
-          Text(dev.name, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600), overflow: TextOverflow.ellipsis),
-          Text(dev.ip, style: const TextStyle(fontSize: 11, color: Colors.white38)),
+          Text(dev.name,
+              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+              overflow: TextOverflow.ellipsis),
+          Text(dev.ip,
+              style: const TextStyle(fontSize: 11, color: Colors.white38)),
           const SizedBox(height: 12),
           Row(
             children: [
-              _smallAppleBtn(Icons.play_arrow_rounded, isOnline ? () => _syncAndPlay(dev) : null,
+              _smallAppleBtn(Icons.play_arrow_rounded,
+                  isOnline ? () => _syncAndPlay(dev) : null,
                   tooltip: "Синхронизировать плейлист и запустить"),
               const SizedBox(width: 8),
-              _smallAppleBtn(Icons.sync_rounded, isOnline ? () => _syncOnly(dev) : null,
+              _smallAppleBtn(
+                  Icons.sync_rounded, isOnline ? () => _syncOnly(dev) : null,
                   tooltip: "Только синхронизация (без перезапуска)"),
               const SizedBox(width: 8),
-              _smallAppleBtn(Icons.tune_rounded, isOnline ? () => _showDeviceControls(dev) : null,
+              _smallAppleBtn(Icons.tune_rounded,
+                  canControl ? () => _showDeviceControls(dev) : null,
                   tooltip: "Громкость и яркость"),
               const SizedBox(width: 8),
-              _smallAppleBtn(Icons.power_settings_new_rounded, isOnline ? () {
-                AppLogger.log("Выключение экрана на ${dev.ip}");
-                adb.sleep(dev.ip);
-              } : null, tooltip: "Выключить экран"),
+              _smallAppleBtn(
+                  Icons.power_settings_new_rounded,
+                  canControl
+                      ? () {
+                          AppLogger.log("Выключение экрана на ${dev.ip}");
+                          adb.sleep(dev.ip);
+                        }
+                      : null,
+                  tooltip: "Выключить экран"),
             ],
           )
         ],
@@ -874,10 +1045,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
       child: Container(
         padding: const EdgeInsets.all(8),
         decoration: BoxDecoration(
-          color: Colors.white.withOpacity(onTap == null ? 0.02 : 0.05),
+          color: Colors.white.withValues(alpha: onTap == null ? 0.02 : 0.05),
           borderRadius: BorderRadius.circular(8),
         ),
-        child: Icon(icon, size: 18, color: onTap == null ? Colors.white12 : Colors.white70),
+        child: Icon(icon,
+            size: 18, color: onTap == null ? Colors.white12 : Colors.white70),
       ),
     );
     return tooltip != null ? Tooltip(message: tooltip, child: btn) : btn;
@@ -970,17 +1142,13 @@ class _MediaScreenState extends State<MediaScreen> {
   }
 
   Future<void> _loadVideos() async {
-    final disk = _videoDir
-        .listSync()
-        .whereType<File>()
-        .where((f) {
-          final name = p.basename(f.path).toLowerCase();
-          if (name.startsWith('.')) return false;
-          if (name == _playlistFileName) return false;
-          return ['.mp4', '.mkv', '.mov', '.avi', '.webm']
-              .contains(p.extension(name));
-        })
-        .toList();
+    final disk = _videoDir.listSync().whereType<File>().where((f) {
+      final name = p.basename(f.path).toLowerCase();
+      if (name.startsWith('.')) return false;
+      if (name == _playlistFileName) return false;
+      return ['.mp4', '.mkv', '.mov', '.avi', '.webm']
+          .contains(p.extension(name));
+    }).toList();
 
     final savedOrder = await _loadSavedOrder();
     final byName = {for (final f in disk) p.basename(f.path): f};
@@ -1067,7 +1235,8 @@ class _MediaScreenState extends State<MediaScreen> {
           ),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(c), child: const Text("Отмена")),
+          TextButton(
+              onPressed: () => Navigator.pop(c), child: const Text("Отмена")),
           TextButton(
               onPressed: () => Navigator.pop(c, controller.text.trim()),
               child: const Text("Сохранить")),
@@ -1113,14 +1282,15 @@ class _MediaScreenState extends State<MediaScreen> {
     await _saveOrderAndPlaylist();
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text("Добавлено: $added${skipped > 0 ? ", пропущено $skipped (не видео)" : ""}"),
-        backgroundColor: added > 0 ? Colors.green.shade700 : Colors.orange.shade700,
+        content: Text(
+            "Добавлено: $added${skipped > 0 ? ", пропущено $skipped (не видео)" : ""}"),
+        backgroundColor:
+            added > 0 ? Colors.green.shade700 : Colors.orange.shade700,
       ));
     }
   }
 
   Future<void> _reorder(int oldIndex, int newIndex) async {
-    if (newIndex > oldIndex) newIndex--;
     setState(() {
       final item = videos.removeAt(oldIndex);
       videos.insert(newIndex, item);
@@ -1130,8 +1300,8 @@ class _MediaScreenState extends State<MediaScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final totalMb = videos.fold<int>(0, (s, f) => s + f.lengthSync()) /
-        (1024 * 1024);
+    final totalMb =
+        videos.fold<int>(0, (s, f) => s + f.lengthSync()) / (1024 * 1024);
 
     return DropTarget(
       onDragEntered: (_) => setState(() => _dragging = true),
@@ -1206,9 +1376,10 @@ class _MediaScreenState extends State<MediaScreen> {
                 Container(
                   padding: const EdgeInsets.all(12),
                   decoration: BoxDecoration(
-                    color: Colors.blue.withOpacity(0.08),
+                    color: Colors.blue.withValues(alpha: 0.08),
                     borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: Colors.blue.withOpacity(0.2)),
+                    border:
+                        Border.all(color: Colors.blue.withValues(alpha: 0.2)),
                   ),
                   child: Row(
                     children: [
@@ -1234,7 +1405,7 @@ class _MediaScreenState extends State<MediaScreen> {
                             children: [
                               Icon(Icons.file_download_outlined,
                                   size: 80,
-                                  color: Colors.white.withOpacity(0.1)),
+                                  color: Colors.white.withValues(alpha: 0.1)),
                               const SizedBox(height: 16),
                               const Text("Перетащи сюда видеофайлы",
                                   style: TextStyle(
@@ -1249,10 +1420,11 @@ class _MediaScreenState extends State<MediaScreen> {
                       : ReorderableListView.builder(
                           buildDefaultDragHandles: false,
                           itemCount: videos.length,
-                          onReorder: _reorder,
+                          onReorderItem: _reorder,
                           itemBuilder: (context, i) {
                             final file = videos[i];
-                            return _videoItem(file, i, key: ValueKey(file.path));
+                            return _videoItem(file, i,
+                                key: ValueKey(file.path));
                           },
                         ),
                 ),
@@ -1264,18 +1436,23 @@ class _MediaScreenState extends State<MediaScreen> {
               child: Container(
                 margin: const EdgeInsets.all(20),
                 decoration: BoxDecoration(
-                  color: Colors.blue.withOpacity(0.15),
-                  border: Border.all(color: Colors.blue, width: 3, style: BorderStyle.solid),
+                  color: Colors.blue.withValues(alpha: 0.15),
+                  border: Border.all(
+                      color: Colors.blue, width: 3, style: BorderStyle.solid),
                   borderRadius: BorderRadius.circular(24),
                 ),
                 child: const Center(
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Icon(Icons.file_download_rounded, size: 100, color: Colors.blue),
+                      Icon(Icons.file_download_rounded,
+                          size: 100, color: Colors.blue),
                       SizedBox(height: 20),
                       Text("Отпусти чтобы добавить видео",
-                          style: TextStyle(color: Colors.blue, fontSize: 24, fontWeight: FontWeight.bold)),
+                          style: TextStyle(
+                              color: Colors.blue,
+                              fontSize: 24,
+                              fontWeight: FontWeight.bold)),
                     ],
                   ),
                 ),
@@ -1291,23 +1468,29 @@ class _MediaScreenState extends State<MediaScreen> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       decoration: BoxDecoration(
-        color: Colors.green.withOpacity(0.08),
+        color: Colors.green.withValues(alpha: 0.08),
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Colors.green.withOpacity(0.25)),
+        border: Border.all(color: Colors.green.withValues(alpha: 0.25)),
       ),
       child: Row(
         children: [
-          Icon(Icons.folder_special_rounded, color: Colors.green.shade300, size: 18),
+          Icon(Icons.folder_special_rounded,
+              color: Colors.green.shade300, size: 18),
           const SizedBox(width: 10),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text("Источник: $_customSourceDir",
-                    style: TextStyle(color: Colors.green.shade200, fontSize: 12, fontWeight: FontWeight.w600),
+                    style: TextStyle(
+                        color: Colors.green.shade200,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600),
                     overflow: TextOverflow.ellipsis),
                 Text("Файлы из этой папки автоматически попадают в плейлист",
-                    style: TextStyle(color: Colors.green.shade100.withOpacity(0.7), fontSize: 11)),
+                    style: TextStyle(
+                        color: Colors.green.shade100.withValues(alpha: 0.7),
+                        fontSize: 11)),
               ],
             ),
           ),
@@ -1328,9 +1511,9 @@ class _MediaScreenState extends State<MediaScreen> {
       key: key,
       margin: const EdgeInsets.only(bottom: 8),
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.04),
+        color: Colors.white.withValues(alpha: 0.04),
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.white.withOpacity(0.05)),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.05)),
       ),
       child: Row(
         children: [
@@ -1346,14 +1529,16 @@ class _MediaScreenState extends State<MediaScreen> {
             width: 32,
             height: 32,
             decoration: BoxDecoration(
-              color: Colors.blue.withOpacity(0.15),
+              color: Colors.blue.withValues(alpha: 0.15),
               borderRadius: BorderRadius.circular(8),
             ),
             alignment: Alignment.center,
             child: Text(
               "${index + 1}",
               style: const TextStyle(
-                  color: Colors.blue, fontWeight: FontWeight.bold, fontSize: 13),
+                  color: Colors.blue,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 13),
             ),
           ),
           const SizedBox(width: 14),
@@ -1367,7 +1552,8 @@ class _MediaScreenState extends State<MediaScreen> {
               children: [
                 Text(
                   p.basename(file.path),
-                  style: const TextStyle(fontWeight: FontWeight.w500, fontSize: 14),
+                  style: const TextStyle(
+                      fontWeight: FontWeight.w500, fontSize: 14),
                   overflow: TextOverflow.ellipsis,
                 ),
                 Text("$sizeMb MB",
@@ -1461,11 +1647,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
       builder: (c) => AlertDialog(
         backgroundColor: const Color(0xFF2C2C2E),
         title: const Text("Импорт бэкапа?"),
-        content: const Text("Текущие настройки и список планшетов будут перезаписаны.\n\nВидеофайлы не затрагиваются."),
+        content: const Text(
+            "Текущие настройки и список планшетов будут перезаписаны.\n\nВидеофайлы не затрагиваются."),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(c, false), child: const Text("Отмена")),
-          TextButton(onPressed: () => Navigator.pop(c, true),
-              child: const Text("Импортировать", style: TextStyle(color: Colors.orange))),
+          TextButton(
+              onPressed: () => Navigator.pop(c, false),
+              child: const Text("Отмена")),
+          TextButton(
+              onPressed: () => Navigator.pop(c, true),
+              child: const Text("Импортировать",
+                  style: TextStyle(color: Colors.orange))),
         ],
       ),
     );
@@ -1475,6 +1666,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (count != null) {
       await _loadSettings();
       await _loadDevices();
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         content: Text("Восстановлено: $count планшетов"),
         backgroundColor: Colors.green.shade700,
@@ -1507,7 +1699,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     await prefs.setString('autoOffTime', _timeController.text);
     await prefs.setBool('autoOffEnabled', autoOffEnabled);
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Настройки сохранены")));
+    ScaffoldMessenger.of(context)
+        .showSnackBar(const SnackBar(content: Text("Настройки сохранены")));
   }
 
   Future<void> _getHostIp() async {
@@ -1536,8 +1729,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
           decoration: const InputDecoration(border: OutlineInputBorder()),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(c), child: const Text("Отмена")),
-          TextButton(onPressed: () => Navigator.pop(c, controller.text.trim()), child: const Text("Сохранить")),
+          TextButton(
+              onPressed: () => Navigator.pop(c), child: const Text("Отмена")),
+          TextButton(
+              onPressed: () => Navigator.pop(c, controller.text.trim()),
+              child: const Text("Сохранить")),
         ],
       ),
     );
@@ -1555,8 +1751,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
         title: const Text("Удалить планшет?"),
         content: Text("${dev.name} (${dev.ip})"),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(c, false), child: const Text("Отмена")),
-          TextButton(onPressed: () => Navigator.pop(c, true), child: const Text("Удалить", style: TextStyle(color: Colors.redAccent))),
+          TextButton(
+              onPressed: () => Navigator.pop(c, false),
+              child: const Text("Отмена")),
+          TextButton(
+              onPressed: () => Navigator.pop(c, true),
+              child: const Text("Удалить",
+                  style: TextStyle(color: Colors.redAccent))),
         ],
       ),
     );
@@ -1575,7 +1776,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (!mounted) return;
     if (info == null) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text("У вас последняя версия ($kAppVersion)"),
+        content: const Text("У вас последняя версия ($kAppVersion)"),
         backgroundColor: Colors.green.shade700,
       ));
       return;
@@ -1586,7 +1787,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _checkAndUpdateApk() async {
     final status = ValueNotifier<String>('');
-    final progress = ValueNotifier<double?>(null); // null = крутилка, 0..1 = прогрессбар
+    final progress =
+        ValueNotifier<double?>(null); // null = крутилка, 0..1 = прогрессбар
 
     showDialog(
       context: context,
@@ -1597,11 +1799,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
           valueListenable: progress,
           builder: (_, pval, __) => AlertDialog(
             backgroundColor: const Color(0xFF2C2C2E),
-            title: Row(
+            title: const Row(
               children: [
-                const Icon(Icons.android_rounded, color: Colors.greenAccent, size: 20),
-                const SizedBox(width: 10),
-                const Text('Обновление APK', style: TextStyle(fontSize: 16)),
+                Icon(Icons.android_rounded,
+                    color: Colors.greenAccent, size: 20),
+                SizedBox(width: 10),
+                Text('Обновление APK', style: TextStyle(fontSize: 16)),
               ],
             ),
             content: SizedBox(
@@ -1622,7 +1825,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       color: Colors.greenAccent,
                     ),
                   const SizedBox(height: 12),
-                  Text(msg, style: const TextStyle(color: Colors.white70, fontSize: 13)),
+                  Text(msg,
+                      style:
+                          const TextStyle(color: Colors.white70, fontSize: 13)),
                 ],
               ),
             ),
@@ -1649,8 +1854,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
             SizedBox(width: 10),
             Text('Ошибка', style: TextStyle(fontSize: 16)),
           ]),
-          content: Text(msg, style: const TextStyle(color: Colors.white70, fontSize: 13)),
-          actions: [TextButton(onPressed: () => Navigator.pop(c), child: const Text('OK'))],
+          content: Text(msg,
+              style: const TextStyle(color: Colors.white70, fontSize: 13)),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(c), child: const Text('OK'))
+          ],
         ),
       );
     }
@@ -1662,42 +1871,62 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
     for (int i = 0; i < savedDevices.length; i++) {
       final dev = savedDevices[i];
-      status.value = '(${i + 1}/${savedDevices.length}) ${dev.name}\nОпрашиваю ${dev.ip}...';
+      status.value =
+          '(${i + 1}/${savedDevices.length}) ${dev.name}\nОпрашиваю ${dev.ip}...';
       final ver = await AdbManager.getApkVersion(dev.ip);
-      if (ver != '0.0.0') {
+      if (ver != null) {
         reachableIps.add(dev.ip);
         deviceVersions[dev.ip] = ver;
         final p1 = ver.split('.').map((s) => int.tryParse(s) ?? 0).toList();
-        final pl = lowestVersion.split('.').map((s) => int.tryParse(s) ?? 0).toList();
+        final pl =
+            lowestVersion.split('.').map((s) => int.tryParse(s) ?? 0).toList();
         bool isLower = false;
         for (int j = 0; j < 3; j++) {
           final v1 = j < p1.length ? p1[j] : 0;
           final vl = j < pl.length ? pl[j] : 0;
-          if (v1 < vl) { isLower = true; break; }
+          if (v1 < vl) {
+            isLower = true;
+            break;
+          }
           if (v1 > vl) break;
         }
         if (isLower) lowestVersion = ver;
       }
     }
 
-    if (!mounted) { status.dispose(); progress.dispose(); return; }
+    if (!mounted) {
+      status.dispose();
+      progress.dispose();
+      return;
+    }
 
     if (reachableIps.isEmpty) {
-      fail('Ни один планшет не ответил на HTTP-запрос (порт 5011).\n\nУбедитесь что Brandmen Ads запущен и планшет в той же сети.');
+      fail(
+          'Ни один планшет не ответил на HTTP-запрос (порт 5011).\n\nУбедитесь что Brandmen Ads запущен и планшет в той же сети.');
       return;
     }
 
     // ── Шаг 2: проверка GitHub ─────────────────────────────────────────────
-    final currentVersion = lowestVersion == '99.99.99' ? '0.0.0' : lowestVersion;
+    final currentVersion =
+        lowestVersion == '99.99.99' ? '0.0.0' : lowestVersion;
     final devList = reachableIps.map((ip) {
-      final name = savedDevices.firstWhere((d) => d.ip == ip, orElse: () => SavedDevice(ip: ip, name: ip)).name;
+      final name = savedDevices
+          .firstWhere((d) => d.ip == ip,
+              orElse: () => SavedDevice(ip: ip, name: ip))
+          .name;
       return '$name: v${deviceVersions[ip]}';
     }).join('\n');
 
-    status.value = 'Найдено ${reachableIps.length} планшетов:\n$devList\n\nПроверяю GitHub...';
+    status.value =
+        'Найдено ${reachableIps.length} планшетов:\n$devList\n\nПроверяю GitHub...';
 
-    final apkInfo = await AppUpdater.checkApkUpdate(currentApkVersion: currentVersion);
-    if (!mounted) { status.dispose(); progress.dispose(); return; }
+    final apkInfo =
+        await AppUpdater.checkApkUpdate(currentApkVersion: currentVersion);
+    if (!mounted) {
+      status.dispose();
+      progress.dispose();
+      return;
+    }
 
     if (apkInfo == null) {
       close();
@@ -1715,7 +1944,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ]),
           content: Text('APK v$currentVersion — последняя версия.\n\n$devList',
               style: const TextStyle(color: Colors.white70, fontSize: 13)),
-          actions: [TextButton(onPressed: () => Navigator.pop(c), child: const Text('OK'))],
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(c), child: const Text('OK'))
+          ],
         ),
       );
       return;
@@ -1725,7 +1957,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
     close();
     status.dispose();
 
-    if (!mounted) { progress.dispose(); return; }
+    if (!mounted) {
+      progress.dispose();
+      return;
+    }
 
     final confirmed = await showDialog<bool>(
       context: context,
@@ -1733,7 +1968,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
         backgroundColor: const Color(0xFF2C2C2E),
         title: Row(
           children: [
-            const Icon(Icons.system_update_rounded, color: Colors.greenAccent, size: 22),
+            const Icon(Icons.system_update_rounded,
+                color: Colors.greenAccent, size: 22),
             const SizedBox(width: 10),
             Text('APK v${apkInfo.version}'),
           ],
@@ -1744,19 +1980,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('Новая версия найдена на GitHub.',
-                  style: const TextStyle(color: Colors.white70)),
+              const Text('Новая версия найдена на GitHub.',
+                  style: TextStyle(color: Colors.white70)),
               const SizedBox(height: 12),
-              Text(devList, style: const TextStyle(color: Colors.white54, fontSize: 12)),
+              Text(devList,
+                  style: const TextStyle(color: Colors.white54, fontSize: 12)),
               const SizedBox(height: 4),
               Text('→ v${apkInfo.version}',
-                  style: const TextStyle(color: Colors.greenAccent, fontSize: 13, fontWeight: FontWeight.bold)),
+                  style: const TextStyle(
+                      color: Colors.greenAccent,
+                      fontSize: 13,
+                      fontWeight: FontWeight.bold)),
             ],
           ),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(c, false),
-              child: const Text('Отмена', style: TextStyle(color: Colors.white54))),
+          TextButton(
+              onPressed: () => Navigator.pop(c, false),
+              child: const Text('Отмена',
+                  style: TextStyle(color: Colors.white54))),
           ElevatedButton.icon(
             onPressed: () => Navigator.pop(c, true),
             icon: const Icon(Icons.download_rounded, size: 18),
@@ -1764,17 +2006,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
             style: ElevatedButton.styleFrom(
               backgroundColor: Colors.greenAccent,
               foregroundColor: Colors.black,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10)),
             ),
           ),
         ],
       ),
     );
 
-    if (confirmed != true || !mounted) { progress.dispose(); return; }
+    if (confirmed != true || !mounted) {
+      progress.dispose();
+      return;
+    }
 
     // ── Шаг 4: скачивание ─────────────────────────────────────────────────
-    final dlStatus = ValueNotifier<String>('Скачиваю APK v${apkInfo.version}...');
+    final dlStatus =
+        ValueNotifier<String>('Скачиваю APK v${apkInfo.version}...');
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -1801,7 +2048,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     color: Colors.greenAccent,
                   ),
                   const SizedBox(height: 12),
-                  Text(msg, style: const TextStyle(color: Colors.white70, fontSize: 13)),
+                  Text(msg,
+                      style:
+                          const TextStyle(color: Colors.white70, fontSize: 13)),
                 ],
               ),
             ),
@@ -1813,10 +2062,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
     progress.value = null;
     final apkFile = await AppUpdater.downloadApk(apkInfo, (v) {
       progress.value = v;
-      dlStatus.value = 'Скачиваю APK v${apkInfo.version}... ${(v * 100).round()}%';
+      dlStatus.value =
+          'Скачиваю APK v${apkInfo.version}... ${(v * 100).round()}%';
     });
 
-    if (!mounted) { progress.dispose(); dlStatus.dispose(); return; }
+    if (!mounted) {
+      progress.dispose();
+      dlStatus.dispose();
+      return;
+    }
 
     if (apkFile == null) {
       Navigator.of(context, rootNavigator: true).pop();
@@ -1831,9 +2085,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
             SizedBox(width: 10),
             Text('Ошибка загрузки', style: TextStyle(fontSize: 16)),
           ]),
-          content: const Text('Не удалось скачать APK с GitHub.\n\nПроверьте интернет-соединение.',
+          content: const Text(
+              'Не удалось скачать APK с GitHub.\n\nПроверьте интернет-соединение.',
               style: TextStyle(color: Colors.white70, fontSize: 13)),
-          actions: [TextButton(onPressed: () => Navigator.pop(c), child: const Text('OK'))],
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(c), child: const Text('OK'))
+          ],
         ),
       );
       return;
@@ -1847,10 +2105,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
     for (int i = 0; i < reachableIps.length; i++) {
       final ip = reachableIps[i];
-      final devName = savedDevices.firstWhere((d) => d.ip == ip,
-          orElse: () => SavedDevice(ip: ip, name: ip)).name;
+      final devName = savedDevices
+          .firstWhere((d) => d.ip == ip,
+              orElse: () => SavedDevice(ip: ip, name: ip))
+          .name;
       progress.value = (i + 1) / reachableIps.length;
-      dlStatus.value = 'Устанавливаю на $devName\n(${i + 1}/${reachableIps.length})...';
+      dlStatus.value =
+          'Устанавливаю на $devName\n(${i + 1}/${reachableIps.length})...';
       final res = await adb.installApk(ip, apkFile.path);
       switch (res) {
         case ApkInstallResult.installed:
@@ -1878,7 +2139,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
           'Установлено автоматически', autoInstalled.join(', ')));
     }
     if (manualNeeded.isNotEmpty) {
-      lines.add(_resultLine(Icons.download_done_rounded, Colors.orange,
+      lines.add(_resultLine(
+          Icons.download_done_rounded,
+          Colors.orange,
           'Файл в «Загрузках» — установите вручную (тап по BrandmenAds.apk)',
           manualNeeded.join(', ')));
     }
@@ -1893,8 +2156,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
       builder: (c) => AlertDialog(
         backgroundColor: const Color(0xFF2C2C2E),
         title: Row(children: [
-          Icon(allAuto ? Icons.check_circle_rounded : Icons.info_outline_rounded,
-              color: allAuto ? Colors.greenAccent : Colors.orange, size: 22),
+          Icon(
+              allAuto ? Icons.check_circle_rounded : Icons.info_outline_rounded,
+              color: allAuto ? Colors.greenAccent : Colors.orange,
+              size: 22),
           const SizedBox(width: 10),
           Text('APK v${apkInfo.version}', style: const TextStyle(fontSize: 16)),
         ]),
@@ -1906,7 +2171,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
             children: lines,
           ),
         ),
-        actions: [TextButton(onPressed: () => Navigator.pop(c), child: const Text('OK'))],
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(c), child: const Text('OK'))
+        ],
       ),
     );
   }
@@ -1923,9 +2190,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(title, style: TextStyle(color: color, fontSize: 13, fontWeight: FontWeight.w600)),
+                Text(title,
+                    style: TextStyle(
+                        color: color,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600)),
                 const SizedBox(height: 2),
-                Text(devices, style: const TextStyle(color: Colors.white60, fontSize: 12)),
+                Text(devices,
+                    style:
+                        const TextStyle(color: Colors.white60, fontSize: 12)),
               ],
             ),
           ),
@@ -1944,11 +2217,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
         content: TextField(
           controller: controller,
           autofocus: true,
-          decoration: const InputDecoration(hintText: "192.168.x.x", border: OutlineInputBorder()),
+          decoration: const InputDecoration(
+              hintText: "192.168.x.x", border: OutlineInputBorder()),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(c), child: const Text("Отмена")),
-          TextButton(onPressed: () => Navigator.pop(c, controller.text.trim()), child: const Text("Добавить")),
+          TextButton(
+              onPressed: () => Navigator.pop(c), child: const Text("Отмена")),
+          TextButton(
+              onPressed: () => Navigator.pop(c, controller.text.trim()),
+              child: const Text("Добавить")),
         ],
       ),
     );
@@ -1965,20 +2242,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text("Настройки", style: TextStyle(fontSize: 34, fontWeight: FontWeight.bold)),
+          const Text("Настройки",
+              style: TextStyle(fontSize: 34, fontWeight: FontWeight.bold)),
           const SizedBox(height: 30),
-
           _sectionCard("Сеть", [
-            _settingRow("IP этого Mac",
+            _settingRow(
+                "IP этого Mac",
                 SelectableText(localIp ?? "...",
-                    style: const TextStyle(color: Colors.blue, fontWeight: FontWeight.bold, fontSize: 16))),
+                    style: const TextStyle(
+                        color: Colors.blue,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 16))),
             const SizedBox(height: 8),
             Container(
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                color: Colors.blue.withOpacity(0.08),
+                color: Colors.blue.withValues(alpha: 0.08),
                 borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: Colors.blue.withOpacity(0.2)),
+                border: Border.all(color: Colors.blue.withValues(alpha: 0.2)),
               ),
               child: Text(
                 "На планшете в Brandmen Ads → ⚙️ ввести ТОЛЬКО IP (без :5010), порт добавляется автоматически",
@@ -1986,27 +2267,34 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
             ),
           ]),
-
           const SizedBox(height: 20),
-
           _sectionCard("Автоматизация", [
-            _settingRow("Автоматическое выключение",
-                Switch(value: autoOffEnabled, activeColor: Colors.blue,
+            _settingRow(
+                "Автоматическое выключение",
+                Switch(
+                    value: autoOffEnabled,
+                    activeThumbColor: Colors.blue,
                     onChanged: (v) => setState(() => autoOffEnabled = v))),
             if (autoOffEnabled) ...[
               const SizedBox(height: 12),
-              _settingRow("Время (ЧЧ:ММ)", SizedBox(
-                width: 100,
-                child: TextField(
-                  controller: _timeController,
-                  textAlign: TextAlign.center,
-                  decoration: const InputDecoration(isDense: true, border: OutlineInputBorder()),
-                ),
-              )),
+              _settingRow(
+                  "Время (ЧЧ:ММ)",
+                  SizedBox(
+                    width: 100,
+                    child: TextField(
+                      controller: _timeController,
+                      textAlign: TextAlign.center,
+                      decoration: const InputDecoration(
+                          isDense: true, border: OutlineInputBorder()),
+                    ),
+                  )),
             ],
             const Divider(height: 32, color: Colors.white10),
-            _settingRow("Запускать при входе в систему",
-                Switch(value: autoStartEnabled, activeColor: Colors.blue,
+            _settingRow(
+                "Запускать при входе в систему",
+                Switch(
+                    value: autoStartEnabled,
+                    activeThumbColor: Colors.blue,
                     onChanged: _toggleAutoStart)),
             const SizedBox(height: 20),
             SizedBox(
@@ -2014,19 +2302,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
               height: 48,
               child: ElevatedButton(
                 onPressed: _saveSettings,
-                style: ElevatedButton.styleFrom(backgroundColor: Colors.blue, foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
-                child: const Text("Сохранить", style: TextStyle(fontWeight: FontWeight.bold)),
+                style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.blue,
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10))),
+                child: const Text("Сохранить",
+                    style: TextStyle(fontWeight: FontWeight.bold)),
               ),
             ),
           ]),
-
           const SizedBox(height: 20),
-
           _sectionCard("О программе", [
             _settingRow(
               "Версия",
-              Text(kAppVersion, style: const TextStyle(color: Colors.white54, fontSize: 14)),
+              const Text(kAppVersion,
+                  style: TextStyle(color: Colors.white54, fontSize: 14)),
             ),
             const SizedBox(height: 4),
             const Text(
@@ -2044,7 +2335,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 style: OutlinedButton.styleFrom(
                   foregroundColor: Colors.blue,
                   side: const BorderSide(color: Colors.blue),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10)),
                 ),
               ),
             ),
@@ -2059,14 +2351,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 style: OutlinedButton.styleFrom(
                   foregroundColor: Colors.greenAccent,
                   side: const BorderSide(color: Colors.greenAccent),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10)),
                 ),
               ),
             ),
           ]),
-
           const SizedBox(height: 20),
-
           _sectionCard("Резервное копирование", [
             const Text(
               "Экспорт сохраняет список планшетов, расписание и пути к папкам в один JSON-файл.\nИмпорт переносит настройки на другой Mac/Windows.",
@@ -2084,7 +2375,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       foregroundColor: Colors.white70,
                       side: const BorderSide(color: Colors.white24),
                       padding: const EdgeInsets.symmetric(vertical: 14),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10)),
                     ),
                   ),
                 ),
@@ -2098,47 +2390,54 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       foregroundColor: Colors.orange,
                       side: const BorderSide(color: Colors.orange),
                       padding: const EdgeInsets.symmetric(vertical: 14),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10)),
                     ),
                   ),
                 ),
               ],
             ),
           ]),
-
           const SizedBox(height: 20),
-
           _sectionCard("Планшеты (${savedDevices.length})", [
             ...savedDevices.map((dev) => Padding(
-              padding: const EdgeInsets.only(bottom: 8),
-              child: Row(
-                children: [
-                  const Icon(Icons.tablet_android_rounded, color: Colors.white38, size: 20),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(dev.name, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w500)),
-                        Text(dev.ip, style: const TextStyle(fontSize: 12, color: Colors.white38)),
-                      ],
-                    ),
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.tablet_android_rounded,
+                          color: Colors.white38, size: 20),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(dev.name,
+                                style: const TextStyle(
+                                    fontSize: 15, fontWeight: FontWeight.w500)),
+                            Text(dev.ip,
+                                style: const TextStyle(
+                                    fontSize: 12, color: Colors.white38)),
+                          ],
+                        ),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.edit_rounded,
+                            color: Colors.white54, size: 18),
+                        onPressed: () => _renameDevice(dev),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.delete_outline_rounded,
+                            color: Colors.redAccent, size: 18),
+                        onPressed: () => _removeDevice(dev),
+                      ),
+                    ],
                   ),
-                  IconButton(
-                    icon: const Icon(Icons.edit_rounded, color: Colors.white54, size: 18),
-                    onPressed: () => _renameDevice(dev),
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent, size: 18),
-                    onPressed: () => _removeDevice(dev),
-                  ),
-                ],
-              ),
-            )),
+                )),
             if (savedDevices.isEmpty)
               const Padding(
                 padding: EdgeInsets.symmetric(vertical: 16),
-                child: Text("Нет сохранённых планшетов", style: TextStyle(color: Colors.white38)),
+                child: Text("Нет сохранённых планшетов",
+                    style: TextStyle(color: Colors.white38)),
               ),
             const SizedBox(height: 8),
             OutlinedButton.icon(
@@ -2148,7 +2447,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
               style: OutlinedButton.styleFrom(
                 foregroundColor: Colors.white70,
                 side: const BorderSide(color: Colors.white24),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10)),
               ),
             ),
           ]),
@@ -2162,15 +2462,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
       width: 700,
       padding: const EdgeInsets.all(25),
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.05),
+        color: Colors.white.withValues(alpha: 0.05),
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: Colors.white.withOpacity(0.05)),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.05)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(title, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold,
-              color: Colors.white54, letterSpacing: 1.5)),
+          Text(title,
+              style: const TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.white54,
+                  letterSpacing: 1.5)),
           const SizedBox(height: 16),
           ...children,
         ],
@@ -2182,7 +2486,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
-        Expanded(child: Text(label, style: const TextStyle(fontSize: 14, color: Colors.white70))),
+        Expanded(
+            child: Text(label,
+                style: const TextStyle(fontSize: 14, color: Colors.white70))),
         control,
       ],
     );

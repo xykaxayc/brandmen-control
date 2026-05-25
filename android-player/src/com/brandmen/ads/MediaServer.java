@@ -76,7 +76,7 @@ public class MediaServer {
             catch (Exception e) { path = rawPath; }
 
             // Read headers
-            int contentLength = -1;
+            long contentLength = -1;
             String line;
             while (!(line = readAsciiLine(in)).isEmpty()) {
                 int colon = line.indexOf(':');
@@ -84,7 +84,7 @@ public class MediaServer {
                     String key = line.substring(0, colon).trim().toLowerCase(Locale.US);
                     String value = line.substring(colon + 1).trim();
                     if (key.equals("content-length")) {
-                        try { contentLength = Integer.parseInt(value); } catch (NumberFormatException ignored) {}
+                        try { contentLength = Long.parseLong(value); } catch (NumberFormatException ignored) {}
                     }
                 }
             }
@@ -153,7 +153,7 @@ public class MediaServer {
     }
 
     private void handleUpload(InputStream in, OutputStream out,
-                              String filename, int contentLength) throws IOException {
+                              String filename, long contentLength) throws IOException {
         if (filename.isEmpty() || contentLength < 0) {
             sendText(out, 400, "Bad Request"); return;
         }
@@ -161,18 +161,27 @@ public class MediaServer {
         new File(mediaDir).mkdirs();
         try (FileOutputStream fos = new FileOutputStream(dest)) {
             byte[] buf = new byte[65536];
-            int remaining = contentLength;
+            long remaining = contentLength;
             while (remaining > 0) {
-                int toRead = Math.min(buf.length, remaining);
+                int toRead = (int) Math.min(buf.length, remaining);
                 int n = in.read(buf, 0, toRead);
                 if (n < 0) break;
                 fos.write(buf, 0, n);
                 remaining -= n;
             }
+            if (remaining != 0) {
+                dest.delete();
+                sendText(out, 400, "Incomplete upload");
+                return;
+            }
         }
         File final_ = new File(mediaDir, filename);
         if (final_.exists()) final_.delete();
-        dest.renameTo(final_);
+        if (!dest.renameTo(final_)) {
+            dest.delete();
+            sendText(out, 500, "Upload failed");
+            return;
+        }
         sendJson(out, 200, "{\"ok\":true,\"name\":\"" + escJson(filename) + "\"}");
     }
 
