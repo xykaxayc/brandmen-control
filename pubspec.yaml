@@ -19,6 +19,8 @@ dependencies:
   intl: ^0.18.1
   system_tray: ^2.0.2    # System tray support
   desktop_drop: ^0.4.4   # Drag-and-drop файлов с рабочего стола
+  crypto: ^3.0.3         # MD5 hashes
+  nsd: ^2.1.1            # mDNS / ZeroConf discovery
 
 dev_dependencies:
   flutter_test:
