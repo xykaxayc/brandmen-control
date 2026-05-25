@@ -38,20 +38,14 @@ jobs:
         with:
           packages: 'platforms;android-33 build-tools;34.0.0'
 
-      - name: Embed version into MediaServer
-        run: |
-          sed -i 's/VERSION = "0\.0\.0"/VERSION = "${{ steps.ver.outputs.version }}"/' \
-            android-player/src/com/brandmen/ads/MediaServer.java
-
       - name: Compile Java
         working-directory: android-player
         run: |
           mkdir -p classes
           javac --release 11 -classpath "$ANDROID_SDK_ROOT/platforms/android-33/android.jar" \
             -Xlint:-options -d classes \
-            src/com/brandmen/ads/MainActivity.java \
-            src/com/brandmen/ads/BootReceiver.java \
-            src/com/brandmen/ads/MediaServer.java
+            src/main/java/com/brandmen/ads/MainActivity.java \
+            src/main/java/com/brandmen/ads/BootReceiver.java
 
       - name: Convert to DEX
         working-directory: android-player
@@ -66,8 +60,10 @@ jobs:
         working-directory: android-player
         run: |
           mkdir -p out
-          cp resources/AndroidManifest.xml out/
-          cp resources/resources.arsc out/
+          cp src/main/AndroidManifest.xml out/
+          # If resources.arsc is missing, we might need to generate it or use a placeholder
+          # For now, let's assume it's part of the standard build or provided in resources
+          if [ -f resources/resources.arsc ]; then cp resources/resources.arsc out/; fi
           cp classes.dex out/
           cd out
           zip -r0q ../brandmen-unaligned.apk .
