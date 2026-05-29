@@ -405,6 +405,53 @@ class DashboardScreen extends StatefulWidget {
   State<DashboardScreen> createState() => _DashboardScreenState();
 }
 
+class _BulkSyncProgress {
+  final int currentIndex;
+  final int totalDevices;
+  final String currentDevice;
+  final String currentStep;
+  final Map<String, String> deviceStates;
+
+  const _BulkSyncProgress({
+    required this.currentIndex,
+    required this.totalDevices,
+    required this.currentDevice,
+    required this.currentStep,
+    required this.deviceStates,
+  });
+
+  _BulkSyncProgress copyWith({
+    int? currentIndex,
+    int? totalDevices,
+    String? currentDevice,
+    String? currentStep,
+    Map<String, String>? deviceStates,
+  }) {
+    return _BulkSyncProgress(
+      currentIndex: currentIndex ?? this.currentIndex,
+      totalDevices: totalDevices ?? this.totalDevices,
+      currentDevice: currentDevice ?? this.currentDevice,
+      currentStep: currentStep ?? this.currentStep,
+      deviceStates: deviceStates ?? this.deviceStates,
+    );
+  }
+
+  _BulkSyncProgress updateDevice(
+    String name,
+    String state, {
+    int? currentIndex,
+    String? currentDevice,
+    String? currentStep,
+  }) {
+    return copyWith(
+      currentIndex: currentIndex,
+      currentDevice: currentDevice,
+      currentStep: currentStep,
+      deviceStates: {...deviceStates, name: state},
+    );
+  }
+}
+
 class _DashboardScreenState extends State<DashboardScreen> {
   final adb = AdbManager();
   List<SavedDevice> saved = [];
@@ -670,8 +717,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
       ),
     );
     final mediaDir = await MediaConfig.resolveDir();
-    final norm = await Transcoder.normalizeDir(mediaDir,
-        onProgress: (file, i, total) {
+    final norm =
+        await Transcoder.normalizeDir(mediaDir, onProgress: (file, i, total) {
       progress.value = "Конвертация ($i/$total): $file";
     });
     if (cancelled) {
@@ -734,35 +781,176 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
     final mediaDir = await MediaConfig.resolveDir();
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text("Синхронизация ${online.length} устройств..."),
-      backgroundColor: Colors.blue.shade700,
-      duration: const Duration(seconds: 2),
-    ));
+
+    final progress = ValueNotifier<_BulkSyncProgress>(
+      _BulkSyncProgress(
+        currentIndex: 0,
+        totalDevices: online.length,
+        currentDevice: "Подготовка...",
+        currentStep: "Проверяю медиатеку",
+        deviceStates: {for (final dev in online) dev.name: "В очереди"},
+      ),
+    );
+    bool cancelled = false;
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (c) => ValueListenableBuilder<_BulkSyncProgress>(
+        valueListenable: progress,
+        builder: (_, state, __) {
+          final value = state.totalDevices == 0
+              ? null
+              : state.currentIndex / state.totalDevices;
+          return AlertDialog(
+            backgroundColor: const Color(0xFF2C2C2E),
+            title: const Text("Запуск всех планшетов",
+                style: TextStyle(fontSize: 17)),
+            content: SizedBox(
+              width: 460,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  LinearProgressIndicator(
+                    value: value,
+                    backgroundColor: Colors.white12,
+                    color: Colors.blue,
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    "${state.currentIndex}/${state.totalDevices}: ${state.currentDevice}",
+                    style: const TextStyle(
+                        fontSize: 13, fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(state.currentStep,
+                      style:
+                          const TextStyle(fontSize: 12, color: Colors.white60)),
+                  const SizedBox(height: 14),
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(maxHeight: 220),
+                    child: SingleChildScrollView(
+                      child: Column(
+                        children: state.deviceStates.entries.map((entry) {
+                          final active = entry.key == state.currentDevice;
+                          final done = entry.value.startsWith("Готово") ||
+                              entry.value == "Актуально";
+                          final error = entry.value.startsWith("Ошибка");
+                          return Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 4),
+                            child: Row(
+                              children: [
+                                Icon(
+                                  error
+                                      ? Icons.error_outline_rounded
+                                      : done
+                                          ? Icons.check_circle_outline_rounded
+                                          : active
+                                              ? Icons.sync_rounded
+                                              : Icons.schedule_rounded,
+                                  size: 16,
+                                  color: error
+                                      ? Colors.redAccent
+                                      : done
+                                          ? Colors.greenAccent
+                                          : active
+                                              ? Colors.blue
+                                              : Colors.white24,
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(entry.key,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(fontSize: 12)),
+                                ),
+                                const SizedBox(width: 8),
+                                Flexible(
+                                  child: Text(entry.value,
+                                      overflow: TextOverflow.ellipsis,
+                                      textAlign: TextAlign.right,
+                                      style: const TextStyle(
+                                          fontSize: 11, color: Colors.white54)),
+                                ),
+                              ],
+                            ),
+                          );
+                        }).toList(),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => cancelled = true,
+                child: const Text("Остановить после текущего"),
+              ),
+            ],
+          );
+        },
+      ),
+    );
 
     // Конвертация не-mp4 → mp4 один раз для общей медиа-папки.
-    final norm = await Transcoder.normalizeDir(mediaDir);
+    final norm =
+        await Transcoder.normalizeDir(mediaDir, onProgress: (file, i, total) {
+      progress.value = progress.value.copyWith(
+        currentDevice: "Подготовка...",
+        currentStep: "Конвертация ($i/$total): $file",
+      );
+    });
 
     final Map<String, SyncResult> results = {};
-    for (final dev in online) {
+    for (int i = 0; i < online.length; i++) {
+      if (cancelled) break;
+      final dev = online[i];
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text("Синхронизация: ${dev.name}..."),
-        backgroundColor: Colors.blue.shade700,
-        duration: const Duration(seconds: 2),
-      ));
+      progress.value = progress.value.updateDevice(
+        dev.name,
+        "Подключение",
+        currentIndex: i + 1,
+        currentDevice: dev.name,
+        currentStep: "Подключение к ${dev.ip}",
+      );
       final result = await adb.syncDeviceDirect(
         dev.ip,
         mediaDir,
         tryHttpFirst: statuses[dev.ip]?.httpAvailable ?? true,
+        onProgress: (done, total, file) {
+          if (file.isEmpty) return;
+          progress.value = progress.value.updateDevice(
+            dev.name,
+            "($done/$total) $file",
+            currentStep: "Файл $done из $total: $file",
+          );
+        },
       );
       if (result.success && (statuses[dev.ip]?.online ?? false)) {
+        progress.value = progress.value.updateDevice(
+          dev.name,
+          "Запуск",
+          currentStep: "Запускаю плеер на ${dev.name}",
+        );
         await adb.wakeUp(dev.ip, launchPlayer: true);
       }
       results[dev.name] = result;
+      progress.value = progress.value.updateDevice(
+        dev.name,
+        result.success
+            ? (result.pushed.isEmpty
+                ? "Актуально"
+                : "Готово: ${result.pushed.length}")
+            : "Ошибка",
+        currentStep: result.success
+            ? "${dev.name}: синхронизация завершена"
+            : "${dev.name}: ${result.error ?? 'ошибка синхронизации'}",
+      );
     }
 
     if (!mounted) return;
+    Navigator.of(context, rootNavigator: true).pop();
+    progress.dispose();
     final lines = results.entries.map((e) {
       final r = e.value;
       if (!r.success) {
@@ -778,8 +966,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
       context: context,
       builder: (c) => AlertDialog(
         backgroundColor: const Color(0xFF2C2C2E),
-        title: const Text("Синхронизация завершена"),
-        content: Text(lines, style: const TextStyle(fontSize: 13)),
+        title: Text(cancelled
+            ? "Синхронизация остановлена"
+            : "Синхронизация завершена"),
+        content: Text(
+            lines.isEmpty ? "Ни один планшет не был синхронизирован" : lines,
+            style: const TextStyle(fontSize: 13)),
         actions: [
           TextButton(onPressed: () => Navigator.pop(c), child: const Text("OK"))
         ],
@@ -848,8 +1040,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
       ),
     );
     final mediaDir = await MediaConfig.resolveDir();
-    final norm = await Transcoder.normalizeDir(mediaDir,
-        onProgress: (file, i, total) {
+    final norm =
+        await Transcoder.normalizeDir(mediaDir, onProgress: (file, i, total) {
       progress.value = "Конвертация ($i/$total): $file";
     });
     if (cancelled) {
@@ -1164,13 +1356,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   canControl ? () => _showDeviceControls(dev) : null,
                   tooltip: "Громкость и яркость"),
               const SizedBox(width: 8),
-              _smallAppleBtn(
-                  Icons.wb_sunny_rounded,
+              _smallAppleBtn(Icons.wb_sunny_rounded,
                   canControl ? () => _wakeScreen(dev) : null,
                   tooltip: "Включить экран"),
               const SizedBox(width: 8),
-              _smallAppleBtn(
-                  Icons.power_settings_new_rounded,
+              _smallAppleBtn(Icons.power_settings_new_rounded,
                   canControl ? () => _sleepScreen(dev) : null,
                   tooltip: "Выключить экран"),
             ],
@@ -1318,7 +1508,8 @@ class _MediaScreenState extends State<MediaScreen> {
   Future<void> _normalizeMedia() async {
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text("Обработка видео (конвертация в MP4 при необходимости)..."),
+        content:
+            Text("Обработка видео (конвертация в MP4 при необходимости)..."),
         duration: Duration(seconds: 2),
       ));
     }
@@ -1801,7 +1992,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
     });
     _pairingTimer?.cancel();
     _pairingTimer = Timer.periodic(const Duration(seconds: 1), (t) {
-      if (!mounted) { t.cancel(); return; }
+      if (!mounted) {
+        t.cancel();
+        return;
+      }
       setState(() => _pairingSecondsLeft--);
       if (_pairingSecondsLeft <= 0) _stopPairing();
     });
@@ -1810,7 +2004,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
   void _stopPairing() {
     _pairingTimer?.cancel();
     globalServer?.stopPairing();
-    if (mounted) setState(() { _pairingActive = false; _pairingSecondsLeft = 0; });
+    if (mounted) {
+      setState(() {
+        _pairingActive = false;
+        _pairingSecondsLeft = 0;
+      });
+    }
   }
 
   Future<void> _loadAutoStart() async {
