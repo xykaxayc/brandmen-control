@@ -86,20 +86,32 @@ class DeviceHttp {
         try {
           final request = http.StreamedRequest(
               'POST', Uri.parse('$_base/upload/$encodedName'));
-          request.headers['Content-Length'] = size.toString();
+          request.contentLength = size;
           request.headers['Content-Type'] = 'application/octet-stream';
           request.headers['Connection'] = 'close';
 
+          // ВАЖНО: send() запускаем ДО подачи данных в sink. StreamedRequest
+          // начинает читать тело только после send(); если сначала ждать
+          // addStream/close, отправка зависает навсегда (таймаут не сработает).
+          final responseFuture = request.send();
+
           int sent = 0;
-          await request.sink.addStream(file.openRead().map((chunk) {
-            sent += chunk.length;
-            onProgress?.call(sent, size);
-            return chunk;
-          }));
-          await request.sink.close();
+          file.openRead().listen(
+            (chunk) {
+              sent += chunk.length;
+              onProgress?.call(sent, size);
+              request.sink.add(chunk);
+            },
+            onDone: () => request.sink.close(),
+            onError: (Object e) {
+              request.sink.addError(e);
+              request.sink.close();
+            },
+            cancelOnError: true,
+          );
 
           final response =
-              await request.send().timeout(const Duration(minutes: 10));
+              await responseFuture.timeout(const Duration(minutes: 10));
           await response.stream.drain<void>();
           return response.statusCode == 200;
         } catch (e) {

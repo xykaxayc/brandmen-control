@@ -653,14 +653,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
       ));
       return;
     }
-    final canLaunch = statuses[dev.ip]?.adbOnline ?? false;
+    final canLaunch = statuses[dev.ip]?.online ?? false;
     if (canLaunch) {
       await adb.wakeUp(dev.ip, launchPlayer: true);
     }
     if (mounted) Navigator.of(context, rootNavigator: true).pop();
     progress.dispose();
     if (!mounted) return;
-    final launchText = canLaunch ? ", запущено" : ", ADB недоступен";
+    final launchText = canLaunch ? ", запущено" : ", устройство офлайн";
     final fallbackText = result.usedFallback ? " через fallback" : "";
     final summary = result.pushed.isEmpty
         ? "Все файлы актуальны$launchText"
@@ -692,7 +692,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final Map<String, SyncResult> results = {};
     await Future.wait(online.map((dev) async {
       final result = await adb.syncDeviceDirect(dev.ip, mediaDir);
-      if (result.success && (statuses[dev.ip]?.adbOnline ?? false)) {
+      if (result.success && (statuses[dev.ip]?.online ?? false)) {
         await adb.wakeUp(dev.ip, launchPlayer: true);
       }
       results[dev.name] = result;
@@ -952,7 +952,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Widget _deviceCard(SavedDevice dev) {
     final status = statuses[dev.ip];
     final isOnline = status?.online ?? false;
-    final canControl = status?.adbOnline ?? false;
+    // Управление (питание/громкость/яркость) работает и по HTTP, и по ADB,
+    // поэтому достаточно, чтобы устройство было онлайн любым способом.
+    final canControl = isOnline;
     final bat = int.tryParse(status?.battery ?? "0") ?? 0;
 
     return Container(
