@@ -322,8 +322,9 @@ class AdbManager {
     String ip,
     String localDir, {
     void Function(int done, int total, String filename)? onProgress,
+    bool tryHttpFirst = true,
   }) async {
-    final httpOk = await DeviceHttp.isAvailable(ip);
+    final httpOk = tryHttpFirst && await DeviceHttp.isAvailable(ip);
     if (httpOk) {
       AppLogger.log('Sync $ip: используем HTTP (порт 5011)');
       final httpResult =
@@ -350,7 +351,9 @@ class AdbManager {
             'HTTP: ${httpResult.error ?? 'ошибка'}; ADB: ${adbResult.error ?? 'ошибка'}',
       );
     }
-    AppLogger.log('Sync $ip: HTTP недоступен, используем ADB');
+    AppLogger.log(tryHttpFirst
+        ? 'Sync $ip: HTTP недоступен, используем ADB'
+        : 'Sync $ip: используем ADB без проверки HTTP');
     return _syncViaAdb(ip, localDir, onProgress: onProgress);
   }
 
