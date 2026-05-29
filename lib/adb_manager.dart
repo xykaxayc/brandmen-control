@@ -256,7 +256,13 @@ class AdbManager {
   // Проверяет все IP параллельно
   Future<List<DeviceStatus>> checkAll(List<String> ips) async {
     if (ips.isEmpty) return [];
-    return Future.wait(ips.map(checkDevice));
+    final results = <DeviceStatus>[];
+    const batchSize = 3;
+    for (var i = 0; i < ips.length; i += batchSize) {
+      final batch = ips.skip(i).take(batchSize);
+      results.addAll(await Future.wait(batch.map(checkDevice)));
+    }
+    return results;
   }
 
   // Очищает все offline-соединения из ADB-кэша
