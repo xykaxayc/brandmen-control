@@ -11,19 +11,27 @@ import 'media_config.dart';
 import 'transcoder.dart';
 
 const int kServerPort = 5010;
-const _videoExts = ['.mp4', '.mkv', '.mov', '.avi', '.wmv', '.flv', '.webm'];
 
+// Кэш md5 по ключу path+mtime+size. Ограничен по размеру, чтобы не расти вечно
+// при долгой работе сервиса (раньше Map рос без удаления старых записей).
+const int _hashCacheMax = 500;
 final Map<String, String> _hashCache = {};
 
 Future<String> _getFileHash(File file) async {
   try {
     final stat = await file.stat();
-    final cacheKey = "${file.path}_${stat.modified.millisecondsSinceEpoch}_${stat.size}";
-    if (_hashCache.containsKey(cacheKey)) {
-      return _hashCache[cacheKey]!;
+    final cacheKey =
+        "${file.path}_${stat.modified.millisecondsSinceEpoch}_${stat.size}";
+    final cached = _hashCache.remove(cacheKey);
+    if (cached != null) {
+      _hashCache[cacheKey] = cached; // освежаем порядок (LRU)
+      return cached;
     }
     final hash = await md5.bind(file.openRead()).first;
     final h = hash.toString();
+    if (_hashCache.length >= _hashCacheMax) {
+      _hashCache.remove(_hashCache.keys.first); // выбрасываем самый старый
+    }
     _hashCache[cacheKey] = h;
     return h;
   } catch (e) {
@@ -74,22 +82,22 @@ class BrandmenServer {
         final allFiles = dir.listSync().whereType<File>().toList();
         final videos = allFiles.where((f) {
           final name = p.basename(f.path);
-          final ext = p.extension(name).toLowerCase();
-          if (!_videoExts.contains(ext)) return false;
+          if (!isVideoFile(name)) return false;
+          // Исходник заменён сконвертированным mp4 — не отдаём его.
           return !Transcoder.hasMp4Twin(videoDir, name);
         });
         final playlist = allFiles
             .where((f) => p.basename(f.path).toLowerCase() == 'playlist.m3u');
 
-        final files = [];
-        for (var f in [...videos, ...playlist]) {
-          files.add({
-            "name": p.basename(f.path),
-            "size": f.lengthSync(),
-            "md5": await _getFileHash(f),
-          });
-        }
-        
+        // Хешируем файлы параллельно: на первом запросе (холодный кэш)
+        // последовательный await по каждому файлу складывался в секунды.
+        final entries = [...videos, ...playlist];
+        final files = await Future.wait(entries.map((f) async => {
+              "name": p.basename(f.path),
+              "size": await f.length(),
+              "md5": await _getFileHash(f),
+            }));
+
         return Response.ok(jsonEncode({"files": files}),
             headers: {'content-type': 'application/json; charset=utf-8'});
       }

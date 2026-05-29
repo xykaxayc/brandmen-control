@@ -73,50 +73,56 @@ class DeviceHttp {
 
   /// Отправляет файл на планшет.
   /// onProgress(отправлено, всего) вызывается по мере отправки.
+  /// [client] — переиспользуемый клиент: позволяет держать одно TCP-соединение
+  /// (keep-alive) на всю сессию синка вместо нового на каждый файл. Если не
+  /// передан, создаётся и закрывается внутри.
   Future<bool> uploadFile(
     File file, {
     void Function(int sent, int total)? onProgress,
+    http.Client? client,
   }) async {
     final name = p.basename(file.path);
     final encodedName = Uri.encodeComponent(name);
     final size = await file.length();
+    // Таймаут зависит от размера: фикс. 10 мин не хватало крупным роликам на
+    // слабом WiFi. Закладываем ~0.5 МБ/с минимум + базовые 60с, потолок 60 мин.
+    final uploadTimeout = Duration(
+      seconds: (60 + size / (512 * 1024)).round().clamp(60, 3600),
+    );
     return _retry(
       'HTTP upload $ip/$name',
       () async {
+        final ownClient = client == null;
+        final c = client ?? http.Client();
         try {
           final request = http.StreamedRequest(
               'POST', Uri.parse('$_base/upload/$encodedName'));
           request.contentLength = size;
           request.headers['Content-Type'] = 'application/octet-stream';
-          request.headers['Connection'] = 'close';
 
           // ВАЖНО: send() запускаем ДО подачи данных в sink. StreamedRequest
           // начинает читать тело только после send(); если сначала ждать
           // addStream/close, отправка зависает навсегда (таймаут не сработает).
-          final responseFuture = request.send();
+          // addStream (в отличие от sink.add в listen) даёт backpressure —
+          // файл не буферизуется целиком в память, а подаётся со скоростью сети.
+          final responseFuture = c.send(request);
 
           int sent = 0;
-          file.openRead().listen(
-            (chunk) {
-              sent += chunk.length;
-              onProgress?.call(sent, size);
-              request.sink.add(chunk);
-            },
-            onDone: () => request.sink.close(),
-            onError: (Object e) {
-              request.sink.addError(e);
-              request.sink.close();
-            },
-            cancelOnError: true,
-          );
+          await request.sink.addStream(file.openRead().map((chunk) {
+            sent += chunk.length;
+            onProgress?.call(sent, size);
+            return chunk;
+          }));
+          await request.sink.close();
 
-          final response =
-              await responseFuture.timeout(const Duration(minutes: 10));
+          final response = await responseFuture.timeout(uploadTimeout);
           await response.stream.drain<void>();
           return response.statusCode == 200;
         } catch (e) {
           AppLogger.log('DeviceHttp.upload $name → $ip: $e');
           return false;
+        } finally {
+          if (ownClient) c.close();
         }
       },
       (ok) => ok,
@@ -179,7 +185,9 @@ class DeviceHttp {
           'brightness': (j['brightness'] as num).toInt(),
         };
       }
-    } catch (_) {}
+    } catch (e) {
+      AppLogger.log('DeviceHttp.controlStatus $ip: $e');
+    }
     return null;
   }
 
@@ -193,7 +201,8 @@ class DeviceHttp {
           )
           .timeout(const Duration(seconds: 3));
       return r.statusCode == 200;
-    } catch (_) {
+    } catch (e) {
+      AppLogger.log('DeviceHttp.controlAction $action → $ip: $e');
       return false;
     }
   }
@@ -213,7 +222,9 @@ class DeviceHttp {
           'playing': (j['playing'] as bool? ?? false),
         };
       }
-    } catch (_) {}
+    } catch (e) {
+      AppLogger.log('DeviceHttp.controlNow $ip: $e');
+    }
     return null;
   }
 

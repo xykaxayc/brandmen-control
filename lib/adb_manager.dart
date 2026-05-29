@@ -6,6 +6,7 @@ import 'package:path/path.dart' as p;
 import 'logger.dart';
 import 'device_http.dart';
 import 'transcoder.dart';
+import 'media_config.dart';
 
 class DeviceStatus {
   final String ip;
@@ -323,13 +324,17 @@ class AdbManager {
     String localDir, {
     void Function(int done, int total, String filename)? onProgress,
     bool tryHttpFirst = true,
+    bool Function()? isCancelled,
   }) async {
     final httpOk = tryHttpFirst && await DeviceHttp.isAvailable(ip);
     if (httpOk) {
       AppLogger.log('Sync $ip: используем HTTP (порт 5011)');
-      final httpResult =
-          await _syncViaHttp(ip, localDir, onProgress: onProgress);
+      final httpResult = await _syncViaHttp(ip, localDir,
+          onProgress: onProgress, isCancelled: isCancelled);
       if (httpResult.success) return httpResult;
+
+      // Пользователь нажал «Отмена» — не уходим в ADB-фолбэк.
+      if (isCancelled?.call() ?? false) return httpResult;
 
       AppLogger.log(
           'Sync $ip: HTTP не завершился, пробую ADB fallback: ${httpResult.error}');
@@ -361,6 +366,7 @@ class AdbManager {
     String ip,
     String localDir, {
     void Function(int done, int total, String filename)? onProgress,
+    bool Function()? isCancelled,
   }) async {
     final client = DeviceHttp(ip);
     final localFolder = Directory(localDir);
@@ -389,36 +395,44 @@ class AdbManager {
       if (lower.startsWith('.')) return false;
       // Исходник заменён сконвертированным mp4 — не отправляем его.
       if (Transcoder.hasMp4Twin(localDir, name)) return false;
-      return lower == 'playlist.m3u' ||
-          ['.mp4', '.mkv', '.mov', '.avi', '.webm'].contains(p.extension(lower));
+      return lower == 'playlist.m3u' || isVideoFile(lower);
     }).toList();
 
     final List<String> pushed = [];
     final List<String> failed = [];
-    for (int i = 0; i < localFiles.length; i++) {
-      final f = localFiles[i];
-      final name = p.basename(f.path);
-      final isPlaylist = name.toLowerCase() == 'playlist.m3u';
-      final localSize = await f.length();
+    // Один клиент на всю сессию: TCP-соединение переиспользуется (keep-alive)
+    // вместо пересоздания на каждый файл.
+    final httpClient = http.Client();
+    try {
+      for (int i = 0; i < localFiles.length; i++) {
+        if (isCancelled?.call() ?? false) {
+          return SyncResult(
+              success: false, pushed: pushed, error: 'Отменено', transport: 'HTTP');
+        }
+        final f = localFiles[i];
+        final name = p.basename(f.path);
+        final isPlaylist = name.toLowerCase() == 'playlist.m3u';
+        final localSize = await f.length();
 
-      onProgress?.call(i, localFiles.length, name);
+        onProgress?.call(i, localFiles.length, name);
 
-      if (!isPlaylist && remoteFiles[name] == localSize) continue;
+        if (!isPlaylist && remoteFiles[name] == localSize) continue;
 
-      AppLogger.log(
-          'HTTP sync $ip: upload $name (${(localSize / 1024 / 1024).toStringAsFixed(1)} MB)');
-      final ok = await client.uploadFile(f);
-      if (ok && !isPlaylist) pushed.add(name);
-      if (!ok) failed.add(name);
+        AppLogger.log(
+            'HTTP sync $ip: upload $name (${(localSize / 1024 / 1024).toStringAsFixed(1)} MB)');
+        final ok = await client.uploadFile(f, client: httpClient);
+        if (ok && !isPlaylist) pushed.add(name);
+        if (!ok) failed.add(name);
+      }
+    } finally {
+      httpClient.close();
     }
     onProgress?.call(localFiles.length, localFiles.length, '');
 
     // Удаляем лишние файлы на устройстве
     final localNames = localFiles.map((f) => p.basename(f.path)).toSet();
     for (final remoteName in remoteFiles.keys) {
-      if (!localNames.contains(remoteName) &&
-          ['.mp4', '.mkv', '.mov', '.avi', '.webm']
-              .contains(p.extension(remoteName).toLowerCase())) {
+      if (!localNames.contains(remoteName) && isVideoFile(remoteName)) {
         AppLogger.log('HTTP sync $ip: удаляю $remoteName');
         final ok = await client.deleteFile(remoteName);
         if (!ok) failed.add('удаление $remoteName');
@@ -488,8 +502,7 @@ class AdbManager {
       if (lower.startsWith('.')) return false;
       // Исходник заменён сконвертированным mp4 — не отправляем его.
       if (Transcoder.hasMp4Twin(localDir, name)) return false;
-      return lower == 'playlist.m3u' ||
-          ['.mp4', '.mkv', '.mov', '.avi', '.webm'].contains(p.extension(lower));
+      return lower == 'playlist.m3u' || isVideoFile(lower);
     }).toList();
 
     final List<String> pushed = [];
@@ -533,9 +546,7 @@ class AdbManager {
 
     final localNames = localFiles.map((f) => p.basename(f.path)).toSet();
     for (final remoteName in remoteSizes.keys) {
-      if (!localNames.contains(remoteName) &&
-          ['.mp4', '.mkv', '.mov', '.avi', '.webm']
-              .contains(p.extension(remoteName).toLowerCase())) {
+      if (!localNames.contains(remoteName) && isVideoFile(remoteName)) {
         AppLogger.log("Sync $ip: удаляю $remoteName");
         final quoted = _shellQuote('$_remoteDir/$remoteName');
         final res = await _retry(
@@ -606,6 +617,12 @@ class AdbManager {
     if (match != null) return int.tryParse(match.group(1)!) ?? 8;
     final any = RegExp(r'\d+').firstMatch(out);
     return any != null ? (int.tryParse(any.group(0)!) ?? 8) : 8;
+  }
+
+  // Максимум громкости устройства (HTTP), по умолчанию 15.
+  Future<int> getVolumeMax(String ip) async {
+    final status = await DeviceHttp(ip).controlStatus();
+    return status?['volumeMax'] ?? 15;
   }
 
   Future<void> setBrightness(String ip, int level) async {

@@ -1,5 +1,4 @@
 import 'dart:io';
-import 'dart:ui';
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
@@ -350,14 +349,13 @@ class _MainScreenState extends State<MainScreen> {
             ),
           ),
           Expanded(
-            child: ClipRect(
-              child: BackdropFilter(
-                filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-                child: IndexedStack(
-                  index: _selectedIndex,
-                  children: screens,
-                ),
-              ),
+            // Раньше здесь был полноэкранный BackdropFilter (blur 10×10) — он
+            // пересчитывался каждый кадр и давал заметные лаги при скролле и
+            // анимациях, а визуально поверх градиента почти ничего не давал.
+            // Убран. IndexedStack сохраняет состояние вкладок при переключении.
+            child: IndexedStack(
+              index: _selectedIndex,
+              children: screens,
             ),
           ),
         ],
@@ -369,32 +367,72 @@ class _MainScreenState extends State<MainScreen> {
     bool active = _selectedIndex == index;
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-      child: InkWell(
-        onTap: () => setState(() => _selectedIndex = index),
-        borderRadius: BorderRadius.circular(10),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-          decoration: BoxDecoration(
-            color: active
-                ? Colors.blue.withValues(alpha: 0.15)
-                : Colors.transparent,
-            borderRadius: BorderRadius.circular(10),
-          ),
-          child: Row(
-            children: [
-              Icon(icon,
-                  color: active ? Colors.blue : Colors.white60, size: 20),
-              const SizedBox(width: 12),
-              Text(label,
+      child: _HoverBuilder(
+        builder: (hovered) => InkWell(
+          onTap: () => setState(() => _selectedIndex = index),
+          borderRadius: BorderRadius.circular(10),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 180),
+            curve: Curves.easeOut,
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            decoration: BoxDecoration(
+              color: active
+                  ? Colors.blue.withValues(alpha: 0.15)
+                  : hovered
+                      ? Colors.white.withValues(alpha: 0.05)
+                      : Colors.transparent,
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Row(
+              children: [
+                AnimatedScale(
+                  scale: active ? 1.1 : 1.0,
+                  duration: const Duration(milliseconds: 180),
+                  curve: Curves.easeOut,
+                  child: Icon(icon,
+                      color: active ? Colors.blue : Colors.white60, size: 20),
+                ),
+                const SizedBox(width: 12),
+                AnimatedDefaultTextStyle(
+                  duration: const Duration(milliseconds: 180),
                   style: TextStyle(
-                      color: active ? Colors.white : Colors.white60,
+                      color: active
+                          ? Colors.white
+                          : hovered
+                              ? Colors.white70
+                              : Colors.white60,
                       fontSize: 14,
                       fontWeight:
-                          active ? FontWeight.w600 : FontWeight.normal)),
-            ],
+                          active ? FontWeight.w600 : FontWeight.normal),
+                  child: Text(label),
+                ),
+              ],
+            ),
           ),
         ),
       ),
+    );
+  }
+}
+
+/// Отслеживает наведение мыши и пересобирает потомка с флагом hovered.
+/// Для плавных hover-эффектов на десктопе без дублирования MouseRegion.
+class _HoverBuilder extends StatefulWidget {
+  final Widget Function(bool hovered) builder;
+  const _HoverBuilder({required this.builder});
+  @override
+  State<_HoverBuilder> createState() => _HoverBuilderState();
+}
+
+class _HoverBuilderState extends State<_HoverBuilder> {
+  bool _hovered = false;
+  @override
+  Widget build(BuildContext context) {
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      onEnter: (_) => setState(() => _hovered = true),
+      onExit: (_) => setState(() => _hovered = false),
+      child: widget.builder(_hovered),
     );
   }
 }
@@ -460,6 +498,20 @@ class _DashboardScreenState extends State<DashboardScreen> {
   final Map<String, String> _thumbnails = {};
   bool _isLoading = false;
   bool _isRegistering = false;
+  // Идёт длительная операция (синк/запуск/завершение смены). Блокирует кнопки,
+  // чтобы две операции не дрались за один WiFi-канал и ADB одновременно.
+  bool _busy = false;
+
+  /// Выполняет операцию монопольно: пока она идёт, кнопки действий выключены.
+  Future<void> _guard(Future<void> Function() op) async {
+    if (_busy) return;
+    if (mounted) setState(() => _busy = true);
+    try {
+      await op();
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
 
   @override
   void initState() {
@@ -477,17 +529,20 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Future<void> _captureAll() async {
     final tempDir = await getTemporaryDirectory();
-    for (final dev in saved) {
-      if (statuses[dev.ip]?.online != true) continue;
-      final path =
-          p.join(tempDir.path, "thumb_${dev.ip.replaceAll('.', '_')}.png");
-      final result = await adb.takeScreenshot(dev.ip, path);
-      if (result != null && mounted) {
-        setState(() {
-          _thumbnails[dev.ip] = result;
-        });
-      }
-    }
+    // Параллельно: раньше скриншоты снимались по очереди через ADB screencap,
+    // и refresh с несколькими планшетами заметно подвисал.
+    await Future.wait(saved.where((d) => statuses[d.ip]?.online == true).map(
+      (dev) async {
+        final path =
+            p.join(tempDir.path, "thumb_${dev.ip.replaceAll('.', '_')}.png");
+        final result = await adb.takeScreenshot(dev.ip, path);
+        if (result != null && mounted) {
+          setState(() {
+            _thumbnails[dev.ip] = result;
+          });
+        }
+      },
+    ));
   }
 
   Future<void> _refresh() async {
@@ -584,10 +639,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Future<void> _showDeviceControls(SavedDevice dev) async {
     final vol = await adb.getVolume(dev.ip);
     final bright = await adb.getBrightness(dev.ip);
+    final volMax = await adb.getVolumeMax(dev.ip);
     if (!mounted) return;
 
     int currentVol = vol;
     int currentBright = bright;
+    final maxVol = volMax.clamp(1, 100);
 
     await showDialog(
       context: context,
@@ -619,10 +676,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       const SizedBox(width: 12),
                       Expanded(
                         child: Slider(
-                          value: currentVol.toDouble(),
+                          value: currentVol.toDouble().clamp(0, maxVol.toDouble()),
                           min: 0,
-                          max: 15,
-                          divisions: 15,
+                          max: maxVol.toDouble(),
+                          divisions: maxVol,
                           label: "$currentVol",
                           onChanged: (v) =>
                               setLocal(() => currentVol = v.round()),
@@ -633,7 +690,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       ),
                       SizedBox(
                           width: 44,
-                          child: Text("$currentVol/15",
+                          child: Text("$currentVol/$maxVol",
                               style: const TextStyle(
                                   color: Colors.white70, fontSize: 12),
                               textAlign: TextAlign.right)),
@@ -729,6 +786,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       dev.ip,
       mediaDir,
       tryHttpFirst: statuses[dev.ip]?.httpAvailable ?? true,
+      isCancelled: () => cancelled,
       onProgress: (done, total, file) {
         if (file.isNotEmpty) progress.value = "($done/$total) $file";
       },
@@ -770,7 +828,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (norm.ffmpegMissing) await _showFfmpegMissingDialog();
   }
 
-  Future<void> _syncAndPlayAll() async {
+  Future<void> _syncAndPlayAll() => _syncAll(launch: true);
+
+  /// Тихая синхронизация всех онлайн-устройств БЕЗ запуска/перезапуска плеера.
+  Future<void> _syncOnlyAll() => _syncAll(launch: false);
+
+  /// Синхронизация всех онлайн-устройств последовательно (каждому — весь канал)
+  /// с прогрессом и отменой. При [launch] после синка перезапускает плеер.
+  Future<void> _syncAll({required bool launch}) async {
     final online = saved.where((d) => statuses[d.ip]?.online == true).toList();
     if (online.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
@@ -803,8 +868,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
               : state.currentIndex / state.totalDevices;
           return AlertDialog(
             backgroundColor: const Color(0xFF2C2C2E),
-            title: const Text("Запуск всех планшетов",
-                style: TextStyle(fontSize: 17)),
+            title: Text(
+                launch ? "Запуск всех планшетов" : "Синхронизация (без запуска)",
+                style: const TextStyle(fontSize: 17)),
             content: SizedBox(
               width: 460,
               child: Column(
@@ -917,6 +983,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         dev.ip,
         mediaDir,
         tryHttpFirst: statuses[dev.ip]?.httpAvailable ?? true,
+        isCancelled: () => cancelled,
         onProgress: (done, total, file) {
           if (file.isEmpty) return;
           progress.value = progress.value.updateDevice(
@@ -926,7 +993,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
           );
         },
       );
-      if (result.success && (statuses[dev.ip]?.online ?? false)) {
+      // Запускаем плеер только в режиме «Запустить все»; тихий синк не трогает.
+      if (launch && result.success && (statuses[dev.ip]?.online ?? false)) {
         progress.value = progress.value.updateDevice(
           dev.name,
           "Запуск",
@@ -948,13 +1016,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
       );
     }
 
-    if (!mounted) return;
-    Navigator.of(context, rootNavigator: true).pop();
+    // Отмена закрывает диалог и прекращает без сводки.
+    if (mounted) Navigator.of(context, rootNavigator: true).pop();
     progress.dispose();
+    if (!mounted || cancelled) return;
     final lines = results.entries.map((e) {
       final r = e.value;
       if (!r.success) {
-        return "${e.key}: ошибка - ${r.error ?? 'синхронизация не выполнена'}";
+        return "${e.key}: ошибка — ${r.error ?? 'синхронизация не выполнена'}";
       }
       final transport =
           r.usedFallback ? '${r.transport}, fallback' : r.transport;
@@ -1052,6 +1121,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       dev.ip,
       mediaDir,
       tryHttpFirst: statuses[dev.ip]?.httpAvailable ?? true,
+      isCancelled: () => cancelled,
       onProgress: (done, total, file) {
         if (file.isNotEmpty) progress.value = "($done/$total) $file";
       },
@@ -1143,7 +1213,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 runSpacing: 12,
                 children: [
                   OutlinedButton.icon(
-                    onPressed: _isRegistering ? null : _registerViaUsb,
+                    onPressed: (_isRegistering || _busy) ? null : _registerViaUsb,
                     icon: _isRegistering
                         ? const SizedBox(
                             width: 16,
@@ -1162,7 +1232,24 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     ),
                   ),
                   OutlinedButton.icon(
-                    onPressed: saved.isEmpty ? null : _syncAndPlayAll,
+                    onPressed: (saved.isEmpty || _busy)
+                        ? null
+                        : () => _guard(_syncOnlyAll),
+                    icon: const Icon(Icons.sync_rounded),
+                    label: const Text("Синхронизировать"),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.white70,
+                      side: const BorderSide(color: Colors.white24),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 18, vertical: 16),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
+                    ),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: (saved.isEmpty || _busy)
+                        ? null
+                        : () => _guard(_syncAndPlayAll),
                     icon: const Icon(Icons.cast_connected_rounded),
                     label: const Text("Запустить все"),
                     style: OutlinedButton.styleFrom(
@@ -1175,7 +1262,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     ),
                   ),
                   OutlinedButton.icon(
-                    onPressed: saved.isEmpty ? null : _endShift,
+                    onPressed: (saved.isEmpty || _busy) ? null : _endShift,
                     icon: const Icon(Icons.power_settings_new_rounded),
                     label: const Text("Завершить смену"),
                     style: OutlinedButton.styleFrom(
@@ -1188,7 +1275,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     ),
                   ),
                   ElevatedButton.icon(
-                    onPressed: _isLoading ? null : _refresh,
+                    onPressed: (_isLoading || _busy) ? null : _refresh,
                     icon: _isLoading
                         ? const SizedBox(
                             width: 16,
@@ -1219,6 +1306,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       final cols =
                           (constraints.maxWidth / 280).floor().clamp(1, 6);
                       return GridView.builder(
+                        physics: const BouncingScrollPhysics(
+                            parent: AlwaysScrollableScrollPhysics()),
                         gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
                           crossAxisCount: cols,
                           crossAxisSpacing: 20,
@@ -1263,32 +1352,57 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final canControl = isOnline;
     final bat = int.tryParse(status?.battery ?? "0") ?? 0;
 
-    return Container(
-      decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.05),
-        borderRadius: BorderRadius.circular(24),
-        border: Border.all(
-            color: isOnline
-                ? Colors.green.withValues(alpha: 0.2)
-                : Colors.white.withValues(alpha: 0.05)),
-      ),
-      padding: const EdgeInsets.all(20),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Row(
-                children: [
-                  Container(
-                    width: 10,
-                    height: 10,
-                    decoration: BoxDecoration(
-                      color: isOnline ? Colors.greenAccent : Colors.white24,
-                      shape: BoxShape.circle,
+    return _HoverBuilder(
+      builder: (hovered) => AnimatedContainer(
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOut,
+        transform: hovered
+            ? Matrix4.translationValues(0, -3, 0)
+            : Matrix4.identity(),
+        decoration: BoxDecoration(
+          color: Colors.white.withValues(alpha: hovered ? 0.07 : 0.05),
+          borderRadius: BorderRadius.circular(24),
+          border: Border.all(
+              color: isOnline
+                  ? Colors.green.withValues(alpha: hovered ? 0.4 : 0.2)
+                  : Colors.white.withValues(alpha: 0.05)),
+          boxShadow: hovered
+              ? [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.25),
+                    blurRadius: 18,
+                    offset: const Offset(0, 6),
+                  )
+                ]
+              : null,
+        ),
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Row(
+                  children: [
+                    AnimatedContainer(
+                      duration: const Duration(milliseconds: 300),
+                      width: 10,
+                      height: 10,
+                      decoration: BoxDecoration(
+                        color: isOnline ? Colors.greenAccent : Colors.white24,
+                        shape: BoxShape.circle,
+                        boxShadow: isOnline
+                            ? [
+                                BoxShadow(
+                                  color: Colors.greenAccent
+                                      .withValues(alpha: 0.6),
+                                  blurRadius: 6,
+                                )
+                              ]
+                            : null,
+                      ),
                     ),
-                  ),
                   const SizedBox(width: 8),
                   Text(isOnline ? status?.transport ?? "Online" : "Offline",
                       style: TextStyle(
@@ -1322,16 +1436,24 @@ class _DashboardScreenState extends State<DashboardScreen> {
               borderRadius: BorderRadius.circular(12),
               child: AspectRatio(
                 aspectRatio: 16 / 9,
-                child: _thumbnails.containsKey(dev.ip)
-                    ? Image.file(File(_thumbnails[dev.ip]!),
-                        fit: BoxFit.cover, key: ValueKey(_thumbnails[dev.ip]))
-                    : Container(
-                        color: Colors.black26,
-                        child: Icon(
-                            isOnline
-                                ? Icons.videocam_off_rounded
-                                : Icons.wifi_off_rounded,
-                            color: Colors.white10)),
+                // Превью проявляется плавно при обновлении скриншота.
+                child: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 350),
+                  switchInCurve: Curves.easeOut,
+                  child: _thumbnails.containsKey(dev.ip)
+                      ? Image.file(File(_thumbnails[dev.ip]!),
+                          fit: BoxFit.cover,
+                          gaplessPlayback: true,
+                          key: ValueKey(_thumbnails[dev.ip]))
+                      : Container(
+                          key: const ValueKey('placeholder'),
+                          color: Colors.black26,
+                          child: Icon(
+                              isOnline
+                                  ? Icons.videocam_off_rounded
+                                  : Icons.wifi_off_rounded,
+                              color: Colors.white10)),
+                ),
               ),
             ),
           ),
@@ -1345,11 +1467,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
           Row(
             children: [
               _smallAppleBtn(Icons.play_arrow_rounded,
-                  isOnline ? () => _syncAndPlay(dev) : null,
+                  (isOnline && !_busy) ? () => _guard(() => _syncAndPlay(dev)) : null,
                   tooltip: "Синхронизировать плейлист и запустить"),
               const SizedBox(width: 8),
-              _smallAppleBtn(
-                  Icons.sync_rounded, isOnline ? () => _syncOnly(dev) : null,
+              _smallAppleBtn(Icons.sync_rounded,
+                  (isOnline && !_busy) ? () => _guard(() => _syncOnly(dev)) : null,
                   tooltip: "Только синхронизация (без перезапуска)"),
               const SizedBox(width: 8),
               _smallAppleBtn(Icons.tune_rounded,
@@ -1367,24 +1489,41 @@ class _DashboardScreenState extends State<DashboardScreen> {
           )
         ],
       ),
-    );
+    ));
   }
 
   Widget _smallAppleBtn(IconData icon, VoidCallback? onTap, {String? tooltip}) {
-    final btn = InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(8),
-      child: Container(
-        padding: const EdgeInsets.all(8),
-        decoration: BoxDecoration(
-          color: Colors.white.withValues(alpha: onTap == null ? 0.02 : 0.05),
-          borderRadius: BorderRadius.circular(8),
+    final enabled = onTap != null;
+    final btn = _HoverBuilder(
+      builder: (hovered) => InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(8),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 150),
+          curve: Curves.easeOut,
+          padding: const EdgeInsets.all(8),
+          decoration: BoxDecoration(
+            color: !enabled
+                ? Colors.white.withValues(alpha: 0.02)
+                : Colors.white.withValues(alpha: hovered ? 0.14 : 0.05),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Icon(icon,
+              size: 18,
+              color: !enabled
+                  ? Colors.white12
+                  : hovered
+                      ? Colors.white
+                      : Colors.white70),
         ),
-        child: Icon(icon,
-            size: 18, color: onTap == null ? Colors.white12 : Colors.white70),
       ),
     );
-    return tooltip != null ? Tooltip(message: tooltip, child: btn) : btn;
+    // MouseRegion-курсор внутри _HoverBuilder работает только для активной
+    // кнопки; для выключенной оставляем обычный курсор.
+    final wrapped = enabled
+        ? btn
+        : MouseRegion(cursor: SystemMouseCursors.basic, child: btn);
+    return tooltip != null ? Tooltip(message: tooltip, child: wrapped) : wrapped;
   }
 }
 
@@ -1481,8 +1620,7 @@ class _MediaScreenState extends State<MediaScreen> {
       if (lower == _playlistFileName) return false;
       // Не показываем исходник, если он уже сконвертирован в mp4.
       if (Transcoder.hasMp4Twin(_videoDir.path, name)) return false;
-      return ['.mp4', '.mkv', '.mov', '.avi', '.webm']
-          .contains(p.extension(lower));
+      return isVideoFile(lower);
     }).toList();
 
     final savedOrder = await _loadSavedOrder();
@@ -1628,8 +1766,7 @@ class _MediaScreenState extends State<MediaScreen> {
     int added = 0;
     int skipped = 0;
     for (final path in paths) {
-      final ext = p.extension(path).toLowerCase();
-      if (!['.mp4', '.mkv', '.mov', '.avi', '.webm'].contains(ext)) {
+      if (!isVideoFile(path)) {
         skipped++;
         continue;
       }
