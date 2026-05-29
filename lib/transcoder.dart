@@ -24,6 +24,9 @@ class NormalizeResult {
 class Transcoder {
   Transcoder._();
 
+  static const _conversionProfileVersion = 2;
+  static const _profileMarkerPrefix = '# Brandmen conversion profile ';
+
   static String? _cachedFfmpeg;
   static bool _searched = false;
 
@@ -36,7 +39,10 @@ class Transcoder {
   static Future<String?> findFfmpeg() async {
     if (_searched) return _cachedFfmpeg;
     _searched = true;
+    final exeDir = p.dirname(Platform.resolvedExecutable);
     final candidates = <String>[
+      p.join(exeDir, 'ffmpeg', Platform.isWindows ? 'ffmpeg.exe' : 'ffmpeg'),
+      p.join(exeDir, Platform.isWindows ? 'ffmpeg.exe' : 'ffmpeg'),
       'ffmpeg', // PATH
       '/opt/homebrew/bin/ffmpeg', // Apple Silicon brew
       '/usr/local/bin/ffmpeg', // Intel brew
@@ -97,13 +103,18 @@ class Transcoder {
     if (toConvert.isEmpty) return const NormalizeResult();
 
     // Нужно ли вообще что-то делать (нет ли свежих mp4 для всех)?
-    final pending = toConvert.where((f) {
+    final pending = <File>[];
+    for (final f in toConvert) {
       final base = p.basenameWithoutExtension(f.path);
       final out = File(p.join(dir, '$base.mp4'));
-      if (!out.existsSync()) return true;
-      return !out.statSync().modified.isAfter(f.statSync().modified) &&
-          !out.statSync().modified.isAtSameMomentAs(f.statSync().modified);
-    }).toList();
+      if (!out.existsSync() ||
+          (!out.statSync().modified.isAfter(f.statSync().modified) &&
+              !out.statSync().modified.isAtSameMomentAs(
+                  f.statSync().modified)) ||
+          !await _hasCurrentProfileMarker(dir, p.basename(f.path))) {
+        pending.add(f);
+      }
+    }
 
     if (pending.isEmpty) {
       // Всё уже сконвертировано — просто убеждаемся, что плейлист на mp4.
@@ -122,7 +133,7 @@ class Transcoder {
       final src = pending[i];
       final base = p.basenameWithoutExtension(src.path);
       final outPath = p.join(dir, '$base.mp4');
-      final tmp = File('$outPath.tmp');
+      final tmp = File('$outPath.tmp.mp4');
 
       onProgress?.call(p.basename(src.path), i, pending.length);
 
@@ -132,12 +143,28 @@ class Transcoder {
       final r = await Process.run(ffmpeg, [
         '-y',
         '-i', src.path,
+        '-map', '0:v:0',
+        '-map', '0:a:0?',
+        '-map_metadata', '-1',
+        '-map_chapters', '-1',
+        '-sn',
+        '-dn',
+        '-f', 'mp4',
         '-c:v', 'libx264',
+        '-profile:v', 'baseline',
+        '-level:v', '3.1',
         '-preset', 'veryfast',
         '-crf', '23',
+        '-maxrate', '5000k',
+        '-bufsize', '10000k',
+        '-x264-params', 'bframes=0:ref=1',
         '-pix_fmt', 'yuv420p', // важно для совместимости с Android-декодерами
+        '-colorspace', 'bt709',
+        '-color_primaries', 'bt709',
+        '-color_trc', 'bt709',
         // гарантируем чётные размеры (требование H.264)
-        '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2',
+        '-vf',
+        'scale=w=min(1280\\,iw):h=min(720\\,ih):force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2,setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709',
         '-c:a', 'aac',
         '-b:a', '128k',
         '-movflags', '+faststart',
@@ -148,6 +175,7 @@ class Transcoder {
         final out = File(outPath);
         if (await out.exists()) await out.delete();
         await tmp.rename(outPath);
+        await _writeProfileMarker(dir, p.basename(src.path));
         converted.add('$base.mp4');
         AppLogger.log('ffmpeg: готово $base.mp4');
       } else {
@@ -160,6 +188,28 @@ class Transcoder {
 
     await _rewritePlaylist(dir);
     return NormalizeResult(converted: converted, failed: failed);
+  }
+
+  static File _profileMarkerFile(String dir, String sourceName) {
+    return File(p.join(dir, '.$sourceName.brandmen-conversion'));
+  }
+
+  static Future<bool> _hasCurrentProfileMarker(
+      String dir, String sourceName) async {
+    final marker = _profileMarkerFile(dir, sourceName);
+    if (!await marker.exists()) return false;
+    try {
+      final text = await marker.readAsString();
+      return text.trim() == '$_profileMarkerPrefix$_conversionProfileVersion';
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static Future<void> _writeProfileMarker(String dir, String sourceName) async {
+    final marker = _profileMarkerFile(dir, sourceName);
+    await marker.writeAsString(
+        '$_profileMarkerPrefix$_conversionProfileVersion\n');
   }
 
   /// Переписывает playlist.m3u: строки с не-mp4 именами заменяет на mp4-двойник,
