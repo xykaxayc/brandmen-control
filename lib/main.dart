@@ -830,16 +830,20 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Future<void> _syncAndPlayAll() => _syncAll(launch: true);
 
-  /// Запуск на всех с приглушённым звуком (громкость 0 после старта плеера).
-  Future<void> _syncAndPlayAllMuted() => _syncAll(launch: true, mute: true);
+  /// Запуск на всех с приглушённым звуком БЕЗ синхронизации файлов:
+  /// просто будит и перезапускает плеер, затем ставит громкость 0.
+  Future<void> _syncAndPlayAllMuted() =>
+      _syncAll(launch: true, mute: true, sync: false);
 
   /// Тихая синхронизация всех онлайн-устройств БЕЗ запуска/перезапуска плеера.
   Future<void> _syncOnlyAll() => _syncAll(launch: false);
 
-  /// Синхронизация всех онлайн-устройств последовательно (каждому — весь канал)
-  /// с прогрессом и отменой. При [launch] после синка перезапускает плеер;
-  /// при [mute] сразу после запуска ставит громкость 0.
-  Future<void> _syncAll({required bool launch, bool mute = false}) async {
+  /// Прогон по всем онлайн-устройствам последовательно с прогрессом и отменой.
+  /// [sync] — сверять/докачивать файлы (иначе только запуск);
+  /// [launch] — после этого перезапустить плеер;
+  /// [mute] — сразу после запуска поставить громкость 0.
+  Future<void> _syncAll(
+      {required bool launch, bool mute = false, bool sync = true}) async {
     final online = saved.where((d) => statuses[d.ip]?.online == true).toList();
     if (online.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
@@ -856,7 +860,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         currentIndex: 0,
         totalDevices: online.length,
         currentDevice: "Подготовка...",
-        currentStep: "Проверяю медиатеку",
+        currentStep: sync ? "Проверяю медиатеку" : "Запуск плеера",
         deviceStates: {for (final dev in online) dev.name: "В очереди"},
       ),
     );
@@ -906,7 +910,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         children: state.deviceStates.entries.map((entry) {
                           final active = entry.key == state.currentDevice;
                           final done = entry.value.startsWith("Готово") ||
-                              entry.value == "Актуально";
+                              entry.value == "Актуально" ||
+                              entry.value == "Запущено";
                           final error = entry.value.startsWith("Ошибка");
                           return Padding(
                             padding: const EdgeInsets.symmetric(vertical: 4),
@@ -964,43 +969,59 @@ class _DashboardScreenState extends State<DashboardScreen> {
       ),
     );
 
-    // Конвертация не-mp4 → mp4 один раз для общей медиа-папки.
-    final norm =
-        await Transcoder.normalizeDir(mediaDir, onProgress: (file, i, total) {
-      progress.value = progress.value.copyWith(
-        currentDevice: "Подготовка...",
-        currentStep: "Конвертация ($i/$total): $file",
-      );
-    });
+    // Конвертация не-mp4 → mp4 один раз для общей медиа-папки (только при синке).
+    final norm = sync
+        ? await Transcoder.normalizeDir(mediaDir, onProgress: (file, i, total) {
+            progress.value = progress.value.copyWith(
+              currentDevice: "Подготовка...",
+              currentStep: "Конвертация ($i/$total): $file",
+            );
+          })
+        : null;
 
     final Map<String, SyncResult> results = {};
     for (int i = 0; i < online.length; i++) {
       if (cancelled) break;
       final dev = online[i];
       if (!mounted) return;
-      progress.value = progress.value.updateDevice(
-        dev.name,
-        "Подключение",
-        currentIndex: i + 1,
-        currentDevice: dev.name,
-        currentStep: "Подключение к ${dev.ip}",
-      );
-      final result = await adb.syncDeviceDirect(
-        dev.ip,
-        mediaDir,
-        tryHttpFirst: statuses[dev.ip]?.httpAvailable ?? true,
-        isCancelled: () => cancelled,
-        onProgress: (done, total, file) {
-          if (file.isEmpty) return;
-          progress.value = progress.value.updateDevice(
-            dev.name,
-            "($done/$total) $file",
-            currentStep: "Файл $done из $total: $file",
-          );
-        },
-      );
-      // Запускаем плеер только в режиме «Запустить все»; тихий синк не трогает.
-      if (launch && result.success && (statuses[dev.ip]?.online ?? false)) {
+      final deviceOnline = statuses[dev.ip]?.online ?? false;
+
+      SyncResult result;
+      if (sync) {
+        progress.value = progress.value.updateDevice(
+          dev.name,
+          "Подключение",
+          currentIndex: i + 1,
+          currentDevice: dev.name,
+          currentStep: "Подключение к ${dev.ip}",
+        );
+        result = await adb.syncDeviceDirect(
+          dev.ip,
+          mediaDir,
+          tryHttpFirst: statuses[dev.ip]?.httpAvailable ?? true,
+          isCancelled: () => cancelled,
+          onProgress: (done, total, file) {
+            if (file.isEmpty) return;
+            progress.value = progress.value.updateDevice(
+              dev.name,
+              "($done/$total) $file",
+              currentStep: "Файл $done из $total: $file",
+            );
+          },
+        );
+      } else {
+        // Без синхронизации: только запуск, файлы не трогаем.
+        progress.value = progress.value.updateDevice(
+          dev.name,
+          "Запуск",
+          currentIndex: i + 1,
+          currentDevice: dev.name,
+          currentStep: "Запуск плеера на ${dev.ip}",
+        );
+        result = const SyncResult(success: true, pushed: [], transport: 'launch');
+      }
+
+      if (launch && result.success && deviceOnline) {
         progress.value = progress.value.updateDevice(
           dev.name,
           mute ? "Запуск (без звука)" : "Запуск",
@@ -1014,14 +1035,18 @@ class _DashboardScreenState extends State<DashboardScreen> {
       results[dev.name] = result;
       progress.value = progress.value.updateDevice(
         dev.name,
-        result.success
-            ? (result.pushed.isEmpty
-                ? "Актуально"
-                : "Готово: ${result.pushed.length}")
-            : "Ошибка",
-        currentStep: result.success
-            ? "${dev.name}: синхронизация завершена"
-            : "${dev.name}: ${result.error ?? 'ошибка синхронизации'}",
+        !result.success
+            ? "Ошибка"
+            : !sync
+                ? "Запущено"
+                : (result.pushed.isEmpty
+                    ? "Актуально"
+                    : "Готово: ${result.pushed.length}"),
+        currentStep: !result.success
+            ? "${dev.name}: ${result.error ?? 'ошибка'}"
+            : !sync
+                ? "${dev.name}: запущено"
+                : "${dev.name}: синхронизация завершена",
       );
     }
 
@@ -1032,8 +1057,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final lines = results.entries.map((e) {
       final r = e.value;
       if (!r.success) {
-        return "${e.key}: ошибка — ${r.error ?? 'синхронизация не выполнена'}";
+        return "${e.key}: ошибка — ${r.error ?? 'не выполнено'}";
       }
+      if (!sync) return "${e.key}: запущено";
       final transport =
           r.usedFallback ? '${r.transport}, fallback' : r.transport;
       return r.pushed.isEmpty
@@ -1044,18 +1070,20 @@ class _DashboardScreenState extends State<DashboardScreen> {
       context: context,
       builder: (c) => AlertDialog(
         backgroundColor: const Color(0xFF2C2C2E),
-        title: Text(cancelled
-            ? "Синхронизация остановлена"
+        title: Text(!sync
+            ? "Запуск завершён"
             : "Синхронизация завершена"),
         content: Text(
-            lines.isEmpty ? "Ни один планшет не был синхронизирован" : lines,
+            lines.isEmpty
+                ? "Ни один планшет не был обработан"
+                : lines,
             style: const TextStyle(fontSize: 13)),
         actions: [
           TextButton(onPressed: () => Navigator.pop(c), child: const Text("OK"))
         ],
       ),
     );
-    if (norm.ffmpegMissing) await _showFfmpegMissingDialog();
+    if (norm?.ffmpegMissing ?? false) await _showFfmpegMissingDialog();
   }
 
   Future<void> _showFfmpegMissingDialog() async {
