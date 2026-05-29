@@ -132,13 +132,30 @@ class AppUpdater {
 
   static Future<List<dynamic>> _fetchReleases() async {
     final response = await http.get(
-      Uri.parse(_kReleasesUrl),
-      headers: {'User-Agent': 'BrandmenControl/$kAppVersion'},
+      Uri.parse(
+          '$_kReleasesUrl&_=${DateTime.now().millisecondsSinceEpoch}'),
+      headers: {
+        'Accept': 'application/vnd.github+json',
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache',
+        'User-Agent': 'BrandmenControl/$kAppVersion',
+      },
     ).timeout(const Duration(seconds: 10));
 
-    if (response.statusCode != 200) return [];
+    if (response.statusCode != 200) {
+      AppLogger.log('GitHub releases: HTTP ${response.statusCode}');
+      return [];
+    }
     final list = jsonDecode(response.body);
-    return list is List ? list : [];
+    if (list is! List) return [];
+    list.sort((a, b) {
+      final av = ((a as Map?)?['tag_name'] as String? ?? '')
+          .replaceFirst('v', '');
+      final bv = ((b as Map?)?['tag_name'] as String? ?? '')
+          .replaceFirst('v', '');
+      return _compareVersions(bv, av);
+    });
+    return list;
   }
 
   // Ищет новейший релиз (свежее currentVersion), содержащий подходящий ассет.
@@ -294,8 +311,12 @@ rm -- "\$0"
   }
 
   static bool _isNewer(String remote, String local) {
-    if (remote.isEmpty || remote == '0.0.0') return false;
-    if (local.isEmpty) return false;
+    return _compareVersions(remote, local) > 0;
+  }
+
+  static int _compareVersions(String remote, String local) {
+    if (remote.isEmpty || remote == '0.0.0') return 0;
+    if (local.isEmpty) return 0;
     List<int> parse(String v) =>
         v.split('.').map((s) => int.tryParse(s) ?? 0).toList();
     final r = parse(remote);
@@ -303,9 +324,9 @@ rm -- "\$0"
     for (int i = 0; i < 3; i++) {
       final rv = i < r.length ? r[i] : 0;
       final lv = i < l.length ? l[i] : 0;
-      if (rv > lv) return true;
-      if (rv < lv) return false;
+      if (rv > lv) return 1;
+      if (rv < lv) return -1;
     }
-    return false;
+    return 0;
   }
 }
