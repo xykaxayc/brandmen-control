@@ -681,6 +681,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final result = await adb.syncDeviceDirect(
       dev.ip,
       mediaDir,
+      tryHttpFirst: statuses[dev.ip]?.httpAvailable ?? true,
       onProgress: (done, total, file) {
         if (file.isNotEmpty) progress.value = "($done/$total) $file";
       },
@@ -743,13 +744,23 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final norm = await Transcoder.normalizeDir(mediaDir);
 
     final Map<String, SyncResult> results = {};
-    await Future.wait(online.map((dev) async {
-      final result = await adb.syncDeviceDirect(dev.ip, mediaDir);
+    for (final dev in online) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text("Синхронизация: ${dev.name}..."),
+        backgroundColor: Colors.blue.shade700,
+        duration: const Duration(seconds: 2),
+      ));
+      final result = await adb.syncDeviceDirect(
+        dev.ip,
+        mediaDir,
+        tryHttpFirst: statuses[dev.ip]?.httpAvailable ?? true,
+      );
       if (result.success && (statuses[dev.ip]?.online ?? false)) {
         await adb.wakeUp(dev.ip, launchPlayer: true);
       }
       results[dev.name] = result;
-    }));
+    }
 
     if (!mounted) return;
     final lines = results.entries.map((e) {
@@ -848,6 +859,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final result = await adb.syncDeviceDirect(
       dev.ip,
       mediaDir,
+      tryHttpFirst: statuses[dev.ip]?.httpAvailable ?? true,
       onProgress: (done, total, file) {
         if (file.isNotEmpty) progress.value = "($done/$total) $file";
       },
