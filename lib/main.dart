@@ -358,7 +358,10 @@ class _MainScreenState extends State<MainScreen> {
             child: ClipRect(
               child: BackdropFilter(
                 filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-                child: screens[_selectedIndex],
+                child: IndexedStack(
+                  index: _selectedIndex,
+                  children: screens,
+                ),
               ),
             ),
           ),
@@ -448,6 +451,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Future<void> _refresh() async {
     if (mounted) setState(() => _isLoading = true);
     final list = await DeviceStorage.load();
+    if (mounted) {
+      setState(() {
+        saved = list;
+      });
+    }
     final results = await adb.checkAll(list.map((d) => d.ip).toList());
     if (mounted) {
       setState(() {
