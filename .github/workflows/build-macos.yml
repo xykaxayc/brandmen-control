@@ -50,6 +50,14 @@ jobs:
       - name: Build macOS release
         run: flutter build macos --release --dart-define=APP_VERSION=${{ steps.ver.outputs.version }}
 
+      - name: Bundle FFmpeg
+        run: |
+          curl -L 'https://evermeet.cx/ffmpeg/getrelease/zip' -o ffmpeg.zip
+          unzip -o ffmpeg.zip -d ffmpeg-dist
+          mkdir -p build/macos/Build/Products/Release/brandmen_windows.app/Contents/MacOS/ffmpeg
+          cp ffmpeg-dist/ffmpeg build/macos/Build/Products/Release/brandmen_windows.app/Contents/MacOS/ffmpeg/ffmpeg
+          chmod +x build/macos/Build/Products/Release/brandmen_windows.app/Contents/MacOS/ffmpeg/ffmpeg
+
       - name: Zip .app
         run: |
           cd build/macos/Build/Products/Release

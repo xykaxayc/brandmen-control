@@ -8,6 +8,7 @@ import 'dart:convert';
 import 'package:crypto/crypto.dart';
 import 'package:nsd/nsd.dart';
 import 'media_config.dart';
+import 'transcoder.dart';
 
 const int kServerPort = 5010;
 const _videoExts = ['.mp4', '.mkv', '.mov', '.avi', '.wmv', '.flv', '.webm'];
@@ -71,8 +72,12 @@ class BrandmenServer {
               headers: {'content-type': 'application/json; charset=utf-8'});
         }
         final allFiles = dir.listSync().whereType<File>().toList();
-        final videos = allFiles.where(
-            (f) => _videoExts.contains(p.extension(f.path).toLowerCase()));
+        final videos = allFiles.where((f) {
+          final name = p.basename(f.path);
+          final ext = p.extension(name).toLowerCase();
+          if (!_videoExts.contains(ext)) return false;
+          return !Transcoder.hasMp4Twin(videoDir, name);
+        });
         final playlist = allFiles
             .where((f) => p.basename(f.path).toLowerCase() == 'playlist.m3u');
 

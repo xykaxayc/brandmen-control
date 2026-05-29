@@ -36,7 +36,10 @@ class Transcoder {
   static Future<String?> findFfmpeg() async {
     if (_searched) return _cachedFfmpeg;
     _searched = true;
+    final exeDir = p.dirname(Platform.resolvedExecutable);
     final candidates = <String>[
+      p.join(exeDir, 'ffmpeg', Platform.isWindows ? 'ffmpeg.exe' : 'ffmpeg'),
+      p.join(exeDir, Platform.isWindows ? 'ffmpeg.exe' : 'ffmpeg'),
       'ffmpeg', // PATH
       '/opt/homebrew/bin/ffmpeg', // Apple Silicon brew
       '/usr/local/bin/ffmpeg', // Intel brew
@@ -122,7 +125,7 @@ class Transcoder {
       final src = pending[i];
       final base = p.basenameWithoutExtension(src.path);
       final outPath = p.join(dir, '$base.mp4');
-      final tmp = File('$outPath.tmp');
+      final tmp = File('$outPath.tmp.mp4');
 
       onProgress?.call(p.basename(src.path), i, pending.length);
 
@@ -132,6 +135,7 @@ class Transcoder {
       final r = await Process.run(ffmpeg, [
         '-y',
         '-i', src.path,
+        '-f', 'mp4',
         '-c:v', 'libx264',
         '-preset', 'veryfast',
         '-crf', '23',
