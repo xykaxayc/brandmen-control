@@ -57,6 +57,8 @@ jobs:
           mkdir -p build/macos/Build/Products/Release/brandmen_windows.app/Contents/MacOS/ffmpeg
           cp ffmpeg-dist/ffmpeg build/macos/Build/Products/Release/brandmen_windows.app/Contents/MacOS/ffmpeg/ffmpeg
           chmod +x build/macos/Build/Products/Release/brandmen_windows.app/Contents/MacOS/ffmpeg/ffmpeg
+          codesign --force --deep --sign - --timestamp=none build/macos/Build/Products/Release/brandmen_windows.app
+          codesign --verify --deep --strict build/macos/Build/Products/Release/brandmen_windows.app
 
       - name: Zip .app
         run: |
