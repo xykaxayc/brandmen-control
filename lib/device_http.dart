@@ -186,9 +186,29 @@ class DeviceHttp {
     }
   }
 
+  /// Читает текущий проигрываемый ролик: index, total, name, playing.
+  Future<Map<String, dynamic>?> controlNow() async {
+    try {
+      final r = await http
+          .get(Uri.parse('$_base/api/control/now'))
+          .timeout(const Duration(seconds: 3));
+      if (r.statusCode == 200) {
+        final j = jsonDecode(r.body) as Map<String, dynamic>;
+        return {
+          'index': (j['index'] as num? ?? -1).toInt(),
+          'total': (j['total'] as num? ?? 0).toInt(),
+          'name': (j['name'] as String? ?? ''),
+          'playing': (j['playing'] as bool? ?? false),
+        };
+      }
+    } catch (_) {}
+    return null;
+  }
+
   Future<bool> wake() => controlAction('wake');
   Future<bool> httpSleep() => controlAction('sleep');
   Future<bool> launch() => controlAction('launch');
+  Future<bool> restart() => controlAction('restart');
   Future<bool> setVolumeHttp(int level) => controlAction('volume', {'level': level});
   Future<bool> setBrightnessHttp(int level) => controlAction('brightness', {'level': level});
 }

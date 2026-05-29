@@ -51,6 +51,7 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
     private android.net.wifi.WifiManager.MulticastLock multicastLock;
 
     private MediaServer mediaServer;
+    private android.os.PowerManager.WakeLock wakeLock;
     private android.app.admin.DevicePolicyManager dpm;
     private android.content.ComponentName adminComponent;
 
@@ -886,6 +887,9 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
 
     @Override protected void onDestroy() {
         if (mediaServer != null) mediaServer.stop();
+        if (wakeLock != null && wakeLock.isHeld()) {
+            try { wakeLock.release(); } catch (Exception ignored) {}
+        }
         super.onDestroy();
     }
 
@@ -893,12 +897,15 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
 
     @Override public void onWake() {
         android.os.PowerManager pm = (android.os.PowerManager) getSystemService(POWER_SERVICE);
-        android.os.PowerManager.WakeLock wl = pm.newWakeLock(
+        if (wakeLock != null && wakeLock.isHeld()) {
+            try { wakeLock.release(); } catch (Exception ignored) {}
+        }
+        wakeLock = pm.newWakeLock(
             android.os.PowerManager.FULL_WAKE_LOCK |
             android.os.PowerManager.ACQUIRE_CAUSES_WAKEUP |
             android.os.PowerManager.ON_AFTER_RELEASE,
             "Brandmen::RemoteWake");
-        wl.acquire(10_000L);
+        wakeLock.acquire(10_000L);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             android.app.KeyguardManager km = (android.app.KeyguardManager) getSystemService(KEYGUARD_SERVICE);
@@ -935,6 +942,28 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
         loadVideos();
         currentIndex = 0;
         playNext();
+    }
+
+    @Override public void onRestart() {
+        currentIndex = 0;
+        playNext();
+    }
+
+    @Override public int getCurrentIndex() {
+        return videoFiles.isEmpty() ? -1 : currentIndex;
+    }
+
+    @Override public int getPlaylistCount() {
+        return videoFiles.size();
+    }
+
+    @Override public String getCurrentName() {
+        if (currentIndex < 0 || currentIndex >= videoFiles.size()) return "";
+        return videoFiles.get(currentIndex).getName();
+    }
+
+    @Override public boolean isPlaying() {
+        try { return videoView.isPlaying(); } catch (Exception e) { return false; }
     }
 
     @Override public int getVolume() {
@@ -987,7 +1016,8 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
 
     private boolean isVideo(String name) {
         String n = name.toLowerCase();
-        return n.endsWith(".mp4") || n.endsWith(".mkv") || n.endsWith(".mov") || n.endsWith(".avi");
+        return n.endsWith(".mp4") || n.endsWith(".mkv") || n.endsWith(".mov")
+                || n.endsWith(".avi") || n.endsWith(".webm");
     }
 
     private void playNext() {

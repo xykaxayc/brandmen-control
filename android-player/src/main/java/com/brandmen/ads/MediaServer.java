@@ -22,7 +22,9 @@ import java.util.*;
  *   POST /api/control/volume?level= — set volume (0..volumeMax)
  *   POST /api/control/brightness?level= — set brightness (0..255)
  *   POST /api/control/launch        — reload playlist and play
+ *   POST /api/control/restart       — restart playback from the first clip
  *   GET  /api/control/status        — {"volume":8,"volumeMax":15,"brightness":128}
+ *   GET  /api/control/now           — {"index":0,"total":3,"name":"ad.mp4","playing":true}
  */
 public class MediaServer {
     public static final int PORT = 5011;
@@ -34,9 +36,14 @@ public class MediaServer {
         void onVolume(int level);
         void onBrightness(int level);
         void onLaunch();
+        void onRestart();
         int getVolume();
         int getVolumeMax();
         int getBrightness();
+        int getCurrentIndex();
+        int getPlaylistCount();
+        String getCurrentName();
+        boolean isPlaying();
     }
 
     private final String mediaDir;
@@ -177,6 +184,16 @@ public class MediaServer {
             sendJson(out, 200, "{\"volume\":" + vol + ",\"volumeMax\":" + volMax + ",\"brightness\":" + bright + "}");
             return;
         }
+        if (action.equals("now") && method.equals("GET")) {
+            if (callback == null) { sendJson(out, 503, "{\"error\":\"no_callback\"}"); return; }
+            int index = callback.getCurrentIndex();
+            int total = callback.getPlaylistCount();
+            String name = callback.getCurrentName();
+            boolean playing = callback.isPlaying();
+            sendJson(out, 200, "{\"index\":" + index + ",\"total\":" + total
+                + ",\"name\":\"" + escJson(name == null ? "" : name) + "\",\"playing\":" + playing + "}");
+            return;
+        }
         if (!method.equals("POST")) { sendText(out, 405, "Method Not Allowed"); return; }
         if (callback == null) { sendJson(out, 503, "{\"error\":\"no_callback\"}"); return; }
 
@@ -191,6 +208,10 @@ public class MediaServer {
                 break;
             case "launch":
                 mainHandler.post(callback::onLaunch);
+                sendJson(out, 200, "{\"ok\":true}");
+                break;
+            case "restart":
+                mainHandler.post(callback::onRestart);
                 sendJson(out, 200, "{\"ok\":true}");
                 break;
             case "volume": {
