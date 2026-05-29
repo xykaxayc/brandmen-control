@@ -250,11 +250,6 @@ class _MainScreenState extends State<MainScreen> {
 
   Future<void> _cleanupOnStart() async {
     await adb.cleanupOffline();
-    final saved = await DeviceStorage.load();
-    if (saved.isNotEmpty) {
-      AppLogger.log("Переподключение ${saved.length} устройств по WiFi...");
-      await adb.checkAll(saved.map((d) => d.ip).toList());
-    }
   }
 
   @override
