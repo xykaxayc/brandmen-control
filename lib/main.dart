@@ -830,12 +830,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Future<void> _syncAndPlayAll() => _syncAll(launch: true);
 
+  /// Запуск на всех с приглушённым звуком (громкость 0 после старта плеера).
+  Future<void> _syncAndPlayAllMuted() => _syncAll(launch: true, mute: true);
+
   /// Тихая синхронизация всех онлайн-устройств БЕЗ запуска/перезапуска плеера.
   Future<void> _syncOnlyAll() => _syncAll(launch: false);
 
   /// Синхронизация всех онлайн-устройств последовательно (каждому — весь канал)
-  /// с прогрессом и отменой. При [launch] после синка перезапускает плеер.
-  Future<void> _syncAll({required bool launch}) async {
+  /// с прогрессом и отменой. При [launch] после синка перезапускает плеер;
+  /// при [mute] сразу после запуска ставит громкость 0.
+  Future<void> _syncAll({required bool launch, bool mute = false}) async {
     final online = saved.where((d) => statuses[d.ip]?.online == true).toList();
     if (online.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
@@ -869,7 +873,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
           return AlertDialog(
             backgroundColor: const Color(0xFF2C2C2E),
             title: Text(
-                launch ? "Запуск всех планшетов" : "Синхронизация (без запуска)",
+                launch
+                    ? (mute ? "Запуск всех (без звука)" : "Запуск всех планшетов")
+                    : "Синхронизация (без запуска)",
                 style: const TextStyle(fontSize: 17)),
             content: SizedBox(
               width: 460,
@@ -997,10 +1003,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
       if (launch && result.success && (statuses[dev.ip]?.online ?? false)) {
         progress.value = progress.value.updateDevice(
           dev.name,
-          "Запуск",
-          currentStep: "Запускаю плеер на ${dev.name}",
+          mute ? "Запуск (без звука)" : "Запуск",
+          currentStep: mute
+              ? "Запускаю плеер без звука на ${dev.name}"
+              : "Запускаю плеер на ${dev.name}",
         );
         await adb.wakeUp(dev.ip, launchPlayer: true);
+        if (mute) await adb.setVolume(dev.ip, 0);
       }
       results[dev.name] = result;
       progress.value = progress.value.updateDevice(
@@ -1255,6 +1264,21 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     style: OutlinedButton.styleFrom(
                       foregroundColor: Colors.blue,
                       side: const BorderSide(color: Colors.blue),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 18, vertical: 16),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
+                    ),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: (saved.isEmpty || _busy)
+                        ? null
+                        : () => _guard(_syncAndPlayAllMuted),
+                    icon: const Icon(Icons.volume_off_rounded),
+                    label: const Text("Без звука"),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.lightBlueAccent,
+                      side: const BorderSide(color: Colors.lightBlueAccent),
                       padding: const EdgeInsets.symmetric(
                           horizontal: 18, vertical: 16),
                       shape: RoundedRectangleBorder(
@@ -1538,6 +1562,8 @@ class _MediaScreenState extends State<MediaScreen> {
   late Directory _videoDir;
   bool _dragging = false;
   String? _customSourceDir;
+  // Пути выбранных роликов (галочки) для группового удаления.
+  final Set<String> _selected = {};
 
   static const _orderFileName = '.brandmen_order.json';
   static const _playlistFileName = 'playlist.m3u';
@@ -1636,6 +1662,10 @@ class _MediaScreenState extends State<MediaScreen> {
       ..sort((a, b) => b.statSync().modified.compareTo(a.statSync().modified));
     ordered.addAll(newOnes);
 
+    // Убираем из выбора пути, которых больше нет на диске.
+    final livePaths = ordered.map((f) => f.path).toSet();
+    _selected.removeWhere((path) => !livePaths.contains(path));
+
     if (mounted) setState(() => videos = ordered);
     if (savedOrder.length != ordered.length) {
       await _saveOrderAndPlaylist();
@@ -1706,6 +1736,64 @@ class _MediaScreenState extends State<MediaScreen> {
       await _loadVideos();
       await _saveOrderAndPlaylist();
     }
+  }
+
+  Future<void> _deleteSelected() async {
+    if (_selected.isEmpty) return;
+    final count = _selected.length;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        backgroundColor: const Color(0xFF2C2C2E),
+        title: Text("Удалить $count ${_pluralRoliki(count)}?"),
+        content: const Text("Выбранные ролики будут удалены безвозвратно."),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(c, false),
+              child: const Text("Отмена")),
+          TextButton(
+              onPressed: () => Navigator.pop(c, true),
+              child: const Text("Удалить",
+                  style: TextStyle(color: Colors.redAccent))),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    final failed = <String>[];
+    for (final path in _selected.toList()) {
+      try {
+        final f = File(path);
+        if (await f.exists()) await f.delete();
+      } catch (_) {
+        failed.add(p.basename(path));
+      }
+    }
+    _selected.clear();
+    await _loadVideos();
+    await _saveOrderAndPlaylist();
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(failed.isEmpty
+            ? "Удалено: $count"
+            : "Удалено частично, не удалось: ${failed.join(', ')}"),
+        backgroundColor:
+            failed.isEmpty ? Colors.green.shade700 : Colors.red.shade700,
+      ));
+    }
+  }
+
+  String _pluralRoliki(int n) {
+    final mod10 = n % 10, mod100 = n % 100;
+    if (mod10 == 1 && mod100 != 11) return "ролик";
+    if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return "ролика";
+    return "роликов";
+  }
+
+  void _toggleSelected(String path) {
+    setState(() {
+      if (!_selected.add(path)) _selected.remove(path);
+    });
   }
 
   void _previewVideo(File file) {
@@ -1874,29 +1962,7 @@ class _MediaScreenState extends State<MediaScreen> {
                 const SizedBox(height: 12),
                 _sourceFolderBanner(),
                 const SizedBox(height: 12),
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: Colors.blue.withValues(alpha: 0.08),
-                    borderRadius: BorderRadius.circular(8),
-                    border:
-                        Border.all(color: Colors.blue.withValues(alpha: 0.2)),
-                  ),
-                  child: Row(
-                    children: [
-                      Icon(Icons.lightbulb_outline,
-                          color: Colors.blue.shade200, size: 18),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          "Перетащи видео из Finder сюда • Меняй порядок drag&drop • Карандаш = переименовать",
-                          style: TextStyle(
-                              color: Colors.blue.shade200, fontSize: 12),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
+                _selected.isEmpty ? _tipBanner() : _selectionBar(),
                 const SizedBox(height: 20),
                 Expanded(
                   child: videos.isEmpty
@@ -1964,6 +2030,85 @@ class _MediaScreenState extends State<MediaScreen> {
     );
   }
 
+  Widget _tipBanner() {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.blue.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.blue.withValues(alpha: 0.2)),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.lightbulb_outline, color: Colors.blue.shade200, size: 18),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              "Перетащи видео из Finder сюда • Меняй порядок drag&drop • Галочка = выбрать для удаления",
+              style: TextStyle(color: Colors.blue.shade200, fontSize: 12),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Панель массовых действий: появляется, когда отмечен хотя бы один ролик.
+  Widget _selectionBar() {
+    final allSelected =
+        videos.isNotEmpty && _selected.length == videos.length;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: Colors.redAccent.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.redAccent.withValues(alpha: 0.3)),
+      ),
+      child: Row(
+        children: [
+          Checkbox(
+            value: allSelected
+                ? true
+                : (_selected.isEmpty ? false : null),
+            tristate: true,
+            activeColor: Colors.redAccent,
+            onChanged: (_) => setState(() {
+              if (allSelected) {
+                _selected.clear();
+              } else {
+                _selected
+                  ..clear()
+                  ..addAll(videos.map((f) => f.path));
+              }
+            }),
+          ),
+          Text("Выбрано: ${_selected.length}",
+              style: const TextStyle(
+                  fontSize: 13, fontWeight: FontWeight.w600)),
+          const Spacer(),
+          TextButton.icon(
+            onPressed: () => setState(_selected.clear),
+            icon: const Icon(Icons.close_rounded, size: 16),
+            label: const Text("Снять"),
+            style: TextButton.styleFrom(foregroundColor: Colors.white60),
+          ),
+          const SizedBox(width: 8),
+          ElevatedButton.icon(
+            onPressed: _deleteSelected,
+            icon: const Icon(Icons.delete_outline_rounded, size: 18),
+            label: Text("Удалить (${_selected.length})"),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.redAccent,
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10)),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _sourceFolderBanner() {
     if (_customSourceDir == null) return const SizedBox.shrink();
     return Container(
@@ -2008,20 +2153,31 @@ class _MediaScreenState extends State<MediaScreen> {
 
   Widget _videoItem(File file, int index, {required Key key}) {
     final sizeMb = (file.lengthSync() / (1024 * 1024)).toStringAsFixed(1);
+    final selected = _selected.contains(file.path);
     return Container(
       key: key,
       margin: const EdgeInsets.only(bottom: 8),
       decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.04),
+        color: selected
+            ? Colors.redAccent.withValues(alpha: 0.1)
+            : Colors.white.withValues(alpha: 0.04),
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.05)),
+        border: Border.all(
+            color: selected
+                ? Colors.redAccent.withValues(alpha: 0.4)
+                : Colors.white.withValues(alpha: 0.05)),
       ),
       child: Row(
         children: [
+          Checkbox(
+            value: selected,
+            activeColor: Colors.redAccent,
+            onChanged: (_) => _toggleSelected(file.path),
+          ),
           ReorderableDragStartListener(
             index: index,
             child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 16),
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 16),
               child: const Icon(Icons.drag_indicator_rounded,
                   color: Colors.white24, size: 20),
             ),
