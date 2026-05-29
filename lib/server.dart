@@ -158,7 +158,7 @@ class BrandmenServer {
 
     try {
       _registration = await register(
-        Service(name: 'BrandmenServer', type: '_brandmen._tcp', port: kServerPort),
+        const Service(name: 'BrandmenServer', type: '_brandmen._tcp', port: kServerPort),
       );
       AppLogger.log('mDNS сервис зарегистрирован: _brandmen._tcp');
     } catch (e) {
