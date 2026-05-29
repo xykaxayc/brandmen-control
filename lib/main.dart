@@ -508,6 +508,28 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (added > 0) await _refresh();
   }
 
+  Future<void> _wakeScreen(SavedDevice dev) async {
+    AppLogger.log("Включение экрана на ${dev.ip}");
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text("${dev.name}: включаю экран..."),
+        duration: const Duration(seconds: 2),
+      ));
+    }
+    await adb.wakeUp(dev.ip);
+  }
+
+  Future<void> _sleepScreen(SavedDevice dev) async {
+    AppLogger.log("Выключение экрана на ${dev.ip}");
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text("${dev.name}: выключаю экран..."),
+        duration: const Duration(seconds: 2),
+      ));
+    }
+    await adb.sleep(dev.ip);
+  }
+
   Future<void> _showDeviceControls(SavedDevice dev) async {
     final vol = await adb.getVolume(dev.ip);
     final bright = await adb.getBrightness(dev.ip);
@@ -1051,13 +1073,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   tooltip: "Громкость и яркость"),
               const SizedBox(width: 8),
               _smallAppleBtn(
+                  Icons.wb_sunny_rounded,
+                  canControl ? () => _wakeScreen(dev) : null,
+                  tooltip: "Включить экран"),
+              const SizedBox(width: 8),
+              _smallAppleBtn(
                   Icons.power_settings_new_rounded,
-                  canControl
-                      ? () {
-                          AppLogger.log("Выключение экрана на ${dev.ip}");
-                          adb.sleep(dev.ip);
-                        }
-                      : null,
+                  canControl ? () => _sleepScreen(dev) : null,
                   tooltip: "Выключить экран"),
             ],
           )
