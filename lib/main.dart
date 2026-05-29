@@ -633,6 +633,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Future<void> _syncAndPlay(SavedDevice dev) async {
     if (!mounted) return;
     final progress = ValueNotifier<String>("Подключение...");
+    bool cancelled = false;
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -652,6 +653,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
               Expanded(child: Text(msg, style: const TextStyle(fontSize: 13))),
             ],
           ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                cancelled = true;
+                Navigator.of(c).pop();
+              },
+              child: const Text("Отмена"),
+            ),
+          ],
         ),
       ),
     );
@@ -663,6 +673,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
         if (file.isNotEmpty) progress.value = "($done/$total) $file";
       },
     );
+    if (cancelled) {
+      progress.dispose();
+      return;
+    }
     if (!result.success) {
       if (mounted) Navigator.of(context, rootNavigator: true).pop();
       progress.dispose();
@@ -748,6 +762,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Future<void> _syncOnly(SavedDevice dev) async {
     if (!mounted) return;
     final progress = ValueNotifier<String>("Подключение...");
+    bool cancelled = false;
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -767,6 +782,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
               Expanded(child: Text(msg, style: const TextStyle(fontSize: 13))),
             ],
           ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                cancelled = true;
+                Navigator.of(c).pop();
+              },
+              child: const Text("Отмена"),
+            ),
+          ],
         ),
       ),
     );
@@ -778,6 +802,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
         if (file.isNotEmpty) progress.value = "($done/$total) $file";
       },
     );
+    if (cancelled) {
+      progress.dispose();
+      return;
+    }
     if (mounted) Navigator.of(context, rootNavigator: true).pop();
     progress.dispose();
     if (!mounted) return;

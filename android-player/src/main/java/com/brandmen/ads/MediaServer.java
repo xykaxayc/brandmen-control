@@ -135,9 +135,13 @@ public class MediaServer {
                 }
             }
 
-            // Read body for small POST requests (control API)
+            // Read body for small POST requests (control API).
+            // НЕ дочитываем для /upload/ — иначе тело файла (напр. playlist.m3u
+            // размером <4096 байт) будет съедено здесь, и handleUpload получит
+            // пустой поток → зависание до таймаута сокета.
+            boolean isUpload = method.equals("POST") && path.startsWith("/upload/");
             String body = "";
-            if (contentLength > 0 && contentLength <= 4096) {
+            if (!isUpload && contentLength > 0 && contentLength <= 4096) {
                 byte[] bodyBytes = new byte[contentLength];
                 int total = 0;
                 while (total < contentLength) {
