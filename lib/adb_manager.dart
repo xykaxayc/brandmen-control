@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import 'package:path/path.dart' as p;
 import 'logger.dart';
 import 'device_http.dart';
+import 'transcoder.dart';
 
 class DeviceStatus {
   final String ip;
@@ -374,10 +375,13 @@ class AdbManager {
     }
 
     final localFiles = localFolder.listSync().whereType<File>().where((f) {
-      final name = p.basename(f.path).toLowerCase();
-      if (name.startsWith('.')) return false;
-      return name == 'playlist.m3u' ||
-          ['.mp4', '.mkv', '.mov', '.avi', '.webm'].contains(p.extension(name));
+      final name = p.basename(f.path);
+      final lower = name.toLowerCase();
+      if (lower.startsWith('.')) return false;
+      // Исходник заменён сконвертированным mp4 — не отправляем его.
+      if (Transcoder.hasMp4Twin(localDir, name)) return false;
+      return lower == 'playlist.m3u' ||
+          ['.mp4', '.mkv', '.mov', '.avi', '.webm'].contains(p.extension(lower));
     }).toList();
 
     final List<String> pushed = [];
@@ -470,10 +474,13 @@ class AdbManager {
     }
 
     final localFiles = localFolder.listSync().whereType<File>().where((f) {
-      final name = p.basename(f.path).toLowerCase();
-      if (name.startsWith('.')) return false;
-      return name == 'playlist.m3u' ||
-          ['.mp4', '.mkv', '.mov', '.avi', '.webm'].contains(p.extension(name));
+      final name = p.basename(f.path);
+      final lower = name.toLowerCase();
+      if (lower.startsWith('.')) return false;
+      // Исходник заменён сконвертированным mp4 — не отправляем его.
+      if (Transcoder.hasMp4Twin(localDir, name)) return false;
+      return lower == 'playlist.m3u' ||
+          ['.mp4', '.mkv', '.mov', '.avi', '.webm'].contains(p.extension(lower));
     }).toList();
 
     final List<String> pushed = [];

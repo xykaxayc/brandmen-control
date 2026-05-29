@@ -17,6 +17,7 @@ import 'logger.dart';
 import 'tray_manager.dart';
 import 'device_storage.dart';
 import 'media_config.dart';
+import 'transcoder.dart';
 import 'backup_manager.dart';
 import 'autostart.dart';
 import 'updater.dart';
@@ -666,6 +667,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
       ),
     );
     final mediaDir = await MediaConfig.resolveDir();
+    final norm = await Transcoder.normalizeDir(mediaDir,
+        onProgress: (file, i, total) {
+      progress.value = "Конвертация ($i/$total): $file";
+    });
+    if (cancelled) {
+      progress.dispose();
+      return;
+    }
     final result = await adb.syncDeviceDirect(
       dev.ip,
       mediaDir,
@@ -687,6 +696,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         backgroundColor: Colors.red.shade700,
         duration: const Duration(seconds: 6),
       ));
+      if (norm.ffmpegMissing) await _showFfmpegMissingDialog();
       return;
     }
     final canLaunch = statuses[dev.ip]?.online ?? false;
@@ -706,6 +716,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       backgroundColor: Colors.green.shade700,
       duration: const Duration(seconds: 6),
     ));
+    if (norm.ffmpegMissing) await _showFfmpegMissingDialog();
   }
 
   Future<void> _syncAndPlayAll() async {
@@ -724,6 +735,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
       backgroundColor: Colors.blue.shade700,
       duration: const Duration(seconds: 2),
     ));
+
+    // Конвертация не-mp4 → mp4 один раз для общей медиа-папки.
+    final norm = await Transcoder.normalizeDir(mediaDir);
 
     final Map<String, SyncResult> results = {};
     await Future.wait(online.map((dev) async {
@@ -746,7 +760,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ? "${e.key}: актуально ($transport)"
           : "${e.key}: ${r.pushed.length} файлов ($transport)";
     }).join('\n');
-    showDialog(
+    await showDialog(
       context: context,
       builder: (c) => AlertDialog(
         backgroundColor: const Color(0xFF2C2C2E),
@@ -754,6 +768,31 @@ class _DashboardScreenState extends State<DashboardScreen> {
         content: Text(lines, style: const TextStyle(fontSize: 13)),
         actions: [
           TextButton(onPressed: () => Navigator.pop(c), child: const Text("OK"))
+        ],
+      ),
+    );
+    if (norm.ffmpegMissing) await _showFfmpegMissingDialog();
+  }
+
+  Future<void> _showFfmpegMissingDialog() async {
+    if (!mounted) return;
+    await showDialog(
+      context: context,
+      builder: (c) => AlertDialog(
+        backgroundColor: const Color(0xFF2C2C2E),
+        title: const Text("Нужен ffmpeg"),
+        content: const Text(
+          "Найдены ролики .mov/.mkv/.avi/.webm, которые могут не играть на "
+          "планшете (звук идёт, видео нет). Для автоконвертации в MP4 "
+          "установите ffmpeg:\n\n"
+          "• macOS:  brew install ffmpeg\n"
+          "• Windows: скачайте с ffmpeg.org и добавьте в PATH\n\n"
+          "После установки повторите синхронизацию.",
+          style: TextStyle(fontSize: 13),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(c), child: const Text("Понятно")),
         ],
       ),
     );
@@ -795,6 +834,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
       ),
     );
     final mediaDir = await MediaConfig.resolveDir();
+    final norm = await Transcoder.normalizeDir(mediaDir,
+        onProgress: (file, i, total) {
+      progress.value = "Конвертация ($i/$total): $file";
+    });
+    if (cancelled) {
+      progress.dispose();
+      return;
+    }
     final result = await adb.syncDeviceDirect(
       dev.ip,
       mediaDir,
@@ -816,6 +863,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         backgroundColor: Colors.red.shade700,
         duration: const Duration(seconds: 6),
       ));
+      if (norm.ffmpegMissing) await _showFfmpegMissingDialog();
       return;
     }
     final summary = result.pushed.isEmpty
@@ -826,6 +874,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       backgroundColor: Colors.green.shade700,
       duration: const Duration(seconds: 6),
     ));
+    if (norm.ffmpegMissing) await _showFfmpegMissingDialog();
   }
 
   void _endShift() async {
@@ -1221,11 +1270,14 @@ class _MediaScreenState extends State<MediaScreen> {
 
   Future<void> _loadVideos() async {
     final disk = _videoDir.listSync().whereType<File>().where((f) {
-      final name = p.basename(f.path).toLowerCase();
-      if (name.startsWith('.')) return false;
-      if (name == _playlistFileName) return false;
+      final name = p.basename(f.path);
+      final lower = name.toLowerCase();
+      if (lower.startsWith('.')) return false;
+      if (lower == _playlistFileName) return false;
+      // Не показываем исходник, если он уже сконвертирован в mp4.
+      if (Transcoder.hasMp4Twin(_videoDir.path, name)) return false;
       return ['.mp4', '.mkv', '.mov', '.avi', '.webm']
-          .contains(p.extension(name));
+          .contains(p.extension(lower));
     }).toList();
 
     final savedOrder = await _loadSavedOrder();
@@ -1247,6 +1299,32 @@ class _MediaScreenState extends State<MediaScreen> {
     }
   }
 
+  // Конвертирует не-mp4 ролики в папке в mp4 (для совместимости с Android).
+  Future<void> _normalizeMedia() async {
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text("Обработка видео (конвертация в MP4 при необходимости)..."),
+        duration: Duration(seconds: 2),
+      ));
+    }
+    final norm = await Transcoder.normalizeDir(_videoDir.path);
+    if (norm.ffmpegMissing && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: const Text(
+            "ffmpeg не найден — .mov/.mkv/.avi не сконвертированы и могут не "
+            "играть на планшете. Установите: brew install ffmpeg"),
+        backgroundColor: Colors.orange.shade800,
+        duration: const Duration(seconds: 8),
+      ));
+    } else if (norm.failed.isNotEmpty && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text("Не удалось сконвертировать: ${norm.failed.join(', ')}"),
+        backgroundColor: Colors.red.shade700,
+        duration: const Duration(seconds: 6),
+      ));
+    }
+  }
+
   Future<void> _pickVideos() async {
     final result = await FilePicker.platform
         .pickFiles(type: FileType.video, allowMultiple: true);
@@ -1256,6 +1334,7 @@ class _MediaScreenState extends State<MediaScreen> {
         await File(pathStr).copy(p.join(_videoDir.path, p.basename(pathStr)));
       }
     }
+    await _normalizeMedia();
     await _loadVideos();
     await _saveOrderAndPlaylist();
   }
@@ -1356,6 +1435,7 @@ class _MediaScreenState extends State<MediaScreen> {
         added++;
       } catch (_) {}
     }
+    if (added > 0) await _normalizeMedia();
     await _loadVideos();
     await _saveOrderAndPlaylist();
     if (mounted) {
