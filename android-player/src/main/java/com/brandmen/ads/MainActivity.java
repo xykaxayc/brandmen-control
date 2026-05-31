@@ -49,6 +49,7 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
     private NsdManager.DiscoveryListener discoveryListener;
     private static final String SERVICE_TYPE = "_brandmen._tcp.";
     private android.net.wifi.WifiManager.MulticastLock multicastLock;
+    private android.net.wifi.WifiManager.WifiLock wifiLock;
 
     private MediaServer mediaServer;
     private android.os.PowerManager.WakeLock wakeLock;
@@ -65,6 +66,20 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
         android.net.wifi.WifiManager wifi = (android.net.wifi.WifiManager) getSystemService(Context.WIFI_SERVICE);
         multicastLock = wifi.createMulticastLock("brandmen_lock");
         multicastLock.setReferenceCounted(true);
+
+        // Держим Wi-Fi-радио включённым на всё время работы плеера, даже при
+        // погашенном экране. Без этого Android усыпляет Wi-Fi в простое и
+        // планшет пропадает из сети (теряется HTTP/ADB-связь). HIGH_PERF, в
+        // отличие от FULL_LOW_LATENCY, действует и когда экран выключен.
+        try {
+            wifiLock = wifi.createWifiLock(
+                android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF,
+                "brandmen_wifi_lock");
+            wifiLock.setReferenceCounted(false);
+            wifiLock.acquire();
+        } catch (Exception e) {
+            android.util.Log.e("MainActivity", "WifiLock acquire failed: " + e.getMessage());
+        }
 
         nsdManager = (NsdManager) getSystemService(Context.NSD_SERVICE);
         initializeDiscoveryListener();
@@ -889,6 +904,9 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
         if (mediaServer != null) mediaServer.stop();
         if (wakeLock != null && wakeLock.isHeld()) {
             try { wakeLock.release(); } catch (Exception ignored) {}
+        }
+        if (wifiLock != null && wifiLock.isHeld()) {
+            try { wifiLock.release(); } catch (Exception ignored) {}
         }
         super.onDestroy();
     }
