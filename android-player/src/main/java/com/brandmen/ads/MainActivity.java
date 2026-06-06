@@ -107,6 +107,25 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
         startProgressUpdater();
         handleInstallResult(getIntent());
         handleCommand(getIntent());
+        ensureOverlayPermission();
+    }
+
+    /**
+     * Разрешение «Показ поверх других приложений» нужно, чтобы PlayerService мог
+     * вытащить плеер на экран по HTTP-команде из фона (Android 12+ иначе блокирует
+     * фоновый запуск Activity). Спрашиваем один раз.
+     */
+    private void ensureOverlayPermission() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return;
+        if (Settings.canDrawOverlays(this)) return;
+        if (prefs.getBoolean("overlay_asked", false)) return;
+        prefs.edit().putBoolean("overlay_asked", true).apply();
+        try {
+            Intent i = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    Uri.parse("package:" + getPackageName()));
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(i);
+        } catch (Exception ignored) {}
     }
 
     @Override
