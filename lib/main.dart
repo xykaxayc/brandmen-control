@@ -316,7 +316,7 @@ class _MainScreenState extends State<MainScreen> {
                 const Text("v$kAppVersion",
                     style: TextStyle(
                         fontSize: 10,
-                        color: Colors.white38,
+                        color: Colors.white54,
                         letterSpacing: 1)),
                 const SizedBox(height: 46),
                 _navItem(0, Icons.grid_view_rounded, "Планшеты"),
