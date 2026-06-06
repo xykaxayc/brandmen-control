@@ -2,9 +2,11 @@ package com.brandmen.ads;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.PackageInstaller;
 import android.graphics.Color;
 import android.media.MediaPlayer;
 import android.net.Uri;
@@ -110,6 +112,14 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
 
         checkPermissions();
         startProgressUpdater();
+        handleInstallResult(getIntent());
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        handleInstallResult(intent);
     }
 
     @Override
@@ -660,7 +670,7 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
                 runOnUiThread(() -> {
                     btn.setText("Установить");
                     btn.setEnabled(true);
-                    btn.setOnClickListener(v -> installApk(apkFile));
+                    btn.setOnClickListener(v -> installApkAuto(apkFile));
                 });
             }
             @Override public void onError(String message) {
@@ -673,16 +683,53 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
         });
     }
 
-    private void installApk(File apkFile) {
-        try {
-            Intent intent = new Intent(Intent.ACTION_VIEW);
-            intent.setDataAndType(Uri.fromFile(apkFile),
-                    "application/vnd.android.package-archive");
-            intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            startActivity(intent);
-        } catch (Exception e) {
-            Toast.makeText(this,
-                    "Файл сохранён: " + apkFile.getPath(), Toast.LENGTH_LONG).show();
+    private static final String INSTALL_RESULT_ACTION = "com.brandmen.ads.INSTALL_RESULT";
+
+    /**
+     * Устанавливает APK через PackageInstaller. Если приложение — device owner,
+     * установка проходит молча, без участия человека (планшет на стене). Иначе
+     * система показывает окно «Обновить?» — нужен один тап на планшете. В обоих
+     * случаях не требуется FileProvider и не падает FileUriExposedException.
+     */
+    private void installApkAuto(File apkFile) {
+        new Thread(() -> {
+            try {
+                PackageInstaller pi = getPackageManager().getPackageInstaller();
+                PackageInstaller.SessionParams params = new PackageInstaller.SessionParams(
+                        PackageInstaller.SessionParams.MODE_FULL_INSTALL);
+                int sessionId = pi.createSession(params);
+                try (PackageInstaller.Session session = pi.openSession(sessionId)) {
+                    try (FileInputStream is = new FileInputStream(apkFile);
+                         OutputStream os = session.openWrite("base.apk", 0, apkFile.length())) {
+                        byte[] buf = new byte[65536];
+                        int n;
+                        while ((n = is.read(buf)) != -1) os.write(buf, 0, n);
+                        session.fsync(os);
+                    }
+                    Intent intent = new Intent(this, MainActivity.class).setAction(INSTALL_RESULT_ACTION);
+                    int flags = PendingIntent.FLAG_UPDATE_CURRENT;
+                    if (Build.VERSION.SDK_INT >= 31) flags |= PendingIntent.FLAG_MUTABLE;
+                    PendingIntent pending = PendingIntent.getActivity(this, sessionId, intent, flags);
+                    session.commit(pending.getIntentSender());
+                }
+            } catch (Exception e) {
+                android.util.Log.e("MainActivity", "installApkAuto: " + e.getMessage());
+                runOnUiThread(() -> Toast.makeText(this,
+                        "Не удалось установить: " + e.getMessage(), Toast.LENGTH_LONG).show());
+            }
+        }, "InstallApk").start();
+    }
+
+    /** Результат сессии установки. STATUS_PENDING_USER_ACTION → показать окно подтверждения. */
+    private void handleInstallResult(Intent intent) {
+        if (intent == null || !INSTALL_RESULT_ACTION.equals(intent.getAction())) return;
+        int status = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, -999);
+        if (status == PackageInstaller.STATUS_PENDING_USER_ACTION) {
+            Intent confirm = intent.getParcelableExtra(Intent.EXTRA_INTENT);
+            if (confirm != null) {
+                confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                try { startActivity(confirm); } catch (Exception ignored) {}
+            }
         }
     }
 
@@ -965,6 +1012,10 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
     @Override public void onRestart() {
         currentIndex = 0;
         playNext();
+    }
+
+    @Override public void onInstallApk(File apkFile) {
+        installApkAuto(apkFile);
     }
 
     @Override public int getCurrentIndex() {

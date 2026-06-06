@@ -25,6 +25,8 @@ import java.util.*;
  *   POST /api/control/restart       — restart playback from the first clip
  *   GET  /api/control/status        — {"volume":8,"volumeMax":15,"brightness":128}
  *   GET  /api/control/now           — {"index":0,"total":3,"name":"ad.mp4","playing":true}
+ *   POST /api/update/install        — upload an APK (Content-Length required) and install it
+ *                                     (silent if device owner, otherwise one-tap confirm)
  */
 public class MediaServer {
     public static final int PORT = 5011;
@@ -44,11 +46,13 @@ public class MediaServer {
         int getPlaylistCount();
         String getCurrentName();
         boolean isPlaying();
+        void onInstallApk(File apkFile);
     }
 
     private final String mediaDir;
     private final ControlCallback callback;
     private final Handler mainHandler;
+    private final File apkStageDir;
     private ServerSocket serverSocket;
     private Thread acceptThread;
     private volatile boolean running;
@@ -57,6 +61,7 @@ public class MediaServer {
         this.mediaDir = mediaDir;
         this.callback = callback;
         this.mainHandler = new Handler(Looper.getMainLooper());
+        this.apkStageDir = context.getCacheDir();
     }
 
     public void start() throws IOException {
@@ -139,7 +144,8 @@ public class MediaServer {
             // НЕ дочитываем для /upload/ — иначе тело файла (напр. playlist.m3u
             // размером <4096 байт) будет съедено здесь, и handleUpload получит
             // пустой поток → зависание до таймаута сокета.
-            boolean isUpload = method.equals("POST") && path.startsWith("/upload/");
+            boolean isUpload = method.equals("POST")
+                    && (path.startsWith("/upload/") || path.equals("/api/update/install"));
             String body = "";
             if (!isUpload && contentLength > 0 && contentLength <= 4096) {
                 byte[] bodyBytes = new byte[contentLength];
@@ -165,6 +171,8 @@ public class MediaServer {
                 handleUpload(in, out, sanitize(path.substring(8)), contentLength);
             } else if (method.equals("DELETE") && path.startsWith("/file/")) {
                 handleDelete(out, sanitize(path.substring(6)));
+            } else if (method.equals("POST") && path.equals("/api/update/install")) {
+                handleInstallUpload(in, out, contentLength);
             } else if (path.startsWith("/api/control/")) {
                 handleControl(method, path.substring("/api/control/".length()), params, body, out);
             } else {
@@ -302,6 +310,31 @@ public class MediaServer {
         if (final_.exists()) final_.delete();
         dest.renameTo(final_);
         sendJson(out, 200, "{\"ok\":true,\"name\":\"" + escJson(filename) + "\"}");
+    }
+
+    private void handleInstallUpload(InputStream in, OutputStream out, int contentLength)
+            throws IOException {
+        if (contentLength <= 0) { sendText(out, 400, "Bad Request"); return; }
+        apkStageDir.mkdirs();
+        File apk = new File(apkStageDir, "remote-update.apk");
+        File part = new File(apkStageDir, "remote-update.apk.part");
+        try (FileOutputStream fos = new FileOutputStream(part)) {
+            byte[] buf = new byte[65536];
+            int remaining = contentLength;
+            while (remaining > 0) {
+                int n = in.read(buf, 0, Math.min(buf.length, remaining));
+                if (n < 0) break;
+                fos.write(buf, 0, n);
+                remaining -= n;
+            }
+        }
+        if (apk.exists()) apk.delete();
+        part.renameTo(apk);
+        if (callback != null) {
+            final File f = apk;
+            mainHandler.post(() -> callback.onInstallApk(f));
+        }
+        sendJson(out, 200, "{\"ok\":true}");
     }
 
     private void handleDelete(OutputStream out, String filename) throws IOException {
