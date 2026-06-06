@@ -51,9 +51,12 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
     private NsdManager.DiscoveryListener discoveryListener;
     private static final String SERVICE_TYPE = "_brandmen._tcp.";
     private android.net.wifi.WifiManager.MulticastLock multicastLock;
-    private android.net.wifi.WifiManager.WifiLock wifiLock;
 
-    private MediaServer mediaServer;
+    // Слабая ссылка на живую Activity — PlayerService делегирует ей UI-действия.
+    private static java.lang.ref.WeakReference<MainActivity> sRef;
+    public static final String CMD_ACTION = "com.brandmen.ads.CMD";
+    static MainActivity peek() { return sRef == null ? null : sRef.get(); }
+
     private android.os.PowerManager.WakeLock wakeLock;
     private android.app.admin.DevicePolicyManager dpm;
     private android.content.ComponentName adminComponent;
@@ -65,23 +68,11 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
         audioManager = (android.media.AudioManager) getSystemService(AUDIO_SERVICE);
         prefs = getSharedPreferences("BrandmenPrefs", MODE_PRIVATE);
         
+        sRef = new java.lang.ref.WeakReference<>(this);
+
         android.net.wifi.WifiManager wifi = (android.net.wifi.WifiManager) getSystemService(Context.WIFI_SERVICE);
         multicastLock = wifi.createMulticastLock("brandmen_lock");
         multicastLock.setReferenceCounted(true);
-
-        // Держим Wi-Fi-радио включённым на всё время работы плеера, даже при
-        // погашенном экране. Без этого Android усыпляет Wi-Fi в простое и
-        // планшет пропадает из сети (теряется HTTP/ADB-связь). HIGH_PERF, в
-        // отличие от FULL_LOW_LATENCY, действует и когда экран выключен.
-        try {
-            wifiLock = wifi.createWifiLock(
-                android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF,
-                "brandmen_wifi_lock");
-            wifiLock.setReferenceCounted(false);
-            wifiLock.acquire();
-        } catch (Exception e) {
-            android.util.Log.e("MainActivity", "WifiLock acquire failed: " + e.getMessage());
-        }
 
         nsdManager = (NsdManager) getSystemService(Context.NSD_SERVICE);
         initializeDiscoveryListener();
@@ -89,11 +80,13 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
         dpm = (android.app.admin.DevicePolicyManager) getSystemService(DEVICE_POLICY_SERVICE);
         adminComponent = new android.content.ComponentName(this, DeviceAdminReceiver.class);
 
+        // HTTP-сервер и Wi-Fi-лок теперь живут в foreground-сервисе: он переживает
+        // выгрузку плеера системой, поэтому планшет остаётся управляемым и
+        // синхронизируемым по сети даже без открытого UI и без ADB.
         try {
-            mediaServer = new MediaServer(this, ADS_DIR, this);
-            mediaServer.start();
+            PlayerService.start(this);
         } catch (Exception e) {
-            android.util.Log.e("MainActivity", "MediaServer start failed: " + e.getMessage());
+            android.util.Log.e("MainActivity", "PlayerService start failed: " + e.getMessage());
         }
 
         rootLayout = new FrameLayout(this);
@@ -113,6 +106,7 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
         checkPermissions();
         startProgressUpdater();
         handleInstallResult(getIntent());
+        handleCommand(getIntent());
     }
 
     @Override
@@ -120,6 +114,19 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
         super.onNewIntent(intent);
         setIntent(intent);
         handleInstallResult(intent);
+        handleCommand(intent);
+    }
+
+    /** Команды от PlayerService (когда управление пришло по HTTP, а UI требует Activity). */
+    private void handleCommand(Intent intent) {
+        if (intent == null || !CMD_ACTION.equals(intent.getAction())) return;
+        String cmd = intent.getStringExtra("cmd");
+        if (cmd == null) return;
+        switch (cmd) {
+            case "wake": onWake(); break;
+            case "launch": onLaunch(); break;
+            case "restart": onRestart(); break;
+        }
     }
 
     @Override
@@ -683,41 +690,11 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
         });
     }
 
-    private static final String INSTALL_RESULT_ACTION = "com.brandmen.ads.INSTALL_RESULT";
+    static final String INSTALL_RESULT_ACTION = "com.brandmen.ads.INSTALL_RESULT";
 
-    /**
-     * Устанавливает APK через PackageInstaller. Если приложение — device owner,
-     * установка проходит молча, без участия человека (планшет на стене). Иначе
-     * система показывает окно «Обновить?» — нужен один тап на планшете. В обоих
-     * случаях не требуется FileProvider и не падает FileUriExposedException.
-     */
+    /** Установка APK (кнопка обновления). Общая реализация — в PlayerService. */
     private void installApkAuto(File apkFile) {
-        new Thread(() -> {
-            try {
-                PackageInstaller pi = getPackageManager().getPackageInstaller();
-                PackageInstaller.SessionParams params = new PackageInstaller.SessionParams(
-                        PackageInstaller.SessionParams.MODE_FULL_INSTALL);
-                int sessionId = pi.createSession(params);
-                try (PackageInstaller.Session session = pi.openSession(sessionId)) {
-                    try (FileInputStream is = new FileInputStream(apkFile);
-                         OutputStream os = session.openWrite("base.apk", 0, apkFile.length())) {
-                        byte[] buf = new byte[65536];
-                        int n;
-                        while ((n = is.read(buf)) != -1) os.write(buf, 0, n);
-                        session.fsync(os);
-                    }
-                    Intent intent = new Intent(this, MainActivity.class).setAction(INSTALL_RESULT_ACTION);
-                    int flags = PendingIntent.FLAG_UPDATE_CURRENT;
-                    if (Build.VERSION.SDK_INT >= 31) flags |= PendingIntent.FLAG_MUTABLE;
-                    PendingIntent pending = PendingIntent.getActivity(this, sessionId, intent, flags);
-                    session.commit(pending.getIntentSender());
-                }
-            } catch (Exception e) {
-                android.util.Log.e("MainActivity", "installApkAuto: " + e.getMessage());
-                runOnUiThread(() -> Toast.makeText(this,
-                        "Не удалось установить: " + e.getMessage(), Toast.LENGTH_LONG).show());
-            }
-        }, "InstallApk").start();
+        PlayerService.installApk(this, apkFile);
     }
 
     /** Результат сессии установки. STATUS_PENDING_USER_ACTION → показать окно подтверждения. */
@@ -948,13 +925,12 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
     }
 
     @Override protected void onDestroy() {
-        if (mediaServer != null) mediaServer.stop();
         if (wakeLock != null && wakeLock.isHeld()) {
             try { wakeLock.release(); } catch (Exception ignored) {}
         }
-        if (wifiLock != null && wifiLock.isHeld()) {
-            try { wifiLock.release(); } catch (Exception ignored) {}
-        }
+        if (peek() == this) sRef = null;
+        // HTTP-сервер и Wi-Fi-лок не трогаем — ими владеет PlayerService,
+        // который должен пережить закрытие Activity.
         super.onDestroy();
     }
 

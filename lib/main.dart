@@ -1191,6 +1191,28 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (norm.ffmpegMissing) await _showFfmpegMissingDialog();
   }
 
+  /// Запуск плеера на одном планшете БЕЗ синхронизации файлов, со звуком 0.
+  /// Аналог массового «Без звука», но для конкретного устройства.
+  Future<void> _launchMuted(SavedDevice dev) async {
+    if (!mounted) return;
+    final online = statuses[dev.ip]?.online ?? false;
+    if (!online) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text("${dev.name}: устройство офлайн"),
+        backgroundColor: Colors.red.shade700,
+      ));
+      return;
+    }
+    await adb.wakeUp(dev.ip, launchPlayer: true);
+    await adb.setVolume(dev.ip, 0);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text("${dev.name}: запущено без звука (без синхронизации)"),
+      backgroundColor: Colors.green.shade700,
+      duration: const Duration(seconds: 4),
+    ));
+  }
+
   void _endShift() async {
     final confirmed = await showDialog<bool>(
         context: context,
@@ -1525,6 +1547,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
               _smallAppleBtn(Icons.sync_rounded,
                   (isOnline && !_busy) ? () => _guard(() => _syncOnly(dev)) : null,
                   tooltip: "Только синхронизация (без перезапуска)"),
+              const SizedBox(width: 8),
+              _smallAppleBtn(Icons.volume_off_rounded,
+                  (isOnline && !_busy) ? () => _guard(() => _launchMuted(dev)) : null,
+                  tooltip: "Запустить без звука (без синхронизации)"),
               const SizedBox(width: 8),
               _smallAppleBtn(Icons.tune_rounded,
                   canControl ? () => _showDeviceControls(dev) : null,
