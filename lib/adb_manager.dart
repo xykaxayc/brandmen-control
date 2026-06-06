@@ -15,6 +15,11 @@ class DeviceStatus {
   final bool httpAvailable;
   final bool adbOnline;
   final String? lastError;
+  // Данные из /health плеера (если доступен по HTTP).
+  final String? playerVersion;
+  final int? freeMb;
+  final bool? playerPlaying;
+  final String? currentClip;
 
   DeviceStatus({
     required this.ip,
@@ -23,6 +28,10 @@ class DeviceStatus {
     this.httpAvailable = false,
     this.adbOnline = false,
     this.lastError,
+    this.playerVersion,
+    this.freeMb,
+    this.playerPlaying,
+    this.currentClip,
   });
 
   String get transport {
@@ -229,6 +238,11 @@ class AdbManager {
     final adbOnline = status == 'device';
     final httpAvailable = await httpAvailableFuture;
     final battery = adbOnline ? await _getBattery(id) : "??";
+    // Если доступен по HTTP — тянем /health (версия, место, что играет).
+    Map<String, dynamic>? health;
+    if (httpAvailable) {
+      health = await DeviceHttp(ip).health();
+    }
     return DeviceStatus(
       ip: ip,
       online: adbOnline || httpAvailable,
@@ -236,6 +250,10 @@ class AdbManager {
       httpAvailable: httpAvailable,
       adbOnline: adbOnline,
       lastError: adbOnline || httpAvailable ? null : adbError,
+      playerVersion: health?['version'] as String?,
+      freeMb: health?['freeMb'] as int?,
+      playerPlaying: health?['playing'] as bool?,
+      currentClip: health?['current'] as String?,
     );
   }
 
@@ -415,6 +433,34 @@ class AdbManager {
       return lower == 'playlist.m3u' || isVideoFile(lower);
     }).toList();
 
+    // Проверка свободного места на планшете перед заливкой: считаем, сколько
+    // байт реально нужно докачать, и сверяем с /health (запас 50 МБ).
+    int needBytes = 0;
+    for (final f in localFiles) {
+      final name = p.basename(f.path);
+      final isPlaylist = name.toLowerCase() == 'playlist.m3u';
+      final sz = await f.length();
+      if (isPlaylist || remoteFiles[name] != sz) needBytes += sz;
+    }
+    if (needBytes > 0) {
+      final health = await client.health();
+      if (health != null) {
+        final freeBytes = (health['freeMb'] as int) * 1024 * 1024;
+        if (freeBytes < needBytes + 50 * 1024 * 1024) {
+          final needMb = (needBytes / 1024 / 1024).round();
+          AppLogger.log('HTTP sync $ip: мало места — нужно $needMb МБ, '
+              'свободно ${health['freeMb']} МБ');
+          return SyncResult(
+            success: false,
+            pushed: const [],
+            error: 'Недостаточно места на планшете: '
+                'нужно ~$needMb МБ, свободно ${health['freeMb']} МБ',
+            transport: 'HTTP',
+          );
+        }
+      }
+    }
+
     final List<String> pushed = [];
     final List<String> failed = [];
     // Один клиент на всю сессию: TCP-соединение переиспользуется (keep-alive)
@@ -446,14 +492,21 @@ class AdbManager {
     }
     onProgress?.call(localFiles.length, localFiles.length, '');
 
-    // Удаляем лишние файлы на устройстве
-    final localNames = localFiles.map((f) => p.basename(f.path)).toSet();
-    for (final remoteName in remoteFiles.keys) {
-      if (!localNames.contains(remoteName) && isVideoFile(remoteName)) {
-        AppLogger.log('HTTP sync $ip: удаляю $remoteName');
-        final ok = await client.deleteFile(remoteName);
-        if (!ok) failed.add('удаление $remoteName');
+    // Чистим лишнее на устройстве ТОЛЬКО если все заливки прошли успешно —
+    // иначе при неполной синхронизации можно удалить рабочий файл, замена
+    // которому не докачалась.
+    if (failed.isEmpty) {
+      final localNames = localFiles.map((f) => p.basename(f.path)).toSet();
+      for (final remoteName in remoteFiles.keys) {
+        if (!localNames.contains(remoteName) && isVideoFile(remoteName)) {
+          AppLogger.log('HTTP sync $ip: удаляю $remoteName');
+          final ok = await client.deleteFile(remoteName);
+          if (!ok) failed.add('удаление $remoteName');
+        }
       }
+    } else {
+      AppLogger.log('HTTP sync $ip: были ошибки заливки — пропускаю очистку '
+          'лишних файлов, чтобы не удалить рабочий контент');
     }
     if (failed.isNotEmpty) {
       return SyncResult(

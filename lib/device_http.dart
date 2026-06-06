@@ -228,6 +228,31 @@ class DeviceHttp {
     return null;
   }
 
+  /// Состояние планшета: версия, аптайм, свободное место, что играет.
+  Future<Map<String, dynamic>?> health() async {
+    try {
+      final r = await http
+          .get(Uri.parse('$_base/health'))
+          .timeout(const Duration(seconds: 3));
+      if (r.statusCode == 200) {
+        final j = jsonDecode(r.body) as Map<String, dynamic>;
+        return {
+          'version': (j['version'] as String? ?? ''),
+          'uptimeMs': (j['uptimeMs'] as num? ?? 0).toInt(),
+          'freeMb': (j['freeMb'] as num? ?? 0).toInt(),
+          'totalMb': (j['totalMb'] as num? ?? 0).toInt(),
+          'playing': (j['playing'] as bool? ?? false),
+          'index': (j['index'] as num? ?? -1).toInt(),
+          'total': (j['total'] as num? ?? 0).toInt(),
+          'current': (j['current'] as String? ?? ''),
+        };
+      }
+    } catch (e) {
+      AppLogger.log('DeviceHttp.health $ip: $e');
+    }
+    return null;
+  }
+
   Future<bool> wake() => controlAction('wake');
   Future<bool> httpSleep() => controlAction('sleep');
   Future<bool> launch() => controlAction('launch');

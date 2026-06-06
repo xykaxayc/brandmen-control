@@ -1626,6 +1626,31 @@ class _DashboardScreenState extends State<DashboardScreen> {
               overflow: TextOverflow.ellipsis),
           Text(dev.ip,
               style: const TextStyle(fontSize: 11, color: Colors.white38)),
+          if (status?.playerVersion != null) ...[
+            const SizedBox(height: 4),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(
+                    status?.playerPlaying == true
+                        ? Icons.play_circle_outline_rounded
+                        : Icons.pause_circle_outline_rounded,
+                    size: 12,
+                    color: status?.playerPlaying == true
+                        ? Colors.greenAccent
+                        : Colors.orangeAccent),
+                const SizedBox(width: 4),
+                Flexible(
+                  child: Text(
+                    "v${status?.playerVersion}"
+                    "${status?.freeMb != null ? " · ${status!.freeMb} МБ своб." : ""}",
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 10, color: Colors.white38),
+                  ),
+                ),
+              ],
+            ),
+          ],
           const SizedBox(height: 12),
           Row(
             children: [
