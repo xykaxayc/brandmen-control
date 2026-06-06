@@ -317,6 +317,23 @@ class AdbManager {
     }
   }
 
+  /// Проверяет, что плеер РЕАЛЬНО играет, а не просто принял команду запуска.
+  /// На HyperOS HTTP-launch может вернуть ok, но видео не выйдет на экран —
+  /// поэтому опрашиваем /api/control/now несколько раз и ждём playing=true.
+  Future<bool> verifyPlaying(String ip, {int attempts = 6}) async {
+    final client = DeviceHttp(ip);
+    for (int i = 0; i < attempts; i++) {
+      await Future.delayed(const Duration(milliseconds: 800));
+      final now = await client.controlNow();
+      if (now != null && now['playing'] == true) {
+        AppLogger.log('verifyPlaying $ip: играет (попытка ${i + 1})');
+        return true;
+      }
+    }
+    AppLogger.log('verifyPlaying $ip: НЕ играет после $attempts попыток');
+    return false;
+  }
+
   // Синхронизация: пробует HTTP (быстро, без ADB), иначе ADB.
   // Возвращает статус синхронизации и список имён отправленных файлов.
   Future<SyncResult> syncDeviceDirect(

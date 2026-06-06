@@ -42,21 +42,33 @@ class AppUpdater {
 
   static Future<UpdateInfo?> checkForUpdate() async {
     try {
-      if (!Platform.isWindows && !Platform.isMacOS) return null;
-      if (kAppVersion == '0.0.0') return null;
+      AppLogger.log('[UPD] checkForUpdate: текущая=$kAppVersion '
+          'platform=${Platform.operatingSystem}');
+      if (!Platform.isWindows && !Platform.isMacOS) {
+        AppLogger.log('[UPD] не Windows/macOS — пропуск');
+        return null;
+      }
+      if (kAppVersion == '0.0.0') {
+        AppLogger.log('[UPD] версия 0.0.0 (локальная сборка) — обновления отключены');
+        return null;
+      }
       final keyword = Platform.isWindows ? 'windows' : 'macos';
       final r = await _findNewestRelease(
         currentVersion: kAppVersion,
         matches: (name) => name.contains(keyword) && name.endsWith('.zip'),
       );
-      if (r == null) return null;
+      if (r == null) {
+        AppLogger.log('[UPD] подходящего обновления не найдено → "последняя версия"');
+        return null;
+      }
+      AppLogger.log('[UPD] НАЙДЕНО обновление: ${r['version']} (${r['url']})');
       return UpdateInfo(
           version: r['version']!,
           tag: r['tag']!,
           downloadUrl: r['url']!,
           changelog: r['changelog']!);
-    } catch (e) {
-      AppLogger.log('Проверка обновлений: $e');
+    } catch (e, st) {
+      AppLogger.log('[UPD] ОШИБКА checkForUpdate: $e\n$st');
       return null;
     }
   }
@@ -142,12 +154,23 @@ class AppUpdater {
       },
     ).timeout(const Duration(seconds: 10));
 
+    AppLogger.log('[UPD] GET $_kReleasesUrl → HTTP ${response.statusCode}, '
+        '${response.body.length} байт');
     if (response.statusCode != 200) {
-      AppLogger.log('GitHub releases: HTTP ${response.statusCode}');
+      AppLogger.log('[UPD] не 200 — тело: '
+          '${response.body.substring(0, response.body.length.clamp(0, 300))}');
       return [];
     }
     final list = jsonDecode(response.body);
-    if (list is! List) return [];
+    if (list is! List) {
+      AppLogger.log('[UPD] ответ не является списком релизов');
+      return [];
+    }
+    final tags = list
+        .map((r) => (r as Map?)?['tag_name'] ?? '?')
+        .toList()
+        .join(', ');
+    AppLogger.log('[UPD] получено релизов: ${list.length} → $tags');
     list.sort((a, b) {
       final av = ((a as Map?)?['tag_name'] as String? ?? '')
           .replaceFirst('v', '');
@@ -165,11 +188,20 @@ class AppUpdater {
     required bool Function(String nameLower) matches,
   }) async {
     final releases = await _fetchReleases();
+    AppLogger.log('[UPD] ищу релиз новее $currentVersion с нужным ассетом '
+        '(всего ${releases.length})');
     for (final rel in releases) {
       if (rel is! Map) continue;
       final rawTag = rel['tag_name'] as String? ?? '';
       final version = rawTag.replaceFirst('v', '');
-      if (!_isNewer(version, currentVersion)) continue;
+      final assetNames = ((rel['assets'] as List?) ?? [])
+          .map((a) => (a['name'] as String? ?? '').toLowerCase())
+          .toList();
+      final newer = _isNewer(version, currentVersion);
+      final hasAsset = assetNames.any(matches);
+      AppLogger.log('[UPD]   $rawTag: новее=$newer ассеты=$assetNames '
+          'подходит=$hasAsset');
+      if (!newer) continue;
       final assets = (rel['assets'] as List?) ?? [];
       for (final a in assets) {
         final name = (a['name'] as String? ?? '').toLowerCase();

@@ -97,6 +97,35 @@ class _MainScreenState extends State<MainScreen> {
   final _settingsKey = GlobalKey<_SettingsScreenState>();
   final _dashboardKey = GlobalKey<_DashboardScreenState>();
 
+  /// Открывает файл лога в проводнике/Finder, чтобы посмотреть, что происходит
+  /// (в т.ч. подробности проверки обновлений — строки [UPD]).
+  Future<void> _openLog() async {
+    final path = AppLogger.logPath;
+    if (path == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text("Лог-файл ещё не создан")));
+      }
+      return;
+    }
+    try {
+      if (Platform.isWindows) {
+        await Process.run('explorer', ['/select,$path']);
+      } else if (Platform.isMacOS) {
+        await Process.run('open', ['-R', path]);
+      } else {
+        await Process.run('xdg-open', [File(path).parent.path]);
+      }
+    } catch (e) {
+      AppLogger.log('Открыть лог: $e');
+    }
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text("Лог: $path"),
+          duration: const Duration(seconds: 6)));
+    }
+  }
+
   @override
   void initState() {
     super.initState();
@@ -342,6 +371,30 @@ class _MainScreenState extends State<MainScreen> {
                             size: 16, color: Colors.white38),
                         SizedBox(width: 8),
                         Text("В трей",
+                            style:
+                                TextStyle(color: Colors.white38, fontSize: 12)),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: OutlinedButton(
+                    onPressed: _openLog,
+                    style: OutlinedButton.styleFrom(
+                      side: const BorderSide(color: Colors.white10),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10)),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
+                    child: const Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.article_outlined,
+                            size: 16, color: Colors.white38),
+                        SizedBox(width: 8),
+                        Text("Открыть лог",
                             style:
                                 TextStyle(color: Colors.white38, fontSize: 12)),
                       ],
@@ -986,6 +1039,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
         : null;
 
     final Map<String, SyncResult> results = {};
+    // null = запуск не выполнялся; true = плеер играет; false = не подтвердилось.
+    final Map<String, bool> launchVerified = {};
     for (int i = 0; i < online.length; i++) {
       if (cancelled) break;
       final dev = online[i];
@@ -1037,22 +1092,32 @@ class _DashboardScreenState extends State<DashboardScreen> {
         );
         await adb.wakeUp(dev.ip, launchPlayer: true);
         if (mute) await adb.setVolume(dev.ip, 0);
+        progress.value = progress.value.updateDevice(
+          dev.name, "Проверка запуска",
+          currentStep: "Проверяю, что плеер играет на ${dev.name}",
+        );
+        launchVerified[dev.name] = await adb.verifyPlaying(dev.ip);
       }
       results[dev.name] = result;
+      final lv = launchVerified[dev.name];
       progress.value = progress.value.updateDevice(
         dev.name,
         !result.success
             ? "Ошибка"
-            : !sync
-                ? "Запущено"
-                : (result.pushed.isEmpty
-                    ? "Актуально"
-                    : "Готово: ${result.pushed.length}"),
+            : lv == false
+                ? "Не запустился"
+                : !sync
+                    ? "Запущено"
+                    : (result.pushed.isEmpty
+                        ? "Актуально"
+                        : "Готово: ${result.pushed.length}"),
         currentStep: !result.success
             ? "${dev.name}: ${result.error ?? 'ошибка'}"
-            : !sync
-                ? "${dev.name}: запущено"
-                : "${dev.name}: синхронизация завершена",
+            : lv == false
+                ? "${dev.name}: плеер НЕ подтвердил запуск"
+                : !sync
+                    ? "${dev.name}: запущено"
+                    : "${dev.name}: синхронизация завершена",
       );
     }
 
@@ -1065,13 +1130,22 @@ class _DashboardScreenState extends State<DashboardScreen> {
       if (!r.success) {
         return "${e.key}: ошибка — ${r.error ?? 'не выполнено'}";
       }
-      if (!sync) return "${e.key}: запущено";
+      final lv = launchVerified[e.key];
+      if (lv == false) {
+        return "⚠️ ${e.key}: НЕ запустился (плеер не отвечает «играет»)";
+      }
+      final launchMark = lv == true ? " ▶" : "";
+      if (!sync) return "${e.key}: запущено$launchMark";
       final transport =
           r.usedFallback ? '${r.transport}, fallback' : r.transport;
       return r.pushed.isEmpty
-          ? "${e.key}: актуально ($transport)"
-          : "${e.key}: ${r.pushed.length} файлов ($transport)";
+          ? "${e.key}: актуально ($transport)$launchMark"
+          : "${e.key}: ${r.pushed.length} файлов ($transport)$launchMark";
     }).join('\n');
+    final failed = launchVerified.entries.where((e) => e.value == false).length;
+    if (failed > 0) {
+      AppLogger.log('Запуск: не подтвердился на $failed устройстве(ах)');
+    }
     await showDialog(
       context: context,
       builder: (c) => AlertDialog(
@@ -1211,11 +1285,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
     await adb.wakeUp(dev.ip, launchPlayer: true);
     await adb.setVolume(dev.ip, 0);
+    final playing = await adb.verifyPlaying(dev.ip);
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text("${dev.name}: запущено без звука (без синхронизации)"),
-      backgroundColor: Colors.green.shade700,
-      duration: const Duration(seconds: 4),
+      content: Text(playing
+          ? "${dev.name}: запущено без звука ▶"
+          : "⚠️ ${dev.name}: команда отправлена, но плеер НЕ подтвердил запуск"),
+      backgroundColor: playing ? Colors.green.shade700 : Colors.orange.shade800,
+      duration: const Duration(seconds: 5),
     ));
   }
 
