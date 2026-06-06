@@ -17,6 +17,8 @@ import java.util.*;
  *   POST /upload/<name>             — upload a file (Content-Length required)
  *   DELETE /file/<name>             — delete a file
  *   GET  /ping                      — {"ok":true}
+ *   GET  /health                    — {version,uptimeMs,freeMb,totalMb,playing,index,total,current}
+ *   GET  /log                       — последние строки logcat (text/plain) для диагностики
  *   POST /api/control/wake          — wake screen
  *   POST /api/control/sleep         — sleep screen (requires device admin)
  *   POST /api/control/volume?level= — set volume (0..volumeMax)
@@ -53,6 +55,7 @@ public class MediaServer {
     private final ControlCallback callback;
     private final Handler mainHandler;
     private final File apkStageDir;
+    private final long startTime = System.currentTimeMillis();
     private ServerSocket serverSocket;
     private Thread acceptThread;
     private volatile boolean running;
@@ -163,6 +166,10 @@ public class MediaServer {
                 sendJson(out, 200, "{\"ok\":true}");
             } else if (method.equals("GET") && path.equals("/version")) {
                 sendJson(out, 200, "{\"version\":\"" + VERSION + "\"}");
+            } else if (method.equals("GET") && path.equals("/health")) {
+                handleHealth(out);
+            } else if (method.equals("GET") && path.equals("/log")) {
+                handleLog(out);
             } else if (method.equals("GET") && path.equals("/files")) {
                 handleListFiles(out);
             } else if (method.equals("GET") && path.startsWith("/file/")) {
@@ -245,6 +252,52 @@ public class MediaServer {
             default:
                 sendText(out, 404, "Not Found");
         }
+    }
+
+    // ---- Health / diagnostics ----
+
+    private void handleHealth(OutputStream out) throws IOException {
+        long uptime = System.currentTimeMillis() - startTime;
+        long freeMb = 0, totalMb = 0;
+        try {
+            android.os.StatFs fs = new android.os.StatFs(mediaDir);
+            freeMb = fs.getAvailableBytes() / (1024 * 1024);
+            totalMb = fs.getTotalBytes() / (1024 * 1024);
+        } catch (Exception ignored) {}
+        int idx = -1, total = 0;
+        String name = "";
+        boolean playing = false;
+        if (callback != null) {
+            idx = callback.getCurrentIndex();
+            total = callback.getPlaylistCount();
+            name = callback.getCurrentName();
+            playing = callback.isPlaying();
+        }
+        sendJson(out, 200, "{\"version\":\"" + VERSION + "\""
+                + ",\"uptimeMs\":" + uptime
+                + ",\"freeMb\":" + freeMb
+                + ",\"totalMb\":" + totalMb
+                + ",\"playing\":" + playing
+                + ",\"index\":" + idx
+                + ",\"total\":" + total
+                + ",\"current\":\"" + escJson(name == null ? "" : name) + "\"}");
+    }
+
+    private void handleLog(OutputStream out) throws IOException {
+        StringBuilder sb = new StringBuilder();
+        try {
+            // Приложение читает свой собственный logcat — для удалённой диагностики.
+            Process p = Runtime.getRuntime().exec(
+                    new String[]{"logcat", "-d", "-v", "time", "-t", "500"});
+            try (BufferedReader r = new BufferedReader(
+                    new InputStreamReader(p.getInputStream(), "UTF-8"))) {
+                String line;
+                while ((line = r.readLine()) != null) sb.append(line).append('\n');
+            }
+        } catch (Exception e) {
+            sb.append("logcat error: ").append(e.getMessage());
+        }
+        sendText(out, 200, sb.toString());
     }
 
     // ---- File handlers ----

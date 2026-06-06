@@ -39,6 +39,8 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
     private TextView playPauseBtn;
     private TextView timeText;
     private TextView syncStatusView;
+    private TextView recoveryView;
+    private boolean userPaused = false;
     private ProgressBar progressBar;
     private SeekBar volumeBar;
     
@@ -108,6 +110,16 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
         rootLayout.addView(syncStatusView,
                 new FrameLayout.LayoutParams(-2, -2, Gravity.CENTER));
 
+        // Заглушка вместо чёрного экрана, когда нет контента/сети.
+        recoveryView = new TextView(this);
+        recoveryView.setTextColor(Color.parseColor("#66FFFFFF"));
+        recoveryView.setTextSize(22);
+        recoveryView.setGravity(Gravity.CENTER);
+        recoveryView.setText("Brandmen Ads\n\nНет роликов для показа.\nДобавьте контент в приложении.");
+        recoveryView.setVisibility(View.GONE);
+        rootLayout.addView(recoveryView,
+                new FrameLayout.LayoutParams(-1, -1, Gravity.CENTER));
+
         setupUI();
         setupPlaylistUI();
         
@@ -117,9 +129,83 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
 
         checkPermissions();
         startProgressUpdater();
+        startWatchdog();
+        installCrashHandler();
         handleInstallResult(getIntent());
         handleCommand(getIntent());
         ensureOverlayPermission();
+    }
+
+    /**
+     * Watchdog: раз в 20 сек проверяет, что плеер реально играет. Если нет
+     * (и пользователь не ставил на паузу) — перезапускает воспроизведение.
+     * Если позиция «застыла» (зависший ролик) — переходит к следующему.
+     * Так планшет сам выходит из чёрного экрана/залипания без вмешательства.
+     */
+    private void startWatchdog() {
+        final Handler h = new Handler();
+        h.postDelayed(new Runnable() {
+            int lastPos = -1;
+            int stalls = 0;
+            @Override public void run() {
+                try {
+                    if (!isPlaylistVisible && !userPaused && !videoFiles.isEmpty()) {
+                        boolean playing = false;
+                        try { playing = videoView.isPlaying(); } catch (Exception ignored) {}
+                        if (!playing) {
+                            android.util.Log.w("Watchdog", "не играет — перезапуск воспроизведения");
+                            lastPos = -1; stalls = 0;
+                            playNext();
+                        } else {
+                            int pos = -1;
+                            try { pos = videoView.getCurrentPosition(); } catch (Exception ignored) {}
+                            if (pos == lastPos && pos >= 0) {
+                                stalls++;
+                                if (stalls >= 2) {
+                                    android.util.Log.w("Watchdog", "ролик завис — следующий");
+                                    stalls = 0; lastPos = -1;
+                                    currentIndex++;
+                                    playNext();
+                                }
+                            } else {
+                                stalls = 0; lastPos = pos;
+                            }
+                        }
+                    }
+                } catch (Exception e) {
+                    android.util.Log.e("Watchdog", "ошибка: " + e.getMessage());
+                }
+                h.postDelayed(this, 20000);
+            }
+        }, 20000);
+    }
+
+    /**
+     * Перехват необработанных исключений: пишем в лог и перепланируем запуск
+     * Activity через AlarmManager, затем убиваем процесс — плеер сам
+     * поднимется после краша, а не останется лежать.
+     */
+    private void installCrashHandler() {
+        final Thread.UncaughtExceptionHandler def = Thread.getDefaultUncaughtExceptionHandler();
+        Thread.setDefaultUncaughtExceptionHandler((thread, ex) -> {
+            try {
+                android.util.Log.e("MainActivity", "КРАШ: " + ex, ex);
+                Intent restart = new Intent(this, MainActivity.class)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                int flags = PendingIntent.FLAG_ONE_SHOT;
+                if (Build.VERSION.SDK_INT >= 23) flags |= PendingIntent.FLAG_IMMUTABLE;
+                PendingIntent pi = PendingIntent.getActivity(this, 1, restart, flags);
+                android.app.AlarmManager am =
+                        (android.app.AlarmManager) getSystemService(ALARM_SERVICE);
+                am.set(android.app.AlarmManager.RTC,
+                        System.currentTimeMillis() + 1500, pi);
+            } catch (Exception ignored) {
+            } finally {
+                if (def != null) def.uncaughtException(thread, ex);
+                android.os.Process.killProcess(android.os.Process.myPid());
+                System.exit(2);
+            }
+        });
     }
 
     /**
@@ -305,8 +391,8 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
         playPauseBtn.setTextSize(50);
         playPauseBtn.setPadding(50, 5, 50, 5);
         playPauseBtn.setOnClickListener(v -> {
-            if (videoView.isPlaying()) { videoView.pause(); playPauseBtn.setText("▶"); } 
-            else { videoView.start(); playPauseBtn.setText("⏸"); }
+            if (videoView.isPlaying()) { videoView.pause(); playPauseBtn.setText("▶"); userPaused = true; }
+            else { videoView.start(); playPauseBtn.setText("⏸"); userPaused = false; }
             resetHideTimer();
         });
         buttonsRow.addView(playPauseBtn);
@@ -1140,12 +1226,20 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
     private void playNext() {
         if (videoFiles.isEmpty()) {
             loadVideos();
-            if (videoFiles.isEmpty()) { videoView.postDelayed(this::playNext, 5000); return; }
+            if (videoFiles.isEmpty()) {
+                // Нет роликов — показываем заглушку вместо чёрного экрана и
+                // продолжаем периодически проверять.
+                if (recoveryView != null) recoveryView.setVisibility(View.VISIBLE);
+                videoView.postDelayed(this::playNext, 5000);
+                return;
+            }
         }
+        if (recoveryView != null) recoveryView.setVisibility(View.GONE);
         if (currentIndex >= videoFiles.size()) currentIndex = 0;
         if (currentIndex < 0) currentIndex = 0;
         videoView.setVideoPath(videoFiles.get(currentIndex).getAbsolutePath());
         videoView.start();
         playPauseBtn.setText("⏸");
+        userPaused = false;
     }
 }
