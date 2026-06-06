@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 import 'package:http/http.dart' as http;
+import 'package:http/io_client.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'logger.dart';
@@ -17,6 +18,26 @@ const String _kRepo = 'xykaxayc/brandmen-control';
 // может не содержать нужный ассет — ищем новейший релиз, где он ЕСТЬ.
 const String _kReleasesUrl =
     'https://api.github.com/repos/$_kRepo/releases?per_page=15';
+
+// На части машин (антивирус/корпоративный прокси перехватывает HTTPS, либо в
+// хранилище Dart нет нужного корня) проверка сертификата GitHub падает с
+// CERTIFICATE_VERIFY_FAILED, и обновления не работают. Доверяем сертификату
+// ТОЛЬКО для доменов GitHub — глобально проверку не отключаем.
+bool _trustGithub(X509Certificate cert, String host, int port) {
+  final ok = host == 'github.com' ||
+      host.endsWith('.github.com') ||
+      host.endsWith('.githubusercontent.com');
+  if (ok) {
+    AppLogger.log('[UPD] принят неподтверждённый TLS-сертификат для $host '
+        '(вероятно перехват антивирусом/прокси или корень не в Dart)');
+  }
+  return ok;
+}
+
+HttpClient _githubHttpClient() =>
+    HttpClient()..badCertificateCallback = _trustGithub;
+
+http.Client _githubClient() => IOClient(_githubHttpClient());
 
 class UpdateInfo {
   final String version;
@@ -143,16 +164,22 @@ class AppUpdater {
   // ── Внутренние хелперы ──────────────────────────────────────────────────
 
   static Future<List<dynamic>> _fetchReleases() async {
-    final response = await http.get(
-      Uri.parse(
-          '$_kReleasesUrl&_=${DateTime.now().millisecondsSinceEpoch}'),
-      headers: {
-        'Accept': 'application/vnd.github+json',
-        'Cache-Control': 'no-cache',
-        'Pragma': 'no-cache',
-        'User-Agent': 'BrandmenControl/$kAppVersion',
-      },
-    ).timeout(const Duration(seconds: 10));
+    final client = _githubClient();
+    final http.Response response;
+    try {
+      response = await client.get(
+        Uri.parse(
+            '$_kReleasesUrl&_=${DateTime.now().millisecondsSinceEpoch}'),
+        headers: {
+          'Accept': 'application/vnd.github+json',
+          'Cache-Control': 'no-cache',
+          'Pragma': 'no-cache',
+          'User-Agent': 'BrandmenControl/$kAppVersion',
+        },
+      ).timeout(const Duration(seconds: 10));
+    } finally {
+      client.close();
+    }
 
     AppLogger.log('[UPD] GET $_kReleasesUrl → HTTP ${response.statusCode}, '
         '${response.body.length} байт');
@@ -226,8 +253,9 @@ class AppUpdater {
     String destPath,
     void Function(double) onProgress,
   ) async {
-    // dart:io HttpClient следует 302-редиректам (GitHub releases → CDN)
-    final client = HttpClient();
+    // dart:io HttpClient следует 302-редиректам (GitHub releases → CDN).
+    // Тот же обход проверки сертификата для доменов GitHub, что и при проверке.
+    final client = _githubHttpClient();
     try {
       final req = await client.getUrl(Uri.parse(url));
       req.followRedirects = true;
