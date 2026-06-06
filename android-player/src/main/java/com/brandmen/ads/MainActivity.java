@@ -38,6 +38,7 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
     private LinearLayout playlistLayout;
     private TextView playPauseBtn;
     private TextView timeText;
+    private TextView syncStatusView;
     private ProgressBar progressBar;
     private SeekBar volumeBar;
     
@@ -95,6 +96,17 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
 
         videoView = new VideoView(this);
         rootLayout.addView(videoView, new FrameLayout.LayoutParams(-1, -1, Gravity.CENTER));
+
+        // Оверлей прогресса синхронизации поверх видео.
+        syncStatusView = new TextView(this);
+        syncStatusView.setTextColor(Color.WHITE);
+        syncStatusView.setTextSize(18);
+        syncStatusView.setGravity(Gravity.CENTER);
+        syncStatusView.setBackgroundColor(Color.parseColor("#CC000000"));
+        syncStatusView.setPadding(60, 40, 60, 40);
+        syncStatusView.setVisibility(View.GONE);
+        rootLayout.addView(syncStatusView,
+                new FrameLayout.LayoutParams(-2, -2, Gravity.CENTER));
 
         setupUI();
         setupPlaylistUI();
@@ -785,36 +797,39 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
 
     private void startSync() {
         final String ip = getServerIp();
-        Toast.makeText(this, "Связь с " + ip + "...", Toast.LENGTH_SHORT).show();
+        showSyncStatus("Связь с " + ip + "…");
         registerWithServer(ip);
         new Thread(() -> {
             try {
                 URL url = new URL("http://" + ip + ":5010/api/sync/manifest");
                 HttpURLConnection conn = (HttpURLConnection) url.openConnection();
                 conn.setConnectTimeout(5000);
-                
+
                 InputStream in = new BufferedInputStream(conn.getInputStream());
                 BufferedReader reader = new BufferedReader(new InputStreamReader(in));
                 StringBuilder result = new StringBuilder();
                 String line;
                 while ((line = reader.readLine()) != null) result.append(line);
-                
+
                 JSONObject json = new JSONObject(result.toString());
                 JSONArray files = json.getJSONArray("files");
-                
+
                 File dir = new File(ADS_DIR);
                 if (!dir.exists()) dir.mkdirs();
-                
+
+                showSyncStatus("Проверяю файлы: " + files.length() + " шт.");
+                int downloaded = 0, actual = 0;
                 List<String> remoteNames = new ArrayList<>();
                 for (int i = 0; i < files.length(); i++) {
                     JSONObject f = files.getJSONObject(i);
                     String name = f.getString("name");
                     String remoteMd5 = f.optString("md5", "");
+                    long size = f.getLong("size");
                     remoteNames.add(name);
-                    
+
                     File local = new File(dir, name);
-                    boolean needDownload = !local.exists() || local.length() != f.getLong("size");
-                    
+                    boolean needDownload = !local.exists() || local.length() != size;
+
                     if (!needDownload && !remoteMd5.isEmpty()) {
                         String localMd5 = calculateMD5(local);
                         if (!remoteMd5.equalsIgnoreCase(localMd5)) {
@@ -823,26 +838,52 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
                     }
 
                     if (needDownload) {
-                        downloadFile(ip, name, local);
+                        final int idx = i + 1, total = files.length();
+                        downloadFile(ip, name, local, size, (pct) ->
+                            showSyncStatus("Загрузка " + idx + "/" + total + "\n"
+                                + name + "  " + pct + "%"));
+                        downloaded++;
+                    } else {
+                        actual++;
                     }
                 }
-                
+
                 File[] locals = dir.listFiles();
+                int removed = 0;
                 if (locals != null) {
                     for (File l : locals) {
-                        if (isVideo(l.getName()) && !remoteNames.contains(l.getName())) l.delete();
+                        if (isVideo(l.getName()) && !remoteNames.contains(l.getName())) {
+                            if (l.delete()) removed++;
+                        }
                     }
                 }
-                
+
+                final int dl = downloaded, ac = actual, rm = removed;
                 runOnUiThread(() -> {
-                    Toast.makeText(this, "Обновлено!", Toast.LENGTH_SHORT).show();
+                    showSyncStatus("Готово ✓\nзагружено " + dl + ", актуально " + ac
+                        + (rm > 0 ? ", удалено " + rm : ""));
+                    syncStatusView.postDelayed(this::hideSyncStatus, 2500);
                     loadVideos(); playNext();
                 });
             } catch (Exception e) {
                 e.printStackTrace();
-                runOnUiThread(() -> Toast.makeText(this, "Mac (" + ip + ") не отвечает", Toast.LENGTH_LONG).show());
+                runOnUiThread(() -> {
+                    showSyncStatus("Ошибка: Mac (" + ip + ") не отвечает");
+                    syncStatusView.postDelayed(this::hideSyncStatus, 4000);
+                });
             }
         }).start();
+    }
+
+    private void showSyncStatus(String msg) {
+        runOnUiThread(() -> {
+            syncStatusView.setText(msg);
+            syncStatusView.setVisibility(View.VISIBLE);
+        });
+    }
+
+    private void hideSyncStatus() {
+        syncStatusView.setVisibility(View.GONE);
     }
 
     private String calculateMD5(File file) {
@@ -866,17 +907,29 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
         }
     }
 
-    private void downloadFile(String ip, String name, File dest) throws Exception {
+    interface DownloadProgress { void onPct(int pct); }
+
+    private void downloadFile(String ip, String name, File dest, long size,
+                              DownloadProgress cb) throws Exception {
         URL url = new URL("http://" + ip + ":5010/video/" + Uri.encode(name));
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-        InputStream is = conn.getInputStream();
-        FileOutputStream os = new FileOutputStream(dest);
-        byte[] buffer = new byte[8192];
-        int len;
+        long total = size > 0 ? size : conn.getContentLength();
+        File part = new File(dest.getPath() + ".part");
+        InputStream is = new BufferedInputStream(conn.getInputStream());
+        FileOutputStream os = new FileOutputStream(part);
+        byte[] buffer = new byte[65536];
+        int len; long got = 0; int lastPct = -1;
         while ((len = is.read(buffer)) != -1) {
             os.write(buffer, 0, len);
+            got += len;
+            if (cb != null && total > 0) {
+                int pct = (int) (got * 100 / total);
+                if (pct != lastPct) { lastPct = pct; cb.onPct(pct); }
+            }
         }
         os.close(); is.close();
+        if (dest.exists()) dest.delete();
+        part.renameTo(dest); // атомарная замена — недокачанный файл не подменит рабочий
     }
 
     private TextView createStyledButton(String text) {

@@ -967,11 +967,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     child: SingleChildScrollView(
                       child: Column(
                         children: state.deviceStates.entries.map((entry) {
+                          final v = entry.value;
                           final active = entry.key == state.currentDevice;
-                          final done = entry.value.startsWith("Готово") ||
-                              entry.value == "Актуально" ||
-                              entry.value == "Запущено";
-                          final error = entry.value.startsWith("Ошибка");
+                          final done = v.startsWith("Готово") ||
+                              v == "Актуально" ||
+                              v == "Запущено";
+                          final error = v.startsWith("Ошибка");
+                          final warn = v == "Не запустился";
                           return Padding(
                             padding: const EdgeInsets.symmetric(vertical: 4),
                             child: Row(
@@ -979,19 +981,23 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                 Icon(
                                   error
                                       ? Icons.error_outline_rounded
-                                      : done
-                                          ? Icons.check_circle_outline_rounded
-                                          : active
-                                              ? Icons.sync_rounded
-                                              : Icons.schedule_rounded,
+                                      : warn
+                                          ? Icons.warning_amber_rounded
+                                          : done
+                                              ? Icons.check_circle_outline_rounded
+                                              : active
+                                                  ? Icons.sync_rounded
+                                                  : Icons.schedule_rounded,
                                   size: 16,
                                   color: error
                                       ? Colors.redAccent
-                                      : done
-                                          ? Colors.greenAccent
-                                          : active
-                                              ? Colors.blue
-                                              : Colors.white24,
+                                      : warn
+                                          ? Colors.orangeAccent
+                                          : done
+                                              ? Colors.greenAccent
+                                              : active
+                                                  ? Colors.blue
+                                                  : Colors.white24,
                                 ),
                                 const SizedBox(width: 8),
                                 Expanded(
