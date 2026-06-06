@@ -502,6 +502,37 @@ class DashboardScreen extends StatefulWidget {
   State<DashboardScreen> createState() => _DashboardScreenState();
 }
 
+/// Переводит технические ошибки в понятные пользователю фразы с подсказкой.
+/// Сообщения, уже написанные по-русски (из SyncResult), пропускает как есть.
+String humanizeError(String? raw) {
+  if (raw == null || raw.trim().isEmpty) return 'Неизвестная ошибка';
+  final s = raw.toLowerCase();
+  if (s.contains('timeout') || s.contains('timed out') || s.contains('deadline')) {
+    return 'Планшет не ответил вовремя — проверьте, что он включён и в сети';
+  }
+  if (s.contains('certificate') || s.contains('handshake')) {
+    return 'Проблема с сертификатом — возможно, антивирус или прокси перехватывает соединение';
+  }
+  if (s.contains('connection refused') ||
+      s.contains('socketexception') ||
+      s.contains('failed host lookup') ||
+      s.contains('no route') ||
+      s.contains('unreachable') ||
+      s.contains('connection closed') ||
+      s.contains('connection reset')) {
+    return 'Нет связи с планшетом — проверьте Wi-Fi и что плеер запущен';
+  }
+  if (s.contains('no space') || s.contains('enospc')) {
+    return 'На планшете закончилось место';
+  }
+  if (s.contains('adb') && !RegExp(r'[а-яё]', caseSensitive: false).hasMatch(raw)) {
+    return 'Связь по USB (ADB) недоступна — работаем по сети';
+  }
+  // Уже человеческое русское сообщение — оставляем как есть.
+  if (RegExp(r'[а-яё]', caseSensitive: false).hasMatch(raw)) return raw;
+  return 'Ошибка связи с планшетом';
+}
+
 class _BulkSyncProgress {
   final int currentIndex;
   final int totalDevices;
@@ -860,7 +891,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         content: Text(
-            "${dev.name}: ${result.error ?? 'синхронизация не выполнена'}"),
+            "${dev.name}: ${humanizeError(result.error)}"),
         backgroundColor: Colors.red.shade700,
         duration: const Duration(seconds: 6),
       ));
@@ -1118,7 +1149,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         ? "Актуально"
                         : "Готово: ${result.pushed.length}"),
         currentStep: !result.success
-            ? "${dev.name}: ${result.error ?? 'ошибка'}"
+            ? "${dev.name}: ${humanizeError(result.error)}"
             : lv == false
                 ? "${dev.name}: плеер НЕ подтвердил запуск"
                 : !sync
@@ -1134,7 +1165,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final lines = results.entries.map((e) {
       final r = e.value;
       if (!r.success) {
-        return "${e.key}: ошибка — ${r.error ?? 'не выполнено'}";
+        return "${e.key}: ошибка — ${humanizeError(r.error)}";
       }
       final lv = launchVerified[e.key];
       if (lv == false) {
@@ -1259,7 +1290,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (!result.success) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         content: Text(
-            "${dev.name}: ${result.error ?? 'синхронизация не выполнена'}"),
+            "${dev.name}: ${humanizeError(result.error)}"),
         backgroundColor: Colors.red.shade700,
         duration: const Duration(seconds: 6),
       ));
@@ -1650,6 +1681,20 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 ),
               ],
             ),
+          ] else if (!isOnline) ...[
+            const SizedBox(height: 4),
+            Text(
+              "Не в сети",
+              style: TextStyle(fontSize: 10, color: Colors.redAccent.shade100),
+            ),
+            if (status?.lastError != null)
+              Text(
+                humanizeError(status?.lastError),
+                textAlign: TextAlign.center,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 9, color: Colors.white30),
+              ),
           ],
           const SizedBox(height: 12),
           Row(
