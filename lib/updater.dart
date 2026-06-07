@@ -173,6 +173,17 @@ class AppUpdater {
     CancelToken? cancel,
   }) async {
     lastError = null;
+    // macOS App Translocation: если приложение в карантине и запущено из
+    // «Загрузок», оно работает с read-only тома (/AppTranslocation/...), и
+    // заменить себя не может. Не качаем впустую — сразу понятное сообщение.
+    if (Platform.isMacOS &&
+        Platform.resolvedExecutable.contains('/AppTranslocation/')) {
+      AppLogger.log('[UPD] отмена: App Translocation — ${Platform.resolvedExecutable}');
+      lastError = 'приложение запущено из «Загрузок» (защита macOS). '
+          'Переместите его в «Программы» (из .dmg) и запустите оттуда — '
+          'тогда обновление установится';
+      return false;
+    }
     try {
       final tempDir = await getTemporaryDirectory();
       final zipPath = p.join(tempDir.path, 'brandmen_update.zip');
