@@ -55,6 +55,7 @@ public class MediaServer {
     private final ControlCallback callback;
     private final Handler mainHandler;
     private final File apkStageDir;
+    private final Context appContext;
     private final long startTime = System.currentTimeMillis();
     private ServerSocket serverSocket;
     private Thread acceptThread;
@@ -65,6 +66,19 @@ public class MediaServer {
         this.callback = callback;
         this.mainHandler = new Handler(Looper.getMainLooper());
         this.apkStageDir = context.getCacheDir();
+        this.appContext = context.getApplicationContext();
+    }
+
+    /** Является ли приложение device owner — тогда обновления ставятся молча. */
+    private boolean isDeviceOwner() {
+        try {
+            android.app.admin.DevicePolicyManager dpm =
+                    (android.app.admin.DevicePolicyManager)
+                            appContext.getSystemService(Context.DEVICE_POLICY_SERVICE);
+            return dpm != null && dpm.isDeviceOwnerApp(appContext.getPackageName());
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     public void start() throws IOException {
@@ -280,6 +294,7 @@ public class MediaServer {
                 + ",\"playing\":" + playing
                 + ",\"index\":" + idx
                 + ",\"total\":" + total
+                + ",\"deviceOwner\":" + isDeviceOwner()
                 + ",\"current\":\"" + escJson(name == null ? "" : name) + "\"}");
     }
 

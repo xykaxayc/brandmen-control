@@ -20,6 +20,9 @@ class DeviceStatus {
   final int? freeMb;
   final bool? playerPlaying;
   final String? currentClip;
+  // true — плеер device owner, обновления ставятся молча; false — нужен ручной
+  // тап «Установить»; null — статус неизвестен (старый плеер / нет HTTP).
+  final bool? deviceOwner;
 
   DeviceStatus({
     required this.ip,
@@ -32,6 +35,7 @@ class DeviceStatus {
     this.freeMb,
     this.playerPlaying,
     this.currentClip,
+    this.deviceOwner,
   });
 
   String get transport {
@@ -254,6 +258,7 @@ class AdbManager {
       freeMb: health?['freeMb'] as int?,
       playerPlaying: health?['playing'] as bool?,
       currentClip: health?['current'] as String?,
+      deviceOwner: health?['deviceOwner'] as bool?,
     );
   }
 

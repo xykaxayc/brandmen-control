@@ -24,11 +24,33 @@ import 'updater.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await AppLogger.init();
+  await AppSettings.load();
   await _startServer();
   runApp(const BrandmenApp());
 }
 
 BrandmenServer? globalServer;
+
+/// Глобальные UI-настройки, на которые экраны реагируют вживую.
+class AppSettings {
+  /// Показывать бейдж «не ставит обновления сам» на карточках планшетов,
+  /// которые не являются device owner. Можно выключить в Настройках, когда все
+  /// планшеты провижинены — чтобы бейджи не мозолили глаза.
+  static final ValueNotifier<bool> showAutoUpdateBadge = ValueNotifier(true);
+
+  static const _kBadgeKey = 'show_auto_update_badge';
+
+  static Future<void> load() async {
+    final prefs = await SharedPreferences.getInstance();
+    showAutoUpdateBadge.value = prefs.getBool(_kBadgeKey) ?? true;
+  }
+
+  static Future<void> setShowAutoUpdateBadge(bool value) async {
+    showAutoUpdateBadge.value = value;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_kBadgeKey, value);
+  }
+}
 
 Future<void> _startServer() async {
   try {
@@ -1692,6 +1714,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           fontSize: 11,
                           color:
                               isOnline ? Colors.greenAccent : Colors.white38)),
+                  _autoUpdateBadge(status),
                 ],
               ),
               if (isOnline)
@@ -1816,6 +1839,29 @@ class _DashboardScreenState extends State<DashboardScreen> {
         ],
       ),
     ));
+  }
+
+  /// Предупреждение «планшет не ставит обновления сам» (не device owner).
+  /// Показывается только если: статус известен и явно false, и включён тумблер
+  /// в Настройках. Когда все планшеты провижинены — бейджи исчезают сами, плюс
+  /// их можно полностью отключить, чтобы «если всё настроено — не мозолило».
+  Widget _autoUpdateBadge(DeviceStatus? status) {
+    if (status?.deviceOwner != false) return const SizedBox.shrink();
+    return ValueListenableBuilder<bool>(
+      valueListenable: AppSettings.showAutoUpdateBadge,
+      builder: (_, show, __) {
+        if (!show) return const SizedBox.shrink();
+        return Padding(
+          padding: const EdgeInsets.only(left: 6),
+          child: Tooltip(
+            message: "Не ставит обновления сам (не device owner).\n"
+                "Нужен ручной тап «Установить» на планшете.",
+            child: Icon(Icons.system_update_outlined,
+                size: 13, color: Colors.orangeAccent.shade100),
+          ),
+        );
+      },
+    );
   }
 
   Widget _smallAppleBtn(IconData icon, VoidCallback? onTap, {String? tooltip}) {
@@ -3319,6 +3365,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     value: autoStartEnabled,
                     activeThumbColor: Colors.blue,
                     onChanged: _toggleAutoStart)),
+            const Divider(height: 32, color: Colors.white10),
+            _settingRow(
+                "Показывать бейдж авто-обновления",
+                ValueListenableBuilder<bool>(
+                  valueListenable: AppSettings.showAutoUpdateBadge,
+                  builder: (_, value, __) => Switch(
+                      value: value,
+                      activeThumbColor: Colors.blue,
+                      onChanged: (v) => AppSettings.setShowAutoUpdateBadge(v)),
+                )),
             const SizedBox(height: 20),
             SizedBox(
               width: double.infinity,
