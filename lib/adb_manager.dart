@@ -709,6 +709,31 @@ class AdbManager {
     );
   }
 
+  /// Делает плеер device owner — тогда обновления ставятся молча.
+  /// Требует ADB (USB или сеть) и отсутствия аккаунтов на планшете, иначе
+  /// dpm вернёт ошибку (нужен factory reset). Возвращает успех и вывод команды.
+  Future<({bool ok, String output})> setDeviceOwner(String ip) async {
+    final adb = await _getAdb();
+    final id = '$ip:5555';
+    await _retry(
+      'ADB connect $ip',
+      () => _run(adb, ['connect', id], timeout: const Duration(seconds: 4)),
+      _ok,
+      attempts: 2,
+    );
+    final r = await _run(
+      adb,
+      [
+        '-s', id, 'shell', 'dpm', 'set-device-owner',
+        'com.brandmen.ads/com.brandmen.ads.DeviceAdminReceiver'
+      ],
+      timeout: const Duration(seconds: 10),
+    );
+    final out = '${r.stdout}${r.stderr}'.trim();
+    final ok = r.exitCode == 0 && out.toLowerCase().contains('success');
+    return (ok: ok, output: out.isEmpty ? 'нет вывода от устройства' : out);
+  }
+
   Future<void> setVolume(String ip, int level) async {
     if (await DeviceHttp(ip).setVolumeHttp(level)) return;
     // ADB fallback

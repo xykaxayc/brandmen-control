@@ -1470,7 +1470,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           fontSize: 11,
                           color:
                               isOnline ? Colors.greenAccent : Colors.white38)),
-                  _autoUpdateBadge(status),
+                  _autoUpdateBadge(dev, status),
                 ],
               ),
               if (isOnline)
@@ -1671,11 +1671,114 @@ class _DashboardScreenState extends State<DashboardScreen> {
     _setOp(ip, const DeviceOp.busy("Отмена…"));
   }
 
+  /// Помощник: сделать планшет device owner, чтобы обновления ставились молча.
+  Future<void> _showDeviceOwnerHelp(SavedDevice dev) async {
+    const cmd =
+        "adb shell dpm set-device-owner com.brandmen.ads/com.brandmen.ads.DeviceAdminReceiver";
+    await showDialog(
+      context: context,
+      builder: (c) => AlertDialog(
+        backgroundColor: const Color(0xFF2C2C2E),
+        title: Row(
+          children: [
+            const Icon(Icons.system_update_outlined,
+                color: Colors.orangeAccent, size: 22),
+            const SizedBox(width: 10),
+            Expanded(
+                child: Text("Авто-обновление: ${dev.name}",
+                    style: const TextStyle(fontSize: 16))),
+          ],
+        ),
+        content: const SizedBox(
+          width: 460,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                "Этот планшет не device owner — поэтому обновления APK не "
+                "ставятся сами (нужен ручной тап «Установить»).\n\n"
+                "Сделать device owner можно, только пока на планшете НЕТ "
+                "аккаунтов (Google и т.п.). Если аккаунт уже добавлен — нужен "
+                "factory reset, затем эта команда до добавления аккаунтов.",
+                style: TextStyle(color: Colors.white70, fontSize: 13),
+              ),
+              SizedBox(height: 12),
+              Text("Команда (выполнить вручную при USB-подключении):",
+                  style: TextStyle(color: Colors.white54, fontSize: 12)),
+              SizedBox(height: 4),
+              SelectableText(cmd,
+                  style: TextStyle(
+                      color: Colors.lightBlueAccent,
+                      fontSize: 12,
+                      fontFamily: 'monospace')),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(c),
+              child: const Text("Закрыть",
+                  style: TextStyle(color: Colors.white54))),
+          ElevatedButton.icon(
+            onPressed: () {
+              Navigator.pop(c);
+              _runSetDeviceOwner(dev);
+            },
+            icon: const Icon(Icons.play_arrow_rounded, size: 18),
+            label: const Text("Выполнить по ADB"),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.blue,
+              foregroundColor: Colors.white,
+              shape:
+                  RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _runSetDeviceOwner(SavedDevice dev) async {
+    final ip = dev.ip;
+    _setOp(ip, const DeviceOp.busy("Назначаю device owner…"));
+    final res = await adb.setDeviceOwner(ip);
+    if (res.ok) {
+      _setOp(ip, const DeviceOp.success("Device owner ✓"));
+      _clearOpLater(ip);
+      _refresh(); // обновим /health → бейдж исчезнет
+    } else {
+      _setOp(ip, const DeviceOp.error("Не удалось"));
+      _clearOpLater(ip, after: const Duration(seconds: 8));
+      AppLogger.log('set-device-owner ${dev.ip}: ${res.output}');
+      if (mounted) {
+        showDialog(
+          context: context,
+          builder: (c) => AlertDialog(
+            backgroundColor: const Color(0xFF2C2C2E),
+            title: const Text("Не удалось назначить device owner",
+                style: TextStyle(fontSize: 16)),
+            content: Text(
+              "${res.output}\n\nЧаще всего причина — на планшете уже есть "
+              "аккаунты. Нужен factory reset, затем команда до добавления "
+              "аккаунтов.",
+              style: const TextStyle(color: Colors.white70, fontSize: 13),
+            ),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.pop(c), child: const Text("OK")),
+            ],
+          ),
+        );
+      }
+    }
+  }
+
   /// Предупреждение «планшет не ставит обновления сам» (не device owner).
   /// Показывается только если: статус известен и явно false, и включён тумблер
   /// в Настройках. Когда все планшеты провижинены — бейджи исчезают сами, плюс
   /// их можно полностью отключить, чтобы «если всё настроено — не мозолило».
-  Widget _autoUpdateBadge(DeviceStatus? status) {
+  Widget _autoUpdateBadge(SavedDevice dev, DeviceStatus? status) {
     if (status?.deviceOwner != false) return const SizedBox.shrink();
     return ValueListenableBuilder<bool>(
       valueListenable: AppSettings.showAutoUpdateBadge,
@@ -1685,9 +1788,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
           padding: const EdgeInsets.only(left: 6),
           child: Tooltip(
             message: "Не ставит обновления сам (не device owner).\n"
-                "Нужен ручной тап «Установить» на планшете.",
-            child: Icon(Icons.system_update_outlined,
-                size: 13, color: Colors.orangeAccent.shade100),
+                "Нажмите, чтобы настроить.",
+            child: InkWell(
+              onTap: () => _showDeviceOwnerHelp(dev),
+              borderRadius: BorderRadius.circular(4),
+              child: Icon(Icons.system_update_outlined,
+                  size: 13, color: Colors.orangeAccent.shade100),
+            ),
           ),
         );
       },
@@ -2569,13 +2676,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  Future<void> _saveSettings() async {
+  /// Тихо сохраняет настройки авто-выключения при каждом изменении —
+  /// без кнопки «Сохранить» и без всплывашки.
+  Future<void> _persistAutoOff() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('autoOffTime', _timeController.text);
     await prefs.setBool('autoOffEnabled', autoOffEnabled);
-    if (!mounted) return;
-    ScaffoldMessenger.of(context)
-        .showSnackBar(const SnackBar(content: Text("Настройки сохранены")));
   }
 
   Future<void> _getHostIp() async {
@@ -3173,7 +3279,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 Switch(
                     value: autoOffEnabled,
                     activeThumbColor: Colors.blue,
-                    onChanged: (v) => setState(() => autoOffEnabled = v))),
+                    onChanged: (v) {
+                      setState(() => autoOffEnabled = v);
+                      _persistAutoOff();
+                    })),
             if (autoOffEnabled) ...[
               const SizedBox(height: 12),
               _settingRow(
@@ -3185,6 +3294,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       textAlign: TextAlign.center,
                       decoration: const InputDecoration(
                           isDense: true, border: OutlineInputBorder()),
+                      onChanged: (_) => _persistAutoOff(),
                     ),
                   )),
             ],
@@ -3205,21 +3315,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       activeThumbColor: Colors.blue,
                       onChanged: (v) => AppSettings.setShowAutoUpdateBadge(v)),
                 )),
-            const SizedBox(height: 20),
-            SizedBox(
-              width: double.infinity,
-              height: 48,
-              child: ElevatedButton(
-                onPressed: _saveSettings,
-                style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.blue,
-                    foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(10))),
-                child: const Text("Сохранить",
-                    style: TextStyle(fontWeight: FontWeight.bold)),
-              ),
-            ),
           ]),
           const SizedBox(height: 20),
           _sectionCard("О программе", [
