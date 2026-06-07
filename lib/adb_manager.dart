@@ -552,19 +552,7 @@ class AdbManager {
       );
     }
 
-    final lsRes = await _run(adb, ['-s', id, 'shell', 'ls', '-l', _remoteDir],
-        timeout: const Duration(seconds: 6));
-    final remoteSizes = <String, int>{};
-    for (final line in lsRes.stdout.toString().split('\n')) {
-      final parts = line.trim().split(RegExp(r'\s+'));
-      if (parts.length >= 5) {
-        final size = int.tryParse(parts[4]);
-        if (size != null && parts.length > 7) {
-          final name = parts.sublist(7).join(' ');
-          remoteSizes[name] = size;
-        }
-      }
-    }
+    final remoteSizes = await _remoteSizes(adb, id);
 
     final localFiles = localFolder.listSync().whereType<File>().where((f) {
       final name = p.basename(f.path);
@@ -647,6 +635,50 @@ class AdbManager {
 
   static String _shellQuote(String value) {
     return "'${value.replaceAll("'", r"'\''")}'";
+  }
+
+  /// {имя файла: размер} для файлов в _remoteDir на устройстве.
+  ///
+  /// Главный способ — `stat`: отдаёт «размер|полный путь», что надёжно при
+  /// пробелах в именах. Раньше парсился `ls -l` по фиксированным колонкам
+  /// (размер=parts[4], имя=parts[7+]), но формат `ls` отличается между
+  /// прошивками (порядок колонок и формат даты), парсинг ломался → планшет
+  /// считался пустым → синк лил ВСЕ файлы заново на каждом запуске.
+  /// Команду шлём одной строкой: `adb shell` склеивает аргументы, а кавычки
+  /// разбирает шелл устройства — иначе пробел в `-c '%s|%n'` всё ломает.
+  static Future<Map<String, int>> _remoteSizes(String adb, String id) async {
+    final result = <String, int>{};
+
+    final statRes = await _run(
+      adb,
+      ['-s', id, 'shell', "stat -c '%s|%n' $_remoteDir/* 2>/dev/null"],
+      timeout: const Duration(seconds: 8),
+    );
+    for (final line in statRes.stdout.toString().split('\n')) {
+      final t = line.trim();
+      final bar = t.indexOf('|');
+      if (bar <= 0) continue;
+      final size = int.tryParse(t.substring(0, bar));
+      if (size == null) continue;
+      final name = p.basename(t.substring(bar + 1).trim());
+      if (name.isEmpty || name == '*') continue;
+      result[name] = size;
+    }
+    if (result.isNotEmpty) return result;
+
+    // Фолбэк: старый разбор `ls -l`, если на устройстве нет `stat`.
+    final lsRes = await _run(adb, ['-s', id, 'shell', 'ls', '-l', _remoteDir],
+        timeout: const Duration(seconds: 6));
+    for (final line in lsRes.stdout.toString().split('\n')) {
+      final parts = line.trim().split(RegExp(r'\s+'));
+      if (parts.length >= 8) {
+        final size = int.tryParse(parts[4]);
+        if (size != null) {
+          result[parts.sublist(7).join(' ')] = size;
+        }
+      }
+    }
+    return result;
   }
 
   Future<void> sleep(String ip) async {
