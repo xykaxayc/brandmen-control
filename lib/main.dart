@@ -729,39 +729,38 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Future<void> _captureAll() async {
-    final tempDir = await getTemporaryDirectory();
     // Параллельно: раньше скриншоты снимались по очереди через ADB screencap,
     // и refresh с несколькими планшетами заметно подвисал.
-    await Future.wait(saved.where((d) => statuses[d.ip]?.online == true).map(
-      (dev) async {
-        final path =
-            p.join(tempDir.path, "thumb_${dev.ip.replaceAll('.', '_')}.png");
-        final result = await adb.takeScreenshot(dev.ip, path);
-        if (result != null && mounted) {
-          setState(() {
-            _thumbnails[dev.ip] = result;
-          });
-        }
-      },
-    ));
+    await Future.wait(saved
+        .where((d) => statuses[d.ip]?.online == true)
+        .map((d) => _captureOne(d.ip)));
   }
 
   Future<void> _refresh() async {
     if (mounted) setState(() => _isLoading = true);
     final list = await DeviceStorage.load();
-    if (mounted) {
-      setState(() {
-        saved = list;
-      });
-    }
-    final results = await adb.checkAll(list.map((d) => d.ip).toList());
-    if (mounted) {
-      setState(() {
-        saved = list;
-        statuses = {for (final s in results) s.ip: s};
-        _isLoading = false;
-      });
-      _captureAll();
+    // Карточки показываем сразу (со старым/пустым статусом), а статус каждого
+    // планшета подставляем по мере готовности — не ждём, пока проверятся все.
+    if (mounted) setState(() => saved = list);
+    await adb.checkAll(
+      list.map((d) => d.ip).toList(),
+      onResult: (status) {
+        if (!mounted) return;
+        setState(() => statuses[status.ip] = status);
+        // Снимаем превью сразу, как планшет оказался онлайн.
+        if (status.online) _captureOne(status.ip);
+      },
+    );
+    if (mounted) setState(() => _isLoading = false);
+  }
+
+  /// Снимок экрана одного планшета (для мгновенного превью при обнаружении).
+  Future<void> _captureOne(String ip) async {
+    final tempDir = await getTemporaryDirectory();
+    final path = p.join(tempDir.path, "thumb_${ip.replaceAll('.', '_')}.png");
+    final result = await adb.takeScreenshot(ip, path);
+    if (result != null && mounted) {
+      setState(() => _thumbnails[ip] = result);
     }
   }
 

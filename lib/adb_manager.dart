@@ -277,14 +277,24 @@ class AdbManager {
     return "??";
   }
 
-  // Проверяет все IP параллельно
-  Future<List<DeviceStatus>> checkAll(List<String> ips) async {
+  // Проверяет все IP параллельно (батчами, чтобы не забивать WiFi/ADB).
+  // [onResult] вызывается для КАЖДОГО устройства сразу, как его статус готов —
+  // UI может показывать планшеты по мере обнаружения, не дожидаясь всех.
+  Future<List<DeviceStatus>> checkAll(
+    List<String> ips, {
+    void Function(DeviceStatus status)? onResult,
+  }) async {
     if (ips.isEmpty) return [];
     final results = <DeviceStatus>[];
     const batchSize = 3;
     for (var i = 0; i < ips.length; i += batchSize) {
       final batch = ips.skip(i).take(batchSize);
-      results.addAll(await Future.wait(batch.map(checkDevice)));
+      await Future.wait(batch.map((ip) async {
+        final status = await checkDevice(ip);
+        results.add(status);
+        onResult?.call(status);
+        return status;
+      }));
     }
     return results;
   }
