@@ -53,25 +53,51 @@ jobs:
       - name: Build Windows release
         run: flutter build windows --release --dart-define=APP_VERSION=${{ steps.ver.outputs.version }}
 
-      - name: Bundle ADB platform-tools
-        shell: powershell
-        run: |
-          Invoke-WebRequest -Uri 'https://dl.google.com/android/repository/platform-tools-latest-windows.zip' `
-            -OutFile 'platform-tools.zip' -UseBasicParsing
-          Expand-Archive -Path 'platform-tools.zip' `
-            -DestinationPath 'build\windows\x64\runner\Release' -Force
-          Remove-Item 'platform-tools.zip'
+      # FFmpeg и ADB не меняются между сборками — кэшируем, чтобы не качать
+      # каждый раз (раньше это занимало ~6 мин и ~1 мин соответственно).
+      # Чтобы обновить бинарник — поднять версию в ключе кэша (…-v1 → -v2).
+      - name: Cache FFmpeg
+        id: cache-ffmpeg
+        uses: actions/cache@v4
+        with:
+          path: tools-cache/ffmpeg
+          key: ffmpeg-win64-gpl-v1
 
-      - name: Bundle FFmpeg
+      - name: Download FFmpeg
+        if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
         shell: powershell
         run: |
           Invoke-WebRequest -Uri 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip' `
             -OutFile 'ffmpeg.zip' -UseBasicParsing
-          Expand-Archive -Path 'ffmpeg.zip' -DestinationPath 'ffmpeg-dist' -Force
-          New-Item -ItemType Directory -Force -Path 'build\windows\x64\runner\Release\ffmpeg'
+          7z x ffmpeg.zip -offmpeg-dist -y
+          New-Item -ItemType Directory -Force -Path 'tools-cache\ffmpeg'
           $ffmpeg = Get-ChildItem -Path 'ffmpeg-dist' -Filter 'ffmpeg.exe' -Recurse | Select-Object -First 1
-          Copy-Item $ffmpeg.FullName 'build\windows\x64\runner\Release\ffmpeg\ffmpeg.exe'
+          Copy-Item $ffmpeg.FullName 'tools-cache\ffmpeg\ffmpeg.exe'
           Remove-Item 'ffmpeg.zip','ffmpeg-dist' -Recurse -Force
+
+      - name: Cache ADB platform-tools
+        id: cache-adb
+        uses: actions/cache@v4
+        with:
+          path: tools-cache/platform-tools
+          key: adb-platform-tools-v1
+
+      - name: Download ADB platform-tools
+        if: steps.cache-adb.outputs.cache-hit != 'true'
+        shell: powershell
+        run: |
+          Invoke-WebRequest -Uri 'https://dl.google.com/android/repository/platform-tools-latest-windows.zip' `
+            -OutFile 'platform-tools.zip' -UseBasicParsing
+          7z x platform-tools.zip -otools-cache -y
+          Remove-Item 'platform-tools.zip'
+
+      - name: Bundle tools into release
+        shell: powershell
+        run: |
+          $rel = 'build\windows\x64\runner\Release'
+          New-Item -ItemType Directory -Force -Path "$rel\ffmpeg"
+          Copy-Item 'tools-cache\ffmpeg\ffmpeg.exe' "$rel\ffmpeg\ffmpeg.exe" -Force
+          Copy-Item 'tools-cache\platform-tools' "$rel\platform-tools" -Recurse -Force
 
       - name: Zip release
         run: |
