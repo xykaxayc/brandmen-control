@@ -644,51 +644,23 @@ String humanizeError(String? raw) {
   return 'Ошибка связи с планшетом';
 }
 
-class _BulkSyncProgress {
-  final int currentIndex;
-  final int totalDevices;
-  final String currentDevice;
-  final String currentStep;
-  final Map<String, String> deviceStates;
+/// Состояние операции на ОДНОМ планшете — показывается инлайн на карточке,
+/// вместо модального диалога. Несколько планшетов могут иметь свои операции
+/// одновременно, и приложение остаётся отзывчивым.
+enum DeviceOpKind { busy, success, error }
 
-  const _BulkSyncProgress({
-    required this.currentIndex,
-    required this.totalDevices,
-    required this.currentDevice,
-    required this.currentStep,
-    required this.deviceStates,
-  });
+class DeviceOp {
+  final DeviceOpKind kind;
+  final String label; // короткий текст статуса
+  final double? progress; // 0..1; null = неопределённый прогресс
+  const DeviceOp(this.kind, this.label, {this.progress});
 
-  _BulkSyncProgress copyWith({
-    int? currentIndex,
-    int? totalDevices,
-    String? currentDevice,
-    String? currentStep,
-    Map<String, String>? deviceStates,
-  }) {
-    return _BulkSyncProgress(
-      currentIndex: currentIndex ?? this.currentIndex,
-      totalDevices: totalDevices ?? this.totalDevices,
-      currentDevice: currentDevice ?? this.currentDevice,
-      currentStep: currentStep ?? this.currentStep,
-      deviceStates: deviceStates ?? this.deviceStates,
-    );
-  }
+  const DeviceOp.busy(String label, {double? progress})
+      : this(DeviceOpKind.busy, label, progress: progress);
+  const DeviceOp.success(String label) : this(DeviceOpKind.success, label);
+  const DeviceOp.error(String label) : this(DeviceOpKind.error, label);
 
-  _BulkSyncProgress updateDevice(
-    String name,
-    String state, {
-    int? currentIndex,
-    String? currentDevice,
-    String? currentStep,
-  }) {
-    return copyWith(
-      currentIndex: currentIndex,
-      currentDevice: currentDevice,
-      currentStep: currentStep,
-      deviceStates: {...deviceStates, name: state},
-    );
-  }
+  bool get isBusy => kind == DeviceOpKind.busy;
 }
 
 class _DashboardScreenState extends State<DashboardScreen> {
@@ -699,11 +671,19 @@ class _DashboardScreenState extends State<DashboardScreen> {
   final Map<String, String> _thumbnails = {};
   bool _isLoading = false;
   bool _isRegistering = false;
-  // Идёт длительная операция (синк/запуск/завершение смены). Блокирует кнопки,
-  // чтобы две операции не дрались за один WiFi-канал и ADB одновременно.
+  // Идёт МАССОВАЯ операция (Синхронизировать все / Запустить все / Завершить
+  // смену). Блокирует только панельные кнопки массовых операций — карточки
+  // остаются отзывчивыми.
   bool _busy = false;
+  bool _bulkCancel = false;
 
-  /// Выполняет операцию монопольно: пока она идёт, кнопки действий выключены.
+  // Инлайн-состояние операции по каждому планшету (ip → DeviceOp) и набор ip,
+  // для которых запрошена отмена.
+  final Map<String, DeviceOp> _ops = {};
+  final Set<String> _cancel = {};
+
+  /// Выполняет массовую операцию монопольно: на время блокируются панельные
+  /// кнопки массовых действий (но не отдельные карточки).
   Future<void> _guard(Future<void> Function() op) async {
     if (_busy) return;
     if (mounted) setState(() => _busy = true);
@@ -712,6 +692,46 @@ class _DashboardScreenState extends State<DashboardScreen> {
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  /// Ставит/снимает инлайн-статус операции на карточке планшета.
+  void _setOp(String ip, DeviceOp? op) {
+    if (!mounted) return;
+    setState(() {
+      if (op == null) {
+        _ops.remove(ip);
+      } else {
+        _ops[ip] = op;
+      }
+    });
+  }
+
+  /// Через [after] убирает терминальный статус (успех/ошибка), если его не
+  /// сменила новая операция. Сравнение по identity — чтобы не стереть свежий.
+  void _clearOpLater(String ip,
+      {Duration after = const Duration(seconds: 5)}) {
+    final snapshot = _ops[ip];
+    if (snapshot == null) return;
+    Future.delayed(after, () {
+      if (!mounted) return;
+      if (identical(_ops[ip], snapshot)) {
+        setState(() => _ops.remove(ip));
+      }
+    });
+  }
+
+  /// Короткое глобальное уведомление (для общих сообщений, не привязанных к
+  /// конкретному планшету). Единый спокойный стиль вместо разнобоя SnackBar.
+  void _toast(String message, {bool warn = false}) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..clearSnackBars()
+      ..showSnackBar(SnackBar(
+        content: Text(message),
+        behavior: SnackBarBehavior.floating,
+        backgroundColor: warn ? Colors.orange.shade800 : const Color(0xFF333335),
+        duration: const Duration(seconds: 3),
+      ));
   }
 
   @override
@@ -938,93 +958,67 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  Future<void> _syncAndPlay(SavedDevice dev) async {
-    if (!mounted) return;
-    final progress = ValueNotifier<String>("Подключение...");
-    bool cancelled = false;
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (c) => ValueListenableBuilder<String>(
-        valueListenable: progress,
-        builder: (_, msg, __) => AlertDialog(
-          backgroundColor: const Color(0xFF2C2C2E),
-          title: Text(dev.name, style: const TextStyle(fontSize: 16)),
-          content: Row(
-            children: [
-              const SizedBox(
-                  width: 20,
-                  height: 20,
-                  child: CircularProgressIndicator(
-                      strokeWidth: 2, color: Colors.blue)),
-              const SizedBox(width: 16),
-              Expanded(child: Text(msg, style: const TextStyle(fontSize: 13))),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () {
-                cancelled = true;
-                Navigator.of(c).pop();
-              },
-              child: const Text("Отмена"),
-            ),
-          ],
-        ),
-      ),
-    );
+  Future<void> _syncAndPlay(SavedDevice dev) => _runDeviceSync(dev, launch: true);
+  Future<void> _syncOnly(SavedDevice dev) => _runDeviceSync(dev, launch: false);
+
+  /// Синхронизация (и опц. запуск) одного планшета — БЕЗ модалки: весь прогресс
+  /// и итог показываются инлайн на карточке (`_ops[ip]`). Отмена — через
+  /// крестик на карточке (`_cancel`). Можно запускать параллельно для разных
+  /// планшетов; повторный запуск того же — игнорируется.
+  Future<void> _runDeviceSync(SavedDevice dev, {required bool launch}) async {
+    final ip = dev.ip;
+    if (_ops[ip]?.isBusy ?? false) return;
+    _cancel.remove(ip);
+    bool cancelled() => _cancel.contains(ip);
+
+    _setOp(ip, const DeviceOp.busy("Подключение…"));
     final mediaDir = await MediaConfig.resolveDir();
     final norm =
         await Transcoder.normalizeDir(mediaDir, onProgress: (file, i, total) {
-      progress.value = "Конвертация ($i/$total): $file";
+      _setOp(ip,
+          DeviceOp.busy("Конвертация $i/$total", progress: total > 0 ? i / total : null));
     });
-    if (cancelled) {
-      progress.dispose();
+    if (cancelled()) {
+      _setOp(ip, null);
       return;
     }
+
     final result = await adb.syncDeviceDirect(
-      dev.ip,
+      ip,
       mediaDir,
-      tryHttpFirst: statuses[dev.ip]?.httpAvailable ?? true,
-      isCancelled: () => cancelled,
+      tryHttpFirst: statuses[ip]?.httpAvailable ?? true,
+      isCancelled: cancelled,
       onProgress: (done, total, file) {
-        if (file.isNotEmpty) progress.value = "($done/$total) $file";
+        if (file.isNotEmpty) {
+          _setOp(ip,
+              DeviceOp.busy("$done/$total", progress: total > 0 ? done / total : null));
+        }
       },
     );
-    if (cancelled) {
-      progress.dispose();
+    if (cancelled()) {
+      _setOp(ip, null);
       return;
     }
+
     if (!result.success) {
-      if (mounted) Navigator.of(context, rootNavigator: true).pop();
-      progress.dispose();
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(
-            "${dev.name}: ${humanizeError(result.error)}"),
-        backgroundColor: Colors.red.shade700,
-        duration: const Duration(seconds: 6),
-      ));
+      _setOp(ip, DeviceOp.error(humanizeError(result.error)));
+      _clearOpLater(ip, after: const Duration(seconds: 8));
       if (norm.ffmpegMissing) await _showFfmpegMissingDialog();
       return;
     }
-    final canLaunch = statuses[dev.ip]?.online ?? false;
+
+    final canLaunch = launch && (statuses[ip]?.online ?? false);
     if (canLaunch) {
-      await adb.wakeUp(dev.ip, launchPlayer: true);
+      _setOp(ip, const DeviceOp.busy("Запуск…"));
+      await adb.wakeUp(ip, launchPlayer: true);
     }
-    if (mounted) Navigator.of(context, rootNavigator: true).pop();
-    progress.dispose();
-    if (!mounted) return;
-    final launchText = canLaunch ? ", запущено" : ", устройство офлайн";
-    final fallbackText = result.usedFallback ? " через fallback" : "";
-    final summary = result.pushed.isEmpty
-        ? "Все файлы актуальны$launchText"
-        : "Загружено ${result.pushed.length}$fallbackText: ${result.pushed.join(', ')}";
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text("${dev.name}: $summary"),
-      backgroundColor: Colors.green.shade700,
-      duration: const Duration(seconds: 6),
-    ));
+
+    final base = result.pushed.isEmpty
+        ? "Актуально"
+        : "Загружено ${result.pushed.length}";
+    _setOp(ip, DeviceOp.success(canLaunch ? "$base ▶" : base));
+    _clearOpLater(ip);
+    if (canLaunch) _captureOne(ip);
     if (norm.ffmpegMissing) await _showFfmpegMissingDialog();
   }
 
@@ -1046,270 +1040,96 @@ class _DashboardScreenState extends State<DashboardScreen> {
       {required bool launch, bool mute = false, bool sync = true}) async {
     final online = saved.where((d) => statuses[d.ip]?.online == true).toList();
     if (online.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text("Нет онлайн-устройств"),
-        backgroundColor: Colors.orange,
-      ));
+      _toast("Нет онлайн-устройств", warn: true);
       return;
     }
     final mediaDir = await MediaConfig.resolveDir();
     if (!mounted) return;
 
-    final progress = ValueNotifier<_BulkSyncProgress>(
-      _BulkSyncProgress(
-        currentIndex: 0,
-        totalDevices: online.length,
-        currentDevice: "Подготовка...",
-        currentStep: sync ? "Проверяю медиатеку" : "Запуск плеера",
-        deviceStates: {for (final dev in online) dev.name: "В очереди"},
-      ),
-    );
-    bool cancelled = false;
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (c) => ValueListenableBuilder<_BulkSyncProgress>(
-        valueListenable: progress,
-        builder: (_, state, __) {
-          final value = state.totalDevices == 0
-              ? null
-              : state.currentIndex / state.totalDevices;
-          return AlertDialog(
-            backgroundColor: const Color(0xFF2C2C2E),
-            title: Text(
-                launch
-                    ? (mute ? "Запуск всех (без звука)" : "Запуск всех планшетов")
-                    : "Синхронизация (без запуска)",
-                style: const TextStyle(fontSize: 17)),
-            content: SizedBox(
-              width: 460,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  LinearProgressIndicator(
-                    value: value,
-                    backgroundColor: Colors.white12,
-                    color: Colors.blue,
-                  ),
-                  const SizedBox(height: 12),
-                  Text(
-                    "${state.currentIndex}/${state.totalDevices}: ${state.currentDevice}",
-                    style: const TextStyle(
-                        fontSize: 13, fontWeight: FontWeight.w600),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(state.currentStep,
-                      style:
-                          const TextStyle(fontSize: 12, color: Colors.white60)),
-                  const SizedBox(height: 14),
-                  ConstrainedBox(
-                    constraints: const BoxConstraints(maxHeight: 220),
-                    child: SingleChildScrollView(
-                      child: Column(
-                        children: state.deviceStates.entries.map((entry) {
-                          final v = entry.value;
-                          final active = entry.key == state.currentDevice;
-                          final done = v.startsWith("Готово") ||
-                              v == "Актуально" ||
-                              v == "Запущено";
-                          final error = v.startsWith("Ошибка");
-                          final warn = v == "Не запустился";
-                          return Padding(
-                            padding: const EdgeInsets.symmetric(vertical: 4),
-                            child: Row(
-                              children: [
-                                Icon(
-                                  error
-                                      ? Icons.error_outline_rounded
-                                      : warn
-                                          ? Icons.warning_amber_rounded
-                                          : done
-                                              ? Icons.check_circle_outline_rounded
-                                              : active
-                                                  ? Icons.sync_rounded
-                                                  : Icons.schedule_rounded,
-                                  size: 16,
-                                  color: error
-                                      ? Colors.redAccent
-                                      : warn
-                                          ? Colors.orangeAccent
-                                          : done
-                                              ? Colors.greenAccent
-                                              : active
-                                                  ? Colors.blue
-                                                  : Colors.white24,
-                                ),
-                                const SizedBox(width: 8),
-                                Expanded(
-                                  child: Text(entry.key,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(fontSize: 12)),
-                                ),
-                                const SizedBox(width: 8),
-                                Flexible(
-                                  child: Text(entry.value,
-                                      overflow: TextOverflow.ellipsis,
-                                      textAlign: TextAlign.right,
-                                      style: const TextStyle(
-                                          fontSize: 11, color: Colors.white54)),
-                                ),
-                              ],
-                            ),
-                          );
-                        }).toList(),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => cancelled = true,
-                child: const Text("Остановить после текущего"),
-              ),
-            ],
-          );
-        },
-      ),
-    );
+    _bulkCancel = false;
+    // Все планшеты сразу помечаем «в очереди» — видно, что процесс пошёл.
+    for (final dev in online) {
+      _setOp(dev.ip, const DeviceOp.busy("В очереди…"));
+    }
 
     // Конвертация не-mp4 → mp4 один раз для общей медиа-папки (только при синке).
     final norm = sync
         ? await Transcoder.normalizeDir(mediaDir, onProgress: (file, i, total) {
-            progress.value = progress.value.copyWith(
-              currentDevice: "Подготовка...",
-              currentStep: "Конвертация ($i/$total): $file",
-            );
+            for (final dev in online) {
+              _setOp(
+                  dev.ip,
+                  DeviceOp.busy("Конвертация $i/$total",
+                      progress: total > 0 ? i / total : null));
+            }
           })
         : null;
 
-    final Map<String, SyncResult> results = {};
-    // null = запуск не выполнялся; true = плеер играет; false = не подтвердилось.
-    final Map<String, bool> launchVerified = {};
-    for (int i = 0; i < online.length; i++) {
-      if (cancelled) break;
-      final dev = online[i];
+    int failed = 0;
+    for (final dev in online) {
       if (!mounted) return;
-      final deviceOnline = statuses[dev.ip]?.online ?? false;
+      final ip = dev.ip;
+      if (_bulkCancel) {
+        _setOp(ip, null);
+        continue;
+      }
+      final deviceOnline = statuses[ip]?.online ?? false;
 
       SyncResult result;
       if (sync) {
-        progress.value = progress.value.updateDevice(
-          dev.name,
-          "Подключение",
-          currentIndex: i + 1,
-          currentDevice: dev.name,
-          currentStep: "Подключение к ${dev.ip}",
-        );
+        _setOp(ip, const DeviceOp.busy("Подключение…"));
         result = await adb.syncDeviceDirect(
-          dev.ip,
+          ip,
           mediaDir,
-          tryHttpFirst: statuses[dev.ip]?.httpAvailable ?? true,
-          isCancelled: () => cancelled,
+          tryHttpFirst: statuses[ip]?.httpAvailable ?? true,
+          isCancelled: () => _bulkCancel,
           onProgress: (done, total, file) {
             if (file.isEmpty) return;
-            progress.value = progress.value.updateDevice(
-              dev.name,
-              "($done/$total) $file",
-              currentStep: "Файл $done из $total: $file",
-            );
+            _setOp(
+                ip,
+                DeviceOp.busy("$done/$total",
+                    progress: total > 0 ? done / total : null));
           },
         );
       } else {
-        // Без синхронизации: только запуск, файлы не трогаем.
-        progress.value = progress.value.updateDevice(
-          dev.name,
-          "Запуск",
-          currentIndex: i + 1,
-          currentDevice: dev.name,
-          currentStep: "Запуск плеера на ${dev.ip}",
-        );
         result = const SyncResult(success: true, pushed: [], transport: 'launch');
       }
 
-      if (launch && result.success && deviceOnline) {
-        progress.value = progress.value.updateDevice(
-          dev.name,
-          mute ? "Запуск (без звука)" : "Запуск",
-          currentStep: mute
-              ? "Запускаю плеер без звука на ${dev.name}"
-              : "Запускаю плеер на ${dev.name}",
-        );
-        await adb.wakeUp(dev.ip, launchPlayer: true);
-        if (mute) await adb.setVolume(dev.ip, 0);
-        progress.value = progress.value.updateDevice(
-          dev.name, "Проверка запуска",
-          currentStep: "Проверяю, что плеер играет на ${dev.name}",
-        );
-        launchVerified[dev.name] = await adb.verifyPlaying(dev.ip);
+      // Отмена во время синка этого устройства — снимаем статус и выходим.
+      if (_bulkCancel && !result.success) {
+        _setOp(ip, null);
+        continue;
       }
-      results[dev.name] = result;
-      final lv = launchVerified[dev.name];
-      progress.value = progress.value.updateDevice(
-        dev.name,
-        !result.success
-            ? "Ошибка"
-            : lv == false
-                ? "Не запустился"
-                : !sync
-                    ? "Запущено"
-                    : (result.pushed.isEmpty
-                        ? "Актуально"
-                        : "Готово: ${result.pushed.length}"),
-        currentStep: !result.success
-            ? "${dev.name}: ${humanizeError(result.error)}"
-            : lv == false
-                ? "${dev.name}: плеер НЕ подтвердил запуск"
-                : !sync
-                    ? "${dev.name}: запущено"
-                    : "${dev.name}: синхронизация завершена",
-      );
+
+      bool? launchOk;
+      if (launch && result.success && deviceOnline) {
+        _setOp(ip, DeviceOp.busy(mute ? "Запуск без звука…" : "Запуск…"));
+        await adb.wakeUp(ip, launchPlayer: true);
+        if (mute) await adb.setVolume(ip, 0);
+        _setOp(ip, const DeviceOp.busy("Проверка запуска…"));
+        launchOk = await adb.verifyPlaying(ip);
+      }
+
+      if (!result.success) {
+        _setOp(ip, DeviceOp.error(humanizeError(result.error)));
+      } else if (launchOk == false) {
+        failed++;
+        AppLogger.log('Запуск: плеер не подтвердил запуск на ${dev.name}');
+        _setOp(ip, const DeviceOp.error("Не запустился"));
+      } else {
+        final base = !sync
+            ? "Запущено"
+            : (result.pushed.isEmpty
+                ? "Актуально"
+                : "Готово: ${result.pushed.length}");
+        _setOp(ip, DeviceOp.success(launchOk == true ? "$base ▶" : base));
+        _captureOne(ip);
+      }
+      _clearOpLater(ip, after: const Duration(seconds: 8));
     }
 
-    // Отмена закрывает диалог и прекращает без сводки.
-    if (mounted) Navigator.of(context, rootNavigator: true).pop();
-    progress.dispose();
-    if (!mounted || cancelled) return;
-    final lines = results.entries.map((e) {
-      final r = e.value;
-      if (!r.success) {
-        return "${e.key}: ошибка — ${humanizeError(r.error)}";
-      }
-      final lv = launchVerified[e.key];
-      if (lv == false) {
-        return "⚠️ ${e.key}: НЕ запустился (плеер не отвечает «играет»)";
-      }
-      final launchMark = lv == true ? " ▶" : "";
-      if (!sync) return "${e.key}: запущено$launchMark";
-      final transport =
-          r.usedFallback ? '${r.transport}, fallback' : r.transport;
-      return r.pushed.isEmpty
-          ? "${e.key}: актуально ($transport)$launchMark"
-          : "${e.key}: ${r.pushed.length} файлов ($transport)$launchMark";
-    }).join('\n');
-    final failed = launchVerified.entries.where((e) => e.value == false).length;
     if (failed > 0) {
       AppLogger.log('Запуск: не подтвердился на $failed устройстве(ах)');
     }
-    await showDialog(
-      context: context,
-      builder: (c) => AlertDialog(
-        backgroundColor: const Color(0xFF2C2C2E),
-        title: Text(!sync
-            ? "Запуск завершён"
-            : "Синхронизация завершена"),
-        content: Text(
-            lines.isEmpty
-                ? "Ни один планшет не был обработан"
-                : lines,
-            style: const TextStyle(fontSize: 13)),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(c), child: const Text("OK"))
-        ],
-      ),
-    );
     if (norm?.ffmpegMissing ?? false) await _showFfmpegMissingDialog();
   }
 
@@ -1337,110 +1157,27 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  Future<void> _syncOnly(SavedDevice dev) async {
-    if (!mounted) return;
-    final progress = ValueNotifier<String>("Подключение...");
-    bool cancelled = false;
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (c) => ValueListenableBuilder<String>(
-        valueListenable: progress,
-        builder: (_, msg, __) => AlertDialog(
-          backgroundColor: const Color(0xFF2C2C2E),
-          title: Text(dev.name, style: const TextStyle(fontSize: 16)),
-          content: Row(
-            children: [
-              const SizedBox(
-                  width: 20,
-                  height: 20,
-                  child: CircularProgressIndicator(
-                      strokeWidth: 2, color: Colors.blue)),
-              const SizedBox(width: 16),
-              Expanded(child: Text(msg, style: const TextStyle(fontSize: 13))),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () {
-                cancelled = true;
-                Navigator.of(c).pop();
-              },
-              child: const Text("Отмена"),
-            ),
-          ],
-        ),
-      ),
-    );
-    final mediaDir = await MediaConfig.resolveDir();
-    final norm =
-        await Transcoder.normalizeDir(mediaDir, onProgress: (file, i, total) {
-      progress.value = "Конвертация ($i/$total): $file";
-    });
-    if (cancelled) {
-      progress.dispose();
-      return;
-    }
-    final result = await adb.syncDeviceDirect(
-      dev.ip,
-      mediaDir,
-      tryHttpFirst: statuses[dev.ip]?.httpAvailable ?? true,
-      isCancelled: () => cancelled,
-      onProgress: (done, total, file) {
-        if (file.isNotEmpty) progress.value = "($done/$total) $file";
-      },
-    );
-    if (cancelled) {
-      progress.dispose();
-      return;
-    }
-    if (mounted) Navigator.of(context, rootNavigator: true).pop();
-    progress.dispose();
-    if (!mounted) return;
-    if (!result.success) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(
-            "${dev.name}: ${humanizeError(result.error)}"),
-        backgroundColor: Colors.red.shade700,
-        duration: const Duration(seconds: 6),
-      ));
-      if (norm.ffmpegMissing) await _showFfmpegMissingDialog();
-      return;
-    }
-    final summary = result.pushed.isEmpty
-        ? "Все файлы актуальны"
-        : "Загружено ${result.pushed.length}: ${result.pushed.join(', ')}";
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text("${dev.name}: $summary"),
-      backgroundColor: Colors.green.shade700,
-      duration: const Duration(seconds: 6),
-    ));
-    if (norm.ffmpegMissing) await _showFfmpegMissingDialog();
-  }
-
   /// Запуск плеера на одном планшете БЕЗ синхронизации файлов, со звуком 0.
-  /// Аналог массового «Без звука», но для конкретного устройства.
+  /// Инлайн-статус на карточке, без модалки и без SnackBar.
   Future<void> _launchMuted(SavedDevice dev) async {
-    if (!mounted) return;
-    final online = statuses[dev.ip]?.online ?? false;
-    if (!online) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text("${dev.name}: устройство офлайн"),
-        backgroundColor: Colors.red.shade700,
-      ));
+    final ip = dev.ip;
+    if (_ops[ip]?.isBusy ?? false) return;
+    if (!(statuses[ip]?.online ?? false)) {
+      _setOp(ip, const DeviceOp.error("Офлайн"));
+      _clearOpLater(ip);
       return;
     }
-    await adb.wakeUp(dev.ip, launchPlayer: true);
-    await adb.setVolume(dev.ip, 0);
-    final playing = await adb.verifyPlaying(dev.ip);
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text(playing
-          ? "${dev.name}: запущено без звука ▶"
-          : "⚠️ ${dev.name}: команда отправлена, но плеер НЕ подтвердил запуск"),
-      backgroundColor: playing ? Colors.green.shade700 : Colors.orange.shade800,
-      duration: const Duration(seconds: 5),
-    ));
+    _setOp(ip, const DeviceOp.busy("Запуск без звука…"));
+    await adb.wakeUp(ip, launchPlayer: true);
+    await adb.setVolume(ip, 0);
+    final playing = await adb.verifyPlaying(ip);
+    if (playing) {
+      _setOp(ip, const DeviceOp.success("Без звука ▶"));
+      _captureOne(ip);
+    } else {
+      _setOp(ip, const DeviceOp.error("Не подтвердил запуск"));
+    }
+    _clearOpLater(ip);
   }
 
   void _endShift() async {
@@ -1578,6 +1315,22 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           borderRadius: BorderRadius.circular(12)),
                     ),
                   ),
+                  if (_busy)
+                    OutlinedButton.icon(
+                      onPressed: _bulkCancel
+                          ? null
+                          : () => setState(() => _bulkCancel = true),
+                      icon: const Icon(Icons.stop_rounded),
+                      label: Text(_bulkCancel ? "Останавливаю…" : "Остановить"),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: Colors.orangeAccent,
+                        side: const BorderSide(color: Colors.orangeAccent),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 18, vertical: 16),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12)),
+                      ),
+                    ),
                   ElevatedButton.icon(
                     onPressed: (_isLoading || _busy) ? null : _refresh,
                     icon: _isLoading
@@ -1655,6 +1408,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
     // поэтому достаточно, чтобы устройство было онлайн любым способом.
     final canControl = isOnline;
     final bat = int.tryParse(status?.battery ?? "0") ?? 0;
+    // Кнопки синка/запуска этой карточки: онлайн, нет массовой операции и нет
+    // активной операции на самом этом планшете.
+    final opBusy = _ops[dev.ip]?.isBusy ?? false;
+    final canAct = isOnline && !_busy && !opBusy;
 
     return _HoverBuilder(
       builder: (hovered) => AnimatedContainer(
@@ -1741,23 +1498,30 @@ class _DashboardScreenState extends State<DashboardScreen> {
               borderRadius: BorderRadius.circular(12),
               child: AspectRatio(
                 aspectRatio: 16 / 9,
-                // Превью проявляется плавно при обновлении скриншота.
-                child: AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 350),
-                  switchInCurve: Curves.easeOut,
-                  child: _thumbnails.containsKey(dev.ip)
-                      ? Image.file(File(_thumbnails[dev.ip]!),
-                          fit: BoxFit.cover,
-                          gaplessPlayback: true,
-                          key: ValueKey(_thumbnails[dev.ip]))
-                      : Container(
-                          key: const ValueKey('placeholder'),
-                          color: Colors.black26,
-                          child: Icon(
-                              isOnline
-                                  ? Icons.videocam_off_rounded
-                                  : Icons.wifi_off_rounded,
-                              color: Colors.white10)),
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    // Превью проявляется плавно при обновлении скриншота.
+                    AnimatedSwitcher(
+                      duration: const Duration(milliseconds: 350),
+                      switchInCurve: Curves.easeOut,
+                      child: _thumbnails.containsKey(dev.ip)
+                          ? Image.file(File(_thumbnails[dev.ip]!),
+                              fit: BoxFit.cover,
+                              gaplessPlayback: true,
+                              key: ValueKey(_thumbnails[dev.ip]))
+                          : Container(
+                              key: const ValueKey('placeholder'),
+                              color: Colors.black26,
+                              child: Icon(
+                                  isOnline
+                                      ? Icons.videocam_off_rounded
+                                      : Icons.wifi_off_rounded,
+                                  color: Colors.white10)),
+                    ),
+                    // Инлайн-статус операции (синк/запуск/итог) поверх превью.
+                    _opOverlay(dev),
+                  ],
                 ),
               ),
             ),
@@ -1811,15 +1575,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
           Row(
             children: [
               _smallAppleBtn(Icons.play_arrow_rounded,
-                  (isOnline && !_busy) ? () => _guard(() => _syncAndPlay(dev)) : null,
+                  canAct ? () => _syncAndPlay(dev) : null,
                   tooltip: "Синхронизировать плейлист и запустить"),
               const SizedBox(width: 8),
               _smallAppleBtn(Icons.sync_rounded,
-                  (isOnline && !_busy) ? () => _guard(() => _syncOnly(dev)) : null,
+                  canAct ? () => _syncOnly(dev) : null,
                   tooltip: "Только синхронизация (без перезапуска)"),
               const SizedBox(width: 8),
               _smallAppleBtn(Icons.volume_off_rounded,
-                  (isOnline && !_busy) ? () => _guard(() => _launchMuted(dev)) : null,
+                  canAct ? () => _launchMuted(dev) : null,
                   tooltip: "Запустить без звука (без синхронизации)"),
               const SizedBox(width: 8),
               _smallAppleBtn(Icons.tune_rounded,
@@ -1838,6 +1602,73 @@ class _DashboardScreenState extends State<DashboardScreen> {
         ],
       ),
     ));
+  }
+
+  /// Инлайн-оверлей операции поверх превью карточки: прогресс синка/запуска,
+  /// либо итог (успех/ошибка), который сам исчезает через несколько секунд.
+  /// Плавно появляется/прячется через AnimatedSwitcher.
+  Widget _opOverlay(SavedDevice dev) {
+    final op = _ops[dev.ip];
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 250),
+      child: op == null
+          ? const SizedBox.shrink(key: ValueKey('noop'))
+          : Container(
+              // Ключ по фазе (не по тексту) — иначе AnimatedSwitcher
+              // перезапускал бы анимацию на каждом тике прогресса.
+              key: ValueKey(op.kind),
+              color: Colors.black.withValues(alpha: 0.55),
+              padding: const EdgeInsets.all(10),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  if (op.isBusy)
+                    SizedBox(
+                      width: 26,
+                      height: 26,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2.5,
+                          value: op.progress,
+                          color: Colors.white),
+                    )
+                  else
+                    Icon(
+                        op.kind == DeviceOpKind.success
+                            ? Icons.check_circle_rounded
+                            : Icons.error_rounded,
+                        size: 28,
+                        color: op.kind == DeviceOpKind.success
+                            ? Colors.greenAccent
+                            : Colors.redAccent),
+                  const SizedBox(height: 8),
+                  Text(op.label,
+                      textAlign: TextAlign.center,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 11, color: Colors.white)),
+                  // Отмена доступна для одиночной операции (в массовой — кнопка
+                  // «Остановить» на панели).
+                  if (op.isBusy && !_busy) ...[
+                    const SizedBox(height: 6),
+                    InkWell(
+                      onTap: () => _cancelDeviceOp(dev.ip),
+                      child: const Padding(
+                        padding: EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                        child: Text("Отмена",
+                            style: TextStyle(
+                                fontSize: 11, color: Colors.lightBlueAccent)),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+    );
+  }
+
+  void _cancelDeviceOp(String ip) {
+    _cancel.add(ip);
+    _setOp(ip, const DeviceOp.busy("Отмена…"));
   }
 
   /// Предупреждение «планшет не ставит обновления сам» (не device owner).
