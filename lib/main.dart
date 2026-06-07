@@ -834,6 +834,205 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (added > 0) await _refresh();
   }
 
+  /// D1: единый мастер добавления планшета (USB / по сети / вручную по IP).
+  Future<void> _showAddDeviceWizard() async {
+    await showDialog(
+      context: context,
+      builder: (c) => AlertDialog(
+        backgroundColor: const Color(0xFF2C2C2E),
+        title: const Text("Добавить планшет", style: TextStyle(fontSize: 18)),
+        content: SizedBox(
+          width: 430,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _addOption(
+                  Icons.usb_rounded,
+                  Colors.greenAccent,
+                  "По USB",
+                  "Планшет подключён кабелем, включена отладка по USB",
+                  () {
+                Navigator.pop(c);
+                _registerViaUsb();
+              }),
+              const SizedBox(height: 10),
+              _addOption(
+                  Icons.wifi_tethering_rounded,
+                  Colors.blue,
+                  "По сети (спаривание)",
+                  "Откроется окно на 60 сек — нажмите «Найти» в Brandmen Ads на планшете",
+                  () {
+                Navigator.pop(c);
+                _startNetworkPairing();
+              }),
+              const SizedBox(height: 10),
+              _addOption(
+                  Icons.keyboard_rounded,
+                  Colors.white70,
+                  "Вручную по IP",
+                  "Если знаете IP-адрес планшета в сети",
+                  () {
+                Navigator.pop(c);
+                _addByIp();
+              }),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(c),
+              child: const Text("Закрыть",
+                  style: TextStyle(color: Colors.white54))),
+        ],
+      ),
+    );
+  }
+
+  Widget _addOption(IconData icon, Color color, String title, String sub,
+      VoidCallback onTap) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: Colors.white.withValues(alpha: 0.04),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+        ),
+        child: Row(
+          children: [
+            Icon(icon, color: color, size: 26),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(title,
+                      style: const TextStyle(
+                          fontSize: 14, fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 2),
+                  Text(sub,
+                      style:
+                          const TextStyle(fontSize: 11, color: Colors.white54)),
+                ],
+              ),
+            ),
+            const Icon(Icons.chevron_right_rounded, color: Colors.white24),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Спаривание по сети: открываем окно регистрации и ждём, пока планшет
+  /// зарегистрируется (это делает глобальный _onDeviceRegistered).
+  Future<void> _startNetworkPairing() async {
+    final server = globalServer;
+    if (server == null) {
+      _toast("Сервер не запущен", warn: true);
+      return;
+    }
+    final until = DateTime.now().add(const Duration(seconds: 60));
+    server.startPairing(duration: const Duration(seconds: 60));
+    final secs = ValueNotifier<int>(60);
+    final timer = Timer.periodic(const Duration(seconds: 1), (_) {
+      final left = until.difference(DateTime.now()).inSeconds;
+      secs.value = left < 0 ? 0 : left;
+    });
+    await showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (c) => ValueListenableBuilder<int>(
+        valueListenable: secs,
+        builder: (_, left, __) {
+          // Авто-закрытие, когда спаривание завершилось (планшет
+          // зарегистрировался или истекло время).
+          if (!server.pairingActive || left <= 0) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (Navigator.canPop(c)) Navigator.pop(c);
+            });
+          }
+          return AlertDialog(
+            backgroundColor: const Color(0xFF2C2C2E),
+            title: const Text("Спаривание по сети",
+                style: TextStyle(fontSize: 17)),
+            content: SizedBox(
+              width: 400,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text(
+                    "На планшете откройте Brandmen Ads → «Найти» (или укажите "
+                    "IP этого ПК). Как только планшет зарегистрируется, он "
+                    "появится в списке.",
+                    style: TextStyle(color: Colors.white70, fontSize: 13),
+                  ),
+                  const SizedBox(height: 16),
+                  Text("Осталось: $left с",
+                      style: const TextStyle(
+                          color: Colors.blue,
+                          fontSize: 14,
+                          fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 8),
+                  const LinearProgressIndicator(
+                      backgroundColor: Colors.white12, color: Colors.blue),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () {
+                  server.stopPairing();
+                  if (Navigator.canPop(c)) Navigator.pop(c);
+                },
+                child: const Text("Отмена",
+                    style: TextStyle(color: Colors.white54)),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+    timer.cancel();
+    secs.dispose();
+    server.stopPairing();
+  }
+
+  /// Добавление планшета по введённому IP.
+  Future<void> _addByIp() async {
+    final controller = TextEditingController();
+    final ip = await showDialog<String>(
+      context: context,
+      builder: (c) => AlertDialog(
+        backgroundColor: const Color(0xFF2C2C2E),
+        title: const Text("Добавить по IP", style: TextStyle(fontSize: 17)),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(
+              hintText: "192.168.x.x", border: OutlineInputBorder()),
+          onSubmitted: (v) => Navigator.pop(c, v.trim()),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(c),
+              child: const Text("Отмена")),
+          TextButton(
+              onPressed: () => Navigator.pop(c, controller.text.trim()),
+              child: const Text("Добавить")),
+        ],
+      ),
+    );
+    if (ip == null || ip.isEmpty) return;
+    if (!RegExp(r'^\d+\.\d+\.\d+\.\d+$').hasMatch(ip)) {
+      _toast("Неверный IP-адрес", warn: true);
+      return;
+    }
+    await DeviceStorage.add(ip, name: "Планшет ${saved.length + 1}");
+    await _refresh();
+  }
+
   Future<void> _wakeScreen(SavedDevice dev) async {
     AppLogger.log("Включение экрана на ${dev.ip}");
     if (mounted) {
@@ -1239,15 +1438,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 runSpacing: 12,
                 children: [
                   OutlinedButton.icon(
-                    onPressed: (_isRegistering || _busy) ? null : _registerViaUsb,
+                    onPressed: (_isRegistering || _busy)
+                        ? null
+                        : _showAddDeviceWizard,
                     icon: _isRegistering
                         ? const SizedBox(
                             width: 16,
                             height: 16,
                             child: CircularProgressIndicator(
                                 color: Colors.greenAccent, strokeWidth: 2))
-                        : const Icon(Icons.usb_rounded),
-                    label: const Text("USB"),
+                        : const Icon(Icons.add_rounded),
+                    label: const Text("Добавить планшет"),
                     style: OutlinedButton.styleFrom(
                       foregroundColor: Colors.greenAccent,
                       side: const BorderSide(color: Colors.greenAccent),
@@ -1394,8 +1595,22 @@ class _DashboardScreenState extends State<DashboardScreen> {
           const Text("Нет зарегистрированных планшетов",
               style: TextStyle(color: Colors.white54, fontSize: 18)),
           const SizedBox(height: 8),
-          const Text("Подключите планшет через USB и нажмите «Добавить по USB»",
+          const Text("Добавьте первый планшет — по USB, по сети или по IP",
               style: TextStyle(color: Colors.white24, fontSize: 13)),
+          const SizedBox(height: 20),
+          ElevatedButton.icon(
+            onPressed: _isRegistering ? null : _showAddDeviceWizard,
+            icon: const Icon(Icons.add_rounded, size: 18),
+            label: const Text("Добавить планшет"),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.blue,
+              foregroundColor: Colors.white,
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 22, vertical: 16),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12)),
+            ),
+          ),
         ],
       ),
     );
