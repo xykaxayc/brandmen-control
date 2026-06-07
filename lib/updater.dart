@@ -13,6 +13,10 @@ const String kAppVersion =
 
 const String _kRepo = 'xykaxayc/brandmen-control';
 
+// Страница релизов — показываем её пользователю, когда автообновление не удалось,
+// чтобы скачать сборку вручную.
+const String kReleasesPageUrl = 'https://github.com/$_kRepo/releases/latest';
+
 // Берём несколько последних релизов (включая pre-release). Каждый workflow
 // (Win/Mac/APK) собирается по своему path-фильтру, поэтому самый свежий релиз
 // может не содержать нужный ассет — ищем новейший релиз, где он ЕСТЬ.
@@ -58,7 +62,36 @@ class ApkUpdateInfo {
   ApkUpdateInfo({required this.version, required this.downloadUrl});
 }
 
+/// Позволяет отменить идущую загрузку из UI (крестик в диалоге).
+/// Держит ссылку на активный HttpClient и принудительно его закрывает —
+/// это рвёт «зависшее» соединение, а не просто выставляет флаг.
+class CancelToken {
+  bool _cancelled = false;
+  HttpClient? _client;
+
+  bool get isCancelled => _cancelled;
+
+  void cancel() {
+    _cancelled = true;
+    try {
+      _client?.close(force: true);
+    } catch (_) {}
+  }
+
+  void _bind(HttpClient c) {
+    _client = c;
+    if (_cancelled) {
+      try {
+        c.close(force: true);
+      } catch (_) {}
+    }
+  }
+}
+
 class AppUpdater {
+  /// Текст последней ошибки загрузки/применения — UI показывает его пользователю.
+  static String? lastError;
+
   // ── Проверка обновления десктоп-приложения ──────────────────────────────
 
   static Future<UpdateInfo?> checkForUpdate() async {
@@ -120,7 +153,11 @@ class AppUpdater {
     try {
       final tempDir = await getTemporaryDirectory();
       final apkPath = p.join(tempDir.path, 'BrandmenAds-update.apk');
-      final ok = await _downloadFile(info.downloadUrl, apkPath, onProgress);
+      final ok = await _downloadFile(
+        info.downloadUrl,
+        apkPath,
+        (prog, _) => onProgress(prog < 0 ? 0 : prog),
+      );
       return ok ? File(apkPath) : null;
     } catch (e) {
       AppLogger.log('Скачивание APK: $e');
@@ -132,8 +169,10 @@ class AppUpdater {
 
   static Future<bool> downloadAndApply(
     UpdateInfo info,
-    void Function(double progress, String status) onProgress,
-  ) async {
+    void Function(double progress, String status) onProgress, {
+    CancelToken? cancel,
+  }) async {
+    lastError = null;
     try {
       final tempDir = await getTemporaryDirectory();
       final zipPath = p.join(tempDir.path, 'brandmen_update.zip');
@@ -143,13 +182,28 @@ class AppUpdater {
       final ok = await _downloadFile(
         info.downloadUrl,
         zipPath,
-        (p) => onProgress(p * 0.85, 'Скачиваю... ${(p * 100).round()}%'),
+        (prog, bytes) {
+          // content-length неизвестен → prog < 0: показываем мегабайты и
+          // бесконечную полосу, иначе процент.
+          if (prog < 0) {
+            onProgress(-1,
+                'Скачиваю... ${(bytes / 1024 / 1024).toStringAsFixed(1)} МБ');
+          } else {
+            onProgress(prog * 0.85, 'Скачиваю... ${(prog * 100).round()}%');
+          }
+        },
+        cancel: cancel,
       );
+      if (cancel?.isCancelled ?? false) return false;
       if (!ok) return false;
 
       onProgress(0.87, 'Распаковываю...');
-      if (!await _extract(zipPath, updateDir)) return false;
+      if (!await _extract(zipPath, updateDir)) {
+        lastError ??= 'не удалось распаковать архив';
+        return false;
+      }
       await File(zipPath).delete().catchError((_) => File(zipPath));
+      if (cancel?.isCancelled ?? false) return false;
 
       onProgress(0.97, 'Применяю обновление...');
       final exeDir = p.dirname(Platform.resolvedExecutable);
@@ -157,6 +211,7 @@ class AppUpdater {
       return true;
     } catch (e) {
       AppLogger.log('Ошибка обновления: $e');
+      lastError = '$e';
       return false;
     }
   }
@@ -248,34 +303,63 @@ class AppUpdater {
     return null;
   }
 
+  // onProgress(progress, receivedBytes): progress в [0..1], либо -1 если сервер
+  // не прислал content-length (тогда ориентируемся на receivedBytes).
   static Future<bool> _downloadFile(
     String url,
     String destPath,
-    void Function(double) onProgress,
-  ) async {
+    void Function(double progress, int receivedBytes) onProgress, {
+    CancelToken? cancel,
+  }) async {
     // dart:io HttpClient следует 302-редиректам (GitHub releases → CDN).
     // Тот же обход проверки сертификата для доменов GitHub, что и при проверке.
     final client = _githubHttpClient();
+    cancel?._bind(client);
+    final destFile = File(destPath);
+    IOSink? sink;
     try {
       final req = await client.getUrl(Uri.parse(url));
       req.followRedirects = true;
       req.maxRedirects = 5;
       final response = await req.close().timeout(const Duration(minutes: 15));
-      if (response.statusCode != 200) return false;
+      if (response.statusCode != 200) {
+        AppLogger.log('[UPD] загрузка: HTTP ${response.statusCode}');
+        lastError = 'сервер вернул HTTP ${response.statusCode}';
+        return false;
+      }
 
       final total = response.contentLength;
       int received = 0;
-      final destFile = File(destPath);
       // getTemporaryDirectory() возвращает путь, но сама папка может не существовать
       await destFile.parent.create(recursive: true);
-      final sink = destFile.openWrite();
+      final out = destFile.openWrite();
+      sink = out;
       await for (final chunk in response) {
-        sink.add(chunk);
+        if (cancel?.isCancelled ?? false) {
+          await out.close();
+          sink = null;
+          await destFile.delete().catchError((_) => destFile);
+          return false;
+        }
+        out.add(chunk);
         received += chunk.length;
-        if (total > 0) onProgress(received / total);
+        onProgress(total > 0 ? received / total : -1, received);
       }
-      await sink.close();
+      await out.close();
+      sink = null;
       return true;
+    } catch (e) {
+      // Принудительное закрытие клиента при отмене кидает исключение — это норма.
+      if (cancel?.isCancelled ?? false) return false;
+      AppLogger.log('[UPD] ошибка загрузки: $e');
+      lastError = '$e';
+      try {
+        await sink?.close();
+      } catch (_) {}
+      try {
+        if (await destFile.exists()) await destFile.delete();
+      } catch (_) {}
+      return false;
     } finally {
       client.close();
     }

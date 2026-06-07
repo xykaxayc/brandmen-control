@@ -226,21 +226,43 @@ class _MainScreenState extends State<MainScreen> {
   void _runUpdate(UpdateInfo info) {
     double progress = 0;
     String status = '';
+    final cancel = CancelToken();
+    bool cancelledByUser = false;
+    // Прогресс приходит из фоновой загрузки — обновляем именно диалог через его
+    // собственный setState (setLocal), иначе полоска «висит» на 0%.
+    StateSetter? setDialog;
     showDialog(
       context: context,
       barrierDismissible: false,
       builder: (c) => StatefulBuilder(
         builder: (c, setLocal) {
+          setDialog = setLocal;
           return AlertDialog(
             backgroundColor: const Color(0xFF2C2C2E),
-            title: const Text('Обновление...'),
+            title: Row(
+              children: [
+                const Expanded(child: Text('Обновление...')),
+                IconButton(
+                  icon: const Icon(Icons.close_rounded,
+                      color: Colors.white54, size: 20),
+                  tooltip: 'Отменить',
+                  splashRadius: 18,
+                  onPressed: () {
+                    cancelledByUser = true;
+                    cancel.cancel();
+                    Navigator.pop(c);
+                  },
+                ),
+              ],
+            ),
             content: SizedBox(
               width: 380,
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   LinearProgressIndicator(
-                    value: progress,
+                    // progress < 0 → размер неизвестен, показываем бесконечную полосу
+                    value: progress < 0 ? null : progress,
                     backgroundColor: Colors.white12,
                     color: Colors.blue,
                   ),
@@ -257,23 +279,90 @@ class _MainScreenState extends State<MainScreen> {
     );
 
     AppUpdater.downloadAndApply(info, (p, s) {
-      if (mounted) {
-        setState(() {
-          progress = p;
-          status = s;
-        });
-      }
-    }).then((ok) {
+      if (!mounted || cancelledByUser) return;
+      progress = p;
+      status = s;
+      setDialog?.call(() {});
+    }, cancel: cancel).then((ok) {
+      if (cancelledByUser) return; // диалог уже закрыт крестиком
       if (!ok && mounted) {
         Navigator.of(context, rootNavigator: true).pop();
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content:
-              const Text('Не удалось обновить. Скачайте вручную с GitHub.'),
-          backgroundColor: Colors.red.shade700,
-          duration: const Duration(seconds: 6),
-        ));
+        _showUpdateFailedDialog(AppUpdater.lastError);
       }
     });
+  }
+
+  /// Автообновление не удалось — даём ссылку на релизы, чтобы скачать вручную.
+  void _showUpdateFailedDialog(String? error) {
+    showDialog(
+      context: context,
+      builder: (c) => AlertDialog(
+        backgroundColor: const Color(0xFF2C2C2E),
+        title: const Row(
+          children: [
+            Icon(Icons.error_outline_rounded, color: Colors.redAccent, size: 22),
+            SizedBox(width: 10),
+            Text('Не удалось обновить', style: TextStyle(fontSize: 17)),
+          ],
+        ),
+        content: SizedBox(
+          width: 420,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (error != null && error.isNotEmpty) ...[
+                Text('Причина: $error',
+                    style:
+                        const TextStyle(color: Colors.white60, fontSize: 12)),
+                const SizedBox(height: 12),
+              ],
+              const Text('Скачайте свежую версию вручную:',
+                  style: TextStyle(color: Colors.white70, fontSize: 13)),
+              const SizedBox(height: 6),
+              const SelectableText(kReleasesPageUrl,
+                  style: TextStyle(color: Colors.blue, fontSize: 12)),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(c),
+            child: const Text('Закрыть', style: TextStyle(color: Colors.white54)),
+          ),
+          ElevatedButton.icon(
+            onPressed: () {
+              Navigator.pop(c);
+              _openUrl(kReleasesPageUrl);
+            },
+            icon: const Icon(Icons.open_in_new_rounded, size: 18),
+            label: const Text('Открыть GitHub'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.blue,
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10)),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Открывает ссылку в браузере по умолчанию (как в проекте принято — через
+  /// системную команду, без доп. зависимостей).
+  Future<void> _openUrl(String url) async {
+    try {
+      if (Platform.isWindows) {
+        await Process.run('cmd', ['/c', 'start', '', url], runInShell: true);
+      } else if (Platform.isMacOS) {
+        await Process.run('open', [url]);
+      } else {
+        await Process.run('xdg-open', [url]);
+      }
+    } catch (e) {
+      AppLogger.log('Открыть ссылку: $e');
+    }
   }
 
   Future<void> _cleanupOnStart() async {
