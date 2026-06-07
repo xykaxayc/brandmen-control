@@ -83,11 +83,25 @@ jobs:
           cd build/macos/Build/Products/Release
           zip -ry ../../../../../BrandmenControl-macOS.zip brandmen_windows.app
 
+      # .dmg для установки перетаскиванием в Applications (zip оставляем — на
+      # него опирается встроенное автообновление).
+      - name: Build .dmg
+        run: |
+          APP=build/macos/Build/Products/Release/brandmen_windows.app
+          STAGE=dmg-stage
+          rm -rf "$STAGE" && mkdir -p "$STAGE"
+          cp -R "$APP" "$STAGE/"
+          ln -s /Applications "$STAGE/Applications"
+          hdiutil create -volname "Brandmen Control" -srcfolder "$STAGE" \
+            -ov -format UDZO BrandmenControl-macOS.dmg
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: BrandmenControl-macOS
-          path: BrandmenControl-macOS.zip
+          path: |
+            BrandmenControl-macOS.zip
+            BrandmenControl-macOS.dmg
           retention-days: 30
 
       - name: Create or update release
@@ -98,4 +112,6 @@ jobs:
           name: "Build ${{ steps.ver.outputs.version }}"
           prerelease: true
           generate_release_notes: false
-          files: BrandmenControl-macOS.zip
+          files: |
+            BrandmenControl-macOS.zip
+            BrandmenControl-macOS.dmg

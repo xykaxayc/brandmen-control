@@ -105,11 +105,24 @@ jobs:
           7z a -tzip ..\..\..\..\..\BrandmenControl-Windows.zip .
         shell: cmd
 
+      # Установщик в один клик (ставит все файлы вместе, без матрёшки/«exe без
+      # DLL»). Zip оставляем — на него опирается встроенное автообновление.
+      - name: Build installer (Inno Setup)
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" `
+            "/DAppVersion=${{ steps.ver.outputs.version }}" `
+            windows\installer.iss
+          Move-Item windows\BrandmenControl-Setup.exe .\BrandmenControl-Setup.exe -Force
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: BrandmenControl-Windows
-          path: BrandmenControl-Windows.zip
+          path: |
+            BrandmenControl-Windows.zip
+            BrandmenControl-Setup.exe
           retention-days: 30
 
       - name: Create or update release
@@ -120,4 +133,6 @@ jobs:
           name: "Build ${{ steps.ver.outputs.version }}"
           prerelease: true
           generate_release_notes: false
-          files: BrandmenControl-Windows.zip
+          files: |
+            BrandmenControl-Windows.zip
+            BrandmenControl-Setup.exe
