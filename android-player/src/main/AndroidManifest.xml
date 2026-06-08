@@ -33,14 +33,6 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-            <!-- Делает плеер пригодным как домашний лаунчер. В режиме device owner
-                 он назначается домашним молча (addPersistentPreferredActivity);
-                 без device owner — просто доступен в выборе лаунчера. -->
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.HOME" />
-                <category android:name="android.intent.category.DEFAULT" />
-            </intent-filter>
         </activity>
 
         <service

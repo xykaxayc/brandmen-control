@@ -12,18 +12,19 @@ import android.os.SystemClock;
 import android.provider.Settings;
 
 /**
- * Централизованная логика «выделенного устройства» (COSU / kiosk).
+ * Надёжный автозапуск и аптайм плеера БЕЗ жёсткого киоска — планшет остаётся
+ * управляемым вручную (можно свернуть, закрыть, удалить).
  *
- * Стратегия — правильное + удобное решение с мягкой деградацией:
- *   • Новый/сброшенный планшет, провиженный как DEVICE OWNER, получает
- *     bulletproof-режим: автозапуск гарантирован, force-stop запрещён,
- *     LockTask/киоск, авто-выдача разрешений, экран не гаснет на зарядке.
- *   • Уже развёрнутый планшет (без device owner) продолжает работать на
- *     watchdog-будильнике + foreground-сервисе — без factory reset.
+ *   • Любой планшет: watchdog-будильник + foreground-сервис поднимают сервер
+ *     управления после загрузки/разрядки и если прошивка убила процесс.
+ *   • Если планшет провижен как DEVICE OWNER (опционально, для надёжного
+ *     автозапуска на MIUI без ручного «Автозапуска»): дополнительно экран не
+ *     гаснет на зарядке и runtime-разрешения выдаются без диалогов. LockTask и
+ *     прочий жёсткий киоск НЕ включаются.
  *
- * Провижининг device owner (один раз, на чистом устройстве без аккаунтов):
+ * Провижининг device owner (опционально, на чистом устройстве без аккаунтов):
  *   adb shell dpm set-device-owner com.brandmen.ads/.DeviceAdminReceiver
- * Снять (для разработки):
+ * Снять:
  *   adb shell dpm remove-active-admin com.brandmen.ads/.DeviceAdminReceiver
  */
 final class Kiosk {
@@ -66,17 +67,10 @@ final class Kiosk {
         Context app = ctx.getApplicationContext();
         String pkg = app.getPackageName();
 
-        // 1. LockTask — разрешаем нашему пакету входить в киоск без подтверждений.
-        try { dpm.setLockTaskPackages(admin, new String[]{pkg}); } catch (Exception ignored) {}
+        // Полезные политики БЕЗ жёсткого киоска: планшет остаётся управляемым
+        // вручную (можно свернуть/закрыть), но автозапуск и аптайм надёжнее.
 
-        // 2. Авто-выдача всех runtime-разрешений (хранилище и т.д.).
-        try {
-            if (Build.VERSION.SDK_INT >= 23) {
-                dpm.setPermissionPolicy(admin, DevicePolicyManager.PERMISSION_POLICY_AUTO_GRANT);
-            }
-        } catch (Exception ignored) {}
-
-        // 3. Экран не гаснет, пока устройство на зарядке (AC/USB/беспроводная).
+        // Экран не гаснет, пока устройство на зарядке (AC/USB/беспроводная).
         try {
             int plugged = android.os.BatteryManager.BATTERY_PLUGGED_AC
                     | android.os.BatteryManager.BATTERY_PLUGGED_USB
@@ -85,29 +79,24 @@ final class Kiosk {
                     String.valueOf(plugged));
         } catch (Exception ignored) {}
 
-        // 4. Делаем приложение домашним лаунчером — после reboot и нажатия Home
-        //    система молча возвращается в плеер (без выбора лаунчера).
+        // Авто-выдача runtime-разрешений (хранилище и т.д.) — без диалогов клиенту.
         try {
-            android.content.IntentFilter home = new android.content.IntentFilter(Intent.ACTION_MAIN);
-            home.addCategory(Intent.CATEGORY_HOME);
-            home.addCategory(Intent.CATEGORY_DEFAULT);
-            dpm.addPersistentPreferredActivity(admin, home,
-                    new ComponentName(pkg, MainActivity.class.getName()));
+            if (Build.VERSION.SDK_INT >= 23) {
+                dpm.setPermissionPolicy(admin, DevicePolicyManager.PERMISSION_POLICY_AUTO_GRANT);
+            }
         } catch (Exception ignored) {}
 
-        // 5. Запрещаем пользователю выгрузить/удалить/сбросить приложение и
-        //    обойти киоск через безопасный режим/factory reset.
+        // Миграция: снимаем жёсткий киоск, если его включала прошлая версия,
+        // чтобы планшет снова можно было свернуть/закрыть/удалить вручную.
+        try { dpm.setLockTaskPackages(admin, new String[0]); } catch (Exception ignored) {}
+        try { dpm.clearPackagePersistentPreferredActivities(admin, pkg); } catch (Exception ignored) {}
+        try { dpm.setUninstallBlocked(admin, pkg, false); } catch (Exception ignored) {}
         try {
-            dpm.setUninstallBlocked(admin, pkg, true);
-            addRestriction(dpm, admin, "no_safe_boot");
-            addRestriction(dpm, admin, "no_factory_reset");
-            addRestriction(dpm, admin, "no_add_user");
-        } catch (Exception ignored) {}
-    }
-
-    private static void addRestriction(DevicePolicyManager dpm, ComponentName admin, String key) {
-        try {
-            if (Build.VERSION.SDK_INT >= 21) dpm.addUserRestriction(admin, key);
+            if (Build.VERSION.SDK_INT >= 21) {
+                dpm.clearUserRestriction(admin, "no_safe_boot");
+                dpm.clearUserRestriction(admin, "no_factory_reset");
+                dpm.clearUserRestriction(admin, "no_add_user");
+            }
         } catch (Exception ignored) {}
     }
 

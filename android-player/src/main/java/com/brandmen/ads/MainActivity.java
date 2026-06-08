@@ -254,10 +254,10 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
     @Override
     protected void onResume() {
         super.onResume();
-        // Киоск: на device owner входим в LockTask — планшет нельзя свернуть,
-        // выйти кнопками или залезть в настройки. Без device owner — пропускаем.
+        // Снимаем возможный LockTask, оставленный прошлой версией: жёсткого
+        // киоска нет — планшет должен оставаться управляемым вручную.
         try {
-            if (Kiosk.isDeviceOwner(this)) startLockTask();
+            if (Kiosk.isDeviceOwner(this)) stopLockTask();
         } catch (Exception ignored) {}
         if (multicastLock != null) multicastLock.acquire();
         if (nsdManager != null && discoveryListener != null) {
