@@ -2,6 +2,7 @@ import 'dart:io';
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:path/path.dart' as p;
@@ -425,6 +426,7 @@ class _MainScreenState extends State<MainScreen> {
       DashboardScreen(key: _dashboardKey),
       const MediaScreen(),
       SettingsScreen(key: _settingsKey),
+      const LogsScreen(),
     ];
 
     return Scaffold(
@@ -514,6 +516,8 @@ class _MainScreenState extends State<MainScreen> {
                 ),
                 const SizedBox(height: 8),
                 _navItem(2, Icons.tune_rounded, "Настройки"),
+                const SizedBox(height: 8),
+                _navItem(3, Icons.terminal_rounded, "Логи"),
                 const SizedBox(height: 10),
               ],
             ),
@@ -3775,6 +3779,216 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 style: const TextStyle(fontSize: 14, color: Colors.white70))),
         control,
       ],
+    );
+  }
+}
+
+/// Вкладка «Логи» — сервисный режим: живой поток событий приложения прямо в
+/// окне (из буфера AppLogger), без открытия файла. Автопрокрутка, фильтр,
+/// копирование, очистка буфера и открытие файла лога.
+class LogsScreen extends StatefulWidget {
+  const LogsScreen({super.key});
+  @override
+  State<LogsScreen> createState() => _LogsScreenState();
+}
+
+class _LogsScreenState extends State<LogsScreen> {
+  final _scroll = ScrollController();
+  final _filterCtrl = TextEditingController();
+  String _query = '';
+  bool _autoScroll = true;
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    _filterCtrl.dispose();
+    super.dispose();
+  }
+
+  List<String> get _filtered {
+    final all = AppLogger.lines;
+    if (_query.isEmpty) return all;
+    final q = _query.toLowerCase();
+    return all.where((l) => l.toLowerCase().contains(q)).toList();
+  }
+
+  Color _colorFor(String line) {
+    final l = line.toLowerCase();
+    if (l.contains('ошибк') ||
+        l.contains('error') ||
+        l.contains('не удал') ||
+        l.contains('exception')) {
+      return Colors.redAccent.shade100;
+    }
+    if (l.contains('[upd]') || l.contains('обновл')) return Colors.lightBlueAccent;
+    if (l.contains('push') ||
+        l.contains('sync') ||
+        l.contains('синхрон') ||
+        l.contains('загружено') ||
+        l.contains('запущ')) {
+      return Colors.greenAccent.shade100;
+    }
+    return Colors.white60;
+  }
+
+  void _maybeAutoScroll() {
+    if (!_autoScroll || !_scroll.hasClients) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_scroll.hasClients) {
+        _scroll.jumpTo(_scroll.position.maxScrollExtent);
+      }
+    });
+  }
+
+  Future<void> _openFile() async {
+    final path = AppLogger.logPath;
+    if (path == null) return;
+    try {
+      if (Platform.isWindows) {
+        await Process.run('explorer', ['/select,$path']);
+      } else if (Platform.isMacOS) {
+        await Process.run('open', ['-R', path]);
+      } else {
+        await Process.run('xdg-open', [File(path).parent.path]);
+      }
+    } catch (_) {}
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.all(40),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Text("Логи",
+                  style: TextStyle(
+                      fontSize: 34,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: -1)),
+              const SizedBox(width: 10),
+              const Padding(
+                padding: EdgeInsets.only(bottom: 6),
+                child: Text("сервисный режим",
+                    style: TextStyle(color: Colors.white38, fontSize: 13)),
+              ),
+              const Spacer(),
+              // Автопрокрутка
+              Row(
+                children: [
+                  const Text("Автопрокрутка",
+                      style: TextStyle(color: Colors.white54, fontSize: 12)),
+                  Switch(
+                    value: _autoScroll,
+                    activeThumbColor: Colors.blue,
+                    onChanged: (v) {
+                      setState(() => _autoScroll = v);
+                      _maybeAutoScroll();
+                    },
+                  ),
+                ],
+              ),
+              const SizedBox(width: 8),
+              IconButton(
+                tooltip: "Копировать всё",
+                icon: const Icon(Icons.copy_all_rounded, color: Colors.white54),
+                onPressed: () {
+                  Clipboard.setData(
+                      ClipboardData(text: AppLogger.lines.join('\n')));
+                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                    content: Text("Лог скопирован"),
+                    behavior: SnackBarBehavior.floating,
+                    duration: Duration(seconds: 2),
+                  ));
+                },
+              ),
+              IconButton(
+                tooltip: "Очистить экран (файл не трогается)",
+                icon: const Icon(Icons.delete_sweep_rounded,
+                    color: Colors.white54),
+                onPressed: () => AppLogger.clearBuffer(),
+              ),
+              IconButton(
+                tooltip: "Открыть файл лога",
+                icon: const Icon(Icons.folder_open_rounded,
+                    color: Colors.white54),
+                onPressed: _openFile,
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          TextField(
+            controller: _filterCtrl,
+            style: const TextStyle(fontSize: 13),
+            onChanged: (v) => setState(() => _query = v),
+            decoration: InputDecoration(
+              isDense: true,
+              prefixIcon: const Icon(Icons.search_rounded, size: 18),
+              hintText: "Фильтр (например: sync, UPD, 192.168, ошибка)",
+              hintStyle: const TextStyle(color: Colors.white24, fontSize: 13),
+              filled: true,
+              fillColor: Colors.white.withValues(alpha: 0.04),
+              border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide: BorderSide.none),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Expanded(
+            child: Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.black.withValues(alpha: 0.35),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
+              ),
+              child: ValueListenableBuilder<int>(
+                valueListenable: AppLogger.revision,
+                builder: (_, __, ___) {
+                  final lines = _filtered;
+                  _maybeAutoScroll();
+                  if (lines.isEmpty) {
+                    return const Center(
+                      child: Text("Пока пусто — события появятся здесь",
+                          style:
+                              TextStyle(color: Colors.white24, fontSize: 13)),
+                    );
+                  }
+                  return Scrollbar(
+                    controller: _scroll,
+                    child: ListView.builder(
+                      controller: _scroll,
+                      itemCount: lines.length,
+                      itemBuilder: (_, i) => Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 1),
+                        child: SelectableText(
+                          lines[i],
+                          style: TextStyle(
+                            fontFamily: 'monospace',
+                            fontSize: 12,
+                            color: _colorFor(lines[i]),
+                          ),
+                        ),
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
+          ValueListenableBuilder<int>(
+            valueListenable: AppLogger.revision,
+            builder: (_, __, ___) => Text(
+              "${_filtered.length} строк${_query.isEmpty ? "" : " (фильтр)"} · буфер ${AppLogger.lines.length}",
+              style: const TextStyle(color: Colors.white24, fontSize: 11),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
