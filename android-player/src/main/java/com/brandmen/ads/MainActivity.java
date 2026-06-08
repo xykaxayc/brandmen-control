@@ -92,6 +92,11 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
             android.util.Log.e("MainActivity", "PlayerService start failed: " + e.getMessage());
         }
 
+        // Применяем kiosk-политики; на НЕ-device-owner просим исключить из
+        // оптимизации батареи (фолбэк, чтобы прошивка не усыпляла сервис).
+        try { Kiosk.applyPolicies(this); } catch (Exception ignored) {}
+        try { Kiosk.requestBatteryExemptionIfNeeded(this); } catch (Exception ignored) {}
+
         rootLayout = new FrameLayout(this);
         rootLayout.setBackgroundColor(Color.BLACK);
         setContentView(rootLayout);
@@ -249,6 +254,11 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
     @Override
     protected void onResume() {
         super.onResume();
+        // Киоск: на device owner входим в LockTask — планшет нельзя свернуть,
+        // выйти кнопками или залезть в настройки. Без device owner — пропускаем.
+        try {
+            if (Kiosk.isDeviceOwner(this)) startLockTask();
+        } catch (Exception ignored) {}
         if (multicastLock != null) multicastLock.acquire();
         if (nsdManager != null && discoveryListener != null) {
             try {
