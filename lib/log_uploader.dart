@@ -1,0 +1,84 @@
+import 'dart:convert';
+import 'dart:io';
+import 'package:http/io_client.dart';
+import 'logger.dart';
+import 'updater.dart' show kAppVersion;
+
+/// Отправка лога на свой сервер.
+///
+/// Контракт сервера:
+///   POST {baseUrl}/logs?site=<имя ПК>&version=<версия>&ts=<ISO время>
+///   Authorization: Bearer <token>     (если токен задан)
+///   Content-Type: text/plain; charset=utf-8
+///   тело: текст лога
+/// Ответ 2xx = успех; тело ответа (если есть) показывается пользователю.
+class LogUploader {
+  static Future<({bool ok, String message})> send({
+    required String baseUrl,
+    required String token,
+    bool onlyRecent = false,
+  }) async {
+    final base = baseUrl.trim().replaceAll(RegExp(r'/+$'), '');
+    if (base.isEmpty) {
+      return (ok: false, message: 'не указан адрес сервера логов (Настройки)');
+    }
+
+    final Uri uri;
+    try {
+      uri = Uri.parse('$base/logs').replace(queryParameters: {
+        'site': Platform.localHostname,
+        'version': kAppVersion,
+        'ts': DateTime.now().toIso8601String(),
+      });
+    } catch (e) {
+      return (ok: false, message: 'неверный адрес сервера: $e');
+    }
+
+    final body = (onlyRecent ? AppLogger.lines : await _fullLog()).join('\n');
+
+    // На части ПК антивирус/прокси перехватывает TLS (CERTIFICATE_VERIFY_FAILED).
+    // Сервер — свой, поэтому принимаем перехваченный сертификат ТОЛЬКО для его
+    // хоста (как уже сделано для GitHub в updater).
+    final targetHost = uri.host;
+    final httpClient = HttpClient()
+      ..badCertificateCallback = (cert, host, port) => host == targetHost;
+    final client = IOClient(httpClient);
+    try {
+      final resp = await client
+          .post(
+            uri,
+            headers: {
+              if (token.trim().isNotEmpty)
+                'Authorization': 'Bearer ${token.trim()}',
+              'Content-Type': 'text/plain; charset=utf-8',
+            },
+            body: utf8.encode(body),
+          )
+          .timeout(const Duration(seconds: 30));
+
+      if (resp.statusCode >= 200 && resp.statusCode < 300) {
+        AppLogger.log('Лог отправлен на сервер (HTTP ${resp.statusCode})');
+        final msg = resp.body.trim();
+        return (ok: true, message: msg.isNotEmpty ? msg : 'Лог отправлен');
+      }
+      AppLogger.log(
+          'Отправка лога: HTTP ${resp.statusCode} ${resp.body.trim()}');
+      return (ok: false, message: 'сервер вернул HTTP ${resp.statusCode}');
+    } catch (e) {
+      AppLogger.log('Отправка лога: ошибка $e');
+      return (ok: false, message: '$e');
+    } finally {
+      client.close();
+    }
+  }
+
+  static Future<List<String>> _fullLog() async {
+    final path = AppLogger.logPath;
+    if (path == null) return AppLogger.lines;
+    try {
+      final f = File(path);
+      if (await f.exists()) return await f.readAsLines();
+    } catch (_) {}
+    return AppLogger.lines;
+  }
+}

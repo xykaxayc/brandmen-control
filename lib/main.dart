@@ -21,6 +21,7 @@ import 'transcoder.dart';
 import 'backup_manager.dart';
 import 'autostart.dart';
 import 'updater.dart';
+import 'log_uploader.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -2755,6 +2756,8 @@ class SettingsScreen extends StatefulWidget {
 
 class _SettingsScreenState extends State<SettingsScreen> {
   final _timeController = TextEditingController(text: "22:00");
+  final _logUrlController = TextEditingController();
+  final _logTokenController = TextEditingController();
   bool autoOffEnabled = false;
   bool autoStartEnabled = false;
   String? localIp;
@@ -2777,7 +2780,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   void dispose() {
     _pairingTimer?.cancel();
+    _logUrlController.dispose();
+    _logTokenController.dispose();
     super.dispose();
+  }
+
+  /// Ключи настроек сервера логов (читаются и во вкладке «Логи» при отправке).
+  static const kLogServerUrlKey = 'log_server_url';
+  static const kLogServerTokenKey = 'log_server_token';
+
+  Future<void> _persistLogServer() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(kLogServerUrlKey, _logUrlController.text.trim());
+    await prefs.setString(kLogServerTokenKey, _logTokenController.text.trim());
   }
 
   void _startPairing() {
@@ -2891,6 +2906,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       setState(() {
         _timeController.text = prefs.getString('autoOffTime') ?? "22:00";
         autoOffEnabled = prefs.getBool('autoOffEnabled') ?? false;
+        _logUrlController.text = prefs.getString(kLogServerUrlKey) ?? "";
+        _logTokenController.text = prefs.getString(kLogServerTokenKey) ?? "";
       });
     }
   }
@@ -3536,6 +3553,38 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 )),
           ]),
           const SizedBox(height: 20),
+          _sectionCard("Сервер логов (диагностика)", [
+            const Text(
+              "Адрес сервера, куда вкладка «Логи» отправляет лог по кнопке. "
+              "Оставьте пустым, если отправка не нужна.",
+              style: TextStyle(color: Colors.white38, fontSize: 12),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _logUrlController,
+              style: const TextStyle(fontSize: 13),
+              onChanged: (_) => _persistLogServer(),
+              decoration: const InputDecoration(
+                isDense: true,
+                labelText: "Адрес (https://...)",
+                hintText: "https://api.example.com",
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _logTokenController,
+              style: const TextStyle(fontSize: 13),
+              obscureText: true,
+              onChanged: (_) => _persistLogServer(),
+              decoration: const InputDecoration(
+                isDense: true,
+                labelText: "Ключ (Bearer-токен, необязательно)",
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ]),
+          const SizedBox(height: 20),
           _sectionCard("О программе", [
             _settingRow(
               "Версия",
@@ -3797,6 +3846,35 @@ class _LogsScreenState extends State<LogsScreen> {
   final _filterCtrl = TextEditingController();
   String _query = '';
   bool _autoScroll = true;
+  bool _sending = false;
+
+  void _snack(String msg, {bool warn = false}) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..clearSnackBars()
+      ..showSnackBar(SnackBar(
+        content: Text(msg),
+        behavior: SnackBarBehavior.floating,
+        backgroundColor: warn ? Colors.orange.shade800 : const Color(0xFF333335),
+        duration: const Duration(seconds: 4),
+      ));
+  }
+
+  Future<void> _sendLog() async {
+    final prefs = await SharedPreferences.getInstance();
+    final url = prefs.getString(_SettingsScreenState.kLogServerUrlKey) ?? '';
+    final token = prefs.getString(_SettingsScreenState.kLogServerTokenKey) ?? '';
+    if (url.trim().isEmpty) {
+      _snack("Укажите адрес сервера логов в Настройках", warn: true);
+      return;
+    }
+    setState(() => _sending = true);
+    final res = await LogUploader.send(baseUrl: url, token: token);
+    if (!mounted) return;
+    setState(() => _sending = false);
+    _snack(res.ok ? "Лог отправлен: ${res.message}" : "Не удалось: ${res.message}",
+        warn: !res.ok);
+  }
 
   @override
   void dispose() {
@@ -3891,6 +3969,18 @@ class _LogsScreenState extends State<LogsScreen> {
                 ],
               ),
               const SizedBox(width: 8),
+              IconButton(
+                tooltip: "Отправить лог на сервер",
+                icon: _sending
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2, color: Colors.lightBlueAccent))
+                    : const Icon(Icons.cloud_upload_rounded,
+                        color: Colors.lightBlueAccent),
+                onPressed: _sending ? null : _sendLog,
+              ),
               IconButton(
                 tooltip: "Копировать всё",
                 icon: const Icon(Icons.copy_all_rounded, color: Colors.white54),
