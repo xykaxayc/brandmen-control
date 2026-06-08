@@ -49,6 +49,8 @@ public class MediaServer {
         String getCurrentName();
         boolean isPlaying();
         void onInstallApk(File apkFile);
+        /** Снять с приложения статус device owner (вернуть планшет в обычный режим). */
+        default void onClearDeviceOwner() {}
     }
 
     private final String mediaDir;
@@ -245,6 +247,12 @@ public class MediaServer {
                 break;
             case "restart":
                 mainHandler.post(callback::onRestart);
+                sendJson(out, 200, "{\"ok\":true}");
+                break;
+            case "unmanage":
+                // Снять device owner — планшет снова обычный (можно включить
+                // «Автозапуск» вручную в Безопасности MIUI).
+                mainHandler.post(callback::onClearDeviceOwner);
                 sendJson(out, 200, "{\"ok\":true}");
                 break;
             case "volume": {

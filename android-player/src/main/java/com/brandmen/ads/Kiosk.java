@@ -54,6 +54,24 @@ final class Kiosk {
     }
 
     /**
+     * Снимает с приложения статус device owner и все его политики/ограничения
+     * (включая no_factory_reset). Вызвать может только сам owner. После этого
+     * планшет — обычный, и в Безопасности MIUI можно вручную включить «Автозапуск».
+     */
+    static boolean clearDeviceOwner(Context ctx) {
+        try {
+            DevicePolicyManager dpm = dpm(ctx);
+            if (dpm != null && isDeviceOwner(ctx)) {
+                dpm.clearDeviceOwnerApp(ctx.getPackageName());
+                return true;
+            }
+        } catch (Exception e) {
+            android.util.Log.w(TAG, "clearDeviceOwner: " + e.getMessage());
+        }
+        return false;
+    }
+
+    /**
      * Применяет все политики выделенного устройства. Идемпотентно — безопасно
      * вызывать на каждой загрузке и старте сервиса. На не-device-owner просто
      * планирует watchdog и выходит.

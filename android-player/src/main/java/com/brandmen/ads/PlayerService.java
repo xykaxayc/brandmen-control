@@ -151,6 +151,11 @@ public class PlayerService extends Service implements MediaServer.ControlCallbac
     @Override public void onLaunch() { sendCmd("launch"); }
     @Override public void onRestart() { sendCmd("restart"); }
 
+    @Override public void onClearDeviceOwner() {
+        boolean ok = Kiosk.clearDeviceOwner(this);
+        android.util.Log.w("PlayerService", "clearDeviceOwner: " + ok);
+    }
+
     @Override public void onSleep() {
         try { if (dpm != null && dpm.isAdminActive(adminComponent)) dpm.lockNow(); }
         catch (Exception e) { android.util.Log.w("PlayerService", "sleep: " + e.getMessage()); }
