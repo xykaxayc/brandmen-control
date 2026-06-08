@@ -51,6 +51,9 @@ public class PlayerService extends Service implements MediaServer.ControlCallbac
 
         startForegroundNotification();
         acquireLocks();
+        // Применяем kiosk-политики (если device owner) и планируем watchdog —
+        // идемпотентно, повторные старты сервиса безопасны.
+        try { Kiosk.applyPolicies(this); } catch (Exception ignored) {}
         try {
             mediaServer = new MediaServer(this, ADS_DIR, this);
             mediaServer.start();
