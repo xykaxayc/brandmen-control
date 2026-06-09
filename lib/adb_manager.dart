@@ -64,7 +64,8 @@ class SyncResult {
 
 // Результат установки APK на планшет
 enum ApkInstallResult {
-  installed, // adb install -r прошёл успешно
+  installed, // adb install -r прошёл успешно (тихо)
+  dialogShown, // APK доставлен по HTTP, на планшете открылось окно установки
   pushedToDownloads, // авто-установка не удалась, но файл в /sdcard/Download
   failed, // не удалось ни установить, ни скопировать
 }
@@ -877,6 +878,20 @@ class AdbManager {
   // на случай если установка по ADB запрещена политикой устройства), плюс
   // пробует авто-установку через adb install -r.
   Future<ApkInstallResult> installApk(String ip, String apkPath) async {
+    // 0. Сначала пробуем по HTTP (порт 5011) — тот же надёжный канал, что и
+    // синк, работает без ADB. Плеер сам покажет окно установки поверх себя.
+    try {
+      final apk = File(apkPath);
+      if (await apk.exists() &&
+          await DeviceHttp(ip).installApkHttp(apk)) {
+        AppLogger.log('installApk $ip: доставлен по HTTP, окно установки на планшете');
+        return ApkInstallResult.dialogShown;
+      }
+      AppLogger.log('installApk $ip: HTTP-установка недоступна, пробую ADB');
+    } catch (e) {
+      AppLogger.log('installApk $ip: HTTP-установка ошибка $e, пробую ADB');
+    }
+
     final adb = await _getAdb();
     final id = '$ip:5555';
 
@@ -899,6 +914,30 @@ class AdbManager {
 
     AppLogger.log('installApk $ip: авто-установка не удалась '
         '(code=${r.exitCode} $out)');
+
+    // 3. Тихая установка не прошла (не device owner / запрещено политикой) —
+    // запускаем СИСТЕМНЫЙ установщик на экране планшета через ADB. Окно
+    // «Установить обновление?» появляется поверх плеера; человеку остаётся
+    // один тап, без проводника и поиска файла в «Загрузках».
+    if (pushOk) {
+      AppLogger.log('installApk $ip: запускаю системный установщик на экране планшета');
+      final am = await _run(adb, [
+        '-s', id, 'shell', 'am', 'start',
+        '-a', 'android.intent.action.VIEW',
+        '-d', 'file:///sdcard/Download/BrandmenAds.apk',
+        '-t', 'application/vnd.android.package-archive',
+      ], timeout: const Duration(seconds: 10));
+      final amOut = (am.stdout.toString() + am.stderr.toString()).toLowerCase();
+      final shown = am.exitCode == 0 &&
+          !amOut.contains('error') &&
+          !amOut.contains('exception');
+      if (shown) {
+        AppLogger.log('installApk $ip: окно установки открыто на планшете (ADB)');
+        return ApkInstallResult.dialogShown;
+      }
+      AppLogger.log('installApk $ip: установщик не открылся ($amOut) — файл в «Загрузках»');
+    }
+
     return pushOk
         ? ApkInstallResult.pushedToDownloads
         : ApkInstallResult.failed;

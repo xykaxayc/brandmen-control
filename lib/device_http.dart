@@ -129,6 +129,42 @@ class DeviceHttp {
     );
   }
 
+  /// Отправляет APK на планшет по HTTP (`POST /api/update/install`). Плеер
+  /// сам сохранит файл и покажет системное окно установки поверх плеера —
+  /// без ADB и без ручного поиска файла в проводнике. Возвращает true, если
+  /// планшет принял файл (HTTP 200).
+  Future<bool> installApkHttp(File apk, {void Function(int sent, int total)? onProgress}) async {
+    final size = await apk.length();
+    if (size <= 0) return false;
+    final uploadTimeout = Duration(
+      seconds: (60 + size / (512 * 1024)).round().clamp(60, 1800),
+    );
+    final c = http.Client();
+    try {
+      final request = http.StreamedRequest(
+          'POST', Uri.parse('$_base/api/update/install'));
+      request.contentLength = size;
+      request.headers['Content-Type'] = 'application/vnd.android.package-archive';
+      final responseFuture = c.send(request);
+      int sent = 0;
+      await request.sink.addStream(apk.openRead().map((chunk) {
+        sent += chunk.length;
+        onProgress?.call(sent, size);
+        return chunk;
+      }));
+      await request.sink.close();
+      final response = await responseFuture.timeout(uploadTimeout);
+      await response.stream.drain<void>();
+      AppLogger.log('installApkHttp $ip: HTTP ${response.statusCode}');
+      return response.statusCode == 200;
+    } catch (e) {
+      AppLogger.log('installApkHttp $ip: $e');
+      return false;
+    } finally {
+      c.close();
+    }
+  }
+
   /// Удаляет файл на планшете.
   Future<bool> deleteFile(String name) async {
     return _retry(

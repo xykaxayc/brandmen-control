@@ -3462,6 +3462,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     // ── Шаг 5: установка (авто через ADB + копия в «Загрузки») ─────────────
     final adb = AdbManager();
     final List<String> autoInstalled = [];
+    final List<String> dialogShown = [];
     final List<String> manualNeeded = [];
     final List<String> failed = [];
 
@@ -3478,6 +3479,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       switch (res) {
         case ApkInstallResult.installed:
           autoInstalled.add(devName);
+          break;
+        case ApkInstallResult.dialogShown:
+          dialogShown.add(devName);
           break;
         case ApkInstallResult.pushedToDownloads:
           manualNeeded.add(devName);
@@ -3499,6 +3503,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (autoInstalled.isNotEmpty) {
       lines.add(_resultLine(Icons.check_circle_rounded, Colors.greenAccent,
           'Установлено автоматически', autoInstalled.join(', ')));
+    }
+    if (dialogShown.isNotEmpty) {
+      lines.add(_resultLine(
+          Icons.system_update_rounded,
+          Colors.lightBlueAccent,
+          'Окно установки открыто на планшете — подойдите и тапните «Установить/Обновить»',
+          dialogShown.join(', ')));
     }
     if (manualNeeded.isNotEmpty) {
       lines.add(_resultLine(
