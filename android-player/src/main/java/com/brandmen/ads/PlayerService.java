@@ -32,6 +32,10 @@ import java.io.OutputStream;
 public class PlayerService extends Service implements MediaServer.ControlCallback {
     static final String CHANNEL_ID = "brandmen_player";
     static final int NOTI_ID = 1;
+    // Отдельный HIGH-канал для full-screen-intent — им поднимаем плеер на экран
+    // из фона (без разрешения «поверх других приложений»).
+    static final String FSI_CHANNEL_ID = "brandmen_fsi";
+    static final int FSI_NOTI_ID = 2;
     private static final String ADS_DIR = "/sdcard/Movies/ads";
 
     private MediaServer mediaServer;
@@ -95,6 +99,13 @@ public class PlayerService extends Service implements MediaServer.ControlCallbac
                     CHANNEL_ID, "Brandmen Ads", NotificationManager.IMPORTANCE_MIN);
             ch.setShowBadge(false);
             nm.createNotificationChannel(ch);
+            // HIGH-канал для FSI — нужен высокий приоритет, иначе full-screen
+            // intent не сработает.
+            NotificationChannel fsi = new NotificationChannel(
+                    FSI_CHANNEL_ID, "Вывод плеера на экран",
+                    NotificationManager.IMPORTANCE_HIGH);
+            fsi.setShowBadge(false);
+            nm.createNotificationChannel(fsi);
         }
         Intent open = new Intent(this, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         int piFlags = PendingIntent.FLAG_UPDATE_CURRENT;
@@ -137,14 +148,58 @@ public class PlayerService extends Service implements MediaServer.ControlCallbac
 
     // ---- ControlCallback ----
 
-    /** Доставляет команду живой Activity (или поднимает её), чтобы выполнить UI-действие. */
+    /**
+     * Доставляет команду живой Activity и ГАРАНТИРОВАННО выводит плеер на экран.
+     *
+     * Прямой startActivity из фонового сервиса на Android 12+/MIUI блокируется
+     * (плеер остаётся в фоне, на экране — рабочий стол). Поэтому дополнительно
+     * публикуем full-screen-intent уведомление: система сама поднимает Activity
+     * на экран БЕЗ разрешения «поверх других приложений» (механизм будильников/
+     * звонилок). Прямой запуск оставляем для быстрого пути, когда плеер уже на
+     * переднем плане или разрешение «поверх» выдано.
+     */
     private void sendCmd(String cmd) {
         Intent i = new Intent(this, MainActivity.class)
                 .setAction(MainActivity.CMD_ACTION)
                 .putExtra("cmd", cmd)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        // 1) Быстрый путь.
         try { startActivity(i); }
         catch (Exception e) { android.util.Log.w("PlayerService", "sendCmd " + cmd + ": " + e.getMessage()); }
+        // 2) Надёжный путь из фона — FSI-уведомление.
+        fsiForeground(i, 100);
+    }
+
+    /**
+     * Надёжно выводит указанную Activity на экран из фона через full-screen-intent
+     * уведомление — система поднимает её сама, без разрешения «поверх других
+     * приложений». Используется и для команд плеера, и для окна установки APK.
+     */
+    private void fsiForeground(Intent activityIntent, int reqCode) {
+        try {
+            int piFlags = PendingIntent.FLAG_UPDATE_CURRENT;
+            if (Build.VERSION.SDK_INT >= 23) piFlags |= PendingIntent.FLAG_IMMUTABLE;
+            PendingIntent pi = PendingIntent.getActivity(this, reqCode, activityIntent, piFlags);
+            Notification.Builder b = (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+                    ? new Notification.Builder(this, FSI_CHANNEL_ID)
+                    : new Notification.Builder(this).setPriority(Notification.PRIORITY_HIGH);
+            Notification n = b
+                    .setContentTitle("Brandmen Ads")
+                    .setContentText("Вывод плеера на экран…")
+                    .setSmallIcon(android.R.drawable.btn_star_big_on)
+                    .setCategory(Notification.CATEGORY_CALL)
+                    .setFullScreenIntent(pi, true)
+                    .setAutoCancel(true)
+                    .build();
+            NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+            nm.notify(FSI_NOTI_ID, n);
+            // Уведомление своё дело сделало (подняло экран) — убираем через 3 с.
+            mainHandler.postDelayed(() -> {
+                try { nm.cancel(FSI_NOTI_ID); } catch (Exception ignored) {}
+            }, 3000);
+        } catch (Exception e) {
+            android.util.Log.w("PlayerService", "fsiForeground: " + e.getMessage());
+        }
     }
 
     @Override public void onWake() { sendCmd("wake"); }
@@ -188,7 +243,17 @@ public class PlayerService extends Service implements MediaServer.ControlCallbac
     @Override public String getCurrentName() { MainActivity a = MainActivity.peek(); return a != null ? a.getCurrentName() : ""; }
     @Override public boolean isPlaying() { MainActivity a = MainActivity.peek(); return a != null && a.isPlaying(); }
 
-    @Override public void onInstallApk(File apkFile) { installApk(this, apkFile); }
+    @Override public void onInstallApk(File apkFile) {
+        // Выводим плеер на передний план (FSI), чтобы системное окно установки
+        // показалось поверх экрана даже без разрешения «поверх других приложений».
+        Intent open = new Intent(this, MainActivity.class)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        try { startActivity(open); } catch (Exception ignored) {}
+        fsiForeground(open, 102);
+        // Небольшая задержка — даём Activity выйти на экран, затем ставим APK,
+        // чтобы окно подтверждения установки гарантированно оказалось на переднем плане.
+        mainHandler.postDelayed(() -> installApk(this, apkFile), 1200);
+    }
 
     /**
      * Установка APK через PackageInstaller. Тихо, если приложение — device owner;
