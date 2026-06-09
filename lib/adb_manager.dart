@@ -161,14 +161,39 @@ class AdbManager {
 
   static Future<ProcessResult> _run(String adb, List<String> args,
       {Duration timeout = const Duration(seconds: 5)}) async {
+    Process? process;
     try {
-      return await Process.run(adb, args).timeout(timeout);
+      process = await Process.start(adb, args);
+      final stdoutBuffer = StringBuffer();
+      final stderrBuffer = StringBuffer();
+
+      final stdoutSub = process.stdout.transform(utf8.decoder).listen((data) {
+        stdoutBuffer.write(data);
+      });
+      final stderrSub = process.stderr.transform(utf8.decoder).listen((data) {
+        stderrBuffer.write(data);
+      });
+
+      final exitCode = await process.exitCode.timeout(timeout);
+
+      await stdoutSub.cancel();
+      await stderrSub.cancel();
+
+      return ProcessResult(
+          process.pid, exitCode, stdoutBuffer.toString(), stderrBuffer.toString());
     } on TimeoutException {
+      if (process != null) {
+        process.kill();
+      }
       return ProcessResult(0, -1, '', 'timeout');
     } catch (e) {
+      if (process != null) {
+        process.kill();
+      }
       return ProcessResult(0, -1, '', e.toString());
     }
   }
+
 
   static Future<T> _retry<T>(
     String label,
@@ -736,6 +761,7 @@ class AdbManager {
 
   Future<void> setVolume(String ip, int level) async {
     if (await DeviceHttp(ip).setVolumeHttp(level)) return;
+    AppLogger.log('[КОМАНДА] громкость=$level → $ip: HTTP не прошёл, пробую ADB');
     // ADB fallback
     final adb = await _getAdb();
     final id = '$ip:5555';
@@ -769,6 +795,7 @@ class AdbManager {
 
   Future<void> setBrightness(String ip, int level) async {
     if (await DeviceHttp(ip).setBrightnessHttp(level)) return;
+    AppLogger.log('[КОМАНДА] яркость=$level → $ip: HTTP не прошёл, пробую ADB');
     // ADB fallback
     final adb = await _getAdb();
     final id = '$ip:5555';

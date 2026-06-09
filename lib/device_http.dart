@@ -192,6 +192,9 @@ class DeviceHttp {
   }
 
   Future<bool> controlAction(String action, [Map<String, dynamic>? body]) async {
+    final extra = (body != null && body.isNotEmpty) ? ' $body' : '';
+    AppLogger.log('[КОМАНДА] $action → $ip$extra (POST /api/control/$action)');
+    final sw = Stopwatch()..start();
     try {
       final r = await http
           .post(
@@ -200,9 +203,13 @@ class DeviceHttp {
             body: jsonEncode(body ?? {}),
           )
           .timeout(const Duration(seconds: 3));
-      return r.statusCode == 200;
+      final ok = r.statusCode == 200;
+      AppLogger.log('[КОМАНДА] $action → $ip: '
+          '${ok ? "OK" : "ОШИБКА HTTP ${r.statusCode} ${r.body.trim()}"} '
+          '(${sw.elapsedMilliseconds} мс)');
+      return ok;
     } catch (e) {
-      AppLogger.log('DeviceHttp.controlAction $action → $ip: $e');
+      AppLogger.log('[КОМАНДА] $action → $ip: СБОЙ $e (${sw.elapsedMilliseconds} мс)');
       return false;
     }
   }

@@ -824,6 +824,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Future<void> _refresh() async {
     if (mounted) setState(() => _isLoading = true);
     final list = await DeviceStorage.load();
+    AppLogger.log('[UI] Обновление статусов: ${list.length} планшетов');
     // Карточки показываем сразу (со старым/пустым статусом), а статус каждого
     // планшета подставляем по мере готовности — не ждём, пока проверятся все.
     if (mounted) setState(() => saved = list);
@@ -1235,6 +1236,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (_ops[ip]?.isBusy ?? false) return;
     _cancel.remove(ip);
     bool cancelled() => _cancel.contains(ip);
+    AppLogger.log('[UI] Нажато: ${launch ? "Синхронизировать и играть" : "Синхронизировать"} '
+        '— ${dev.name} ($ip)');
 
     _setOp(ip, const DeviceOp.busy("Подключение…"));
     final mediaDir = await MediaConfig.resolveDir();
@@ -1308,6 +1311,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
       _toast("Нет онлайн-устройств", warn: true);
       return;
     }
+    AppLogger.log('[UI] Нажато: массовое действие '
+        '(${sync ? "синк" : "без синка"}${launch ? "+играть" : ""}${mute ? "+без звука" : ""}) '
+        '— онлайн ${online.length} из ${saved.length}');
     final mediaDir = await MediaConfig.resolveDir();
     if (!mounted) return;
 
