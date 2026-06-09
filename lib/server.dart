@@ -46,6 +46,8 @@ class DeviceRegistration {
 }
 
 class BrandmenServer {
+  static BrandmenServer? instance;
+
   late HttpServer _server;
   Registration? _registration;
 
