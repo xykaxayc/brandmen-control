@@ -61,9 +61,35 @@ void _startLogAutoUpload() {
   Timer(const Duration(seconds: 45), tick);
   // Дальше — регулярно, для мониторинга «жив/что со связью».
   Timer.periodic(const Duration(minutes: 15), (_) => tick());
+
+  // Живой поток: раз в 3 с отправляем накопившиеся новые строки лога на
+  // {URL}/live — почти реальное время для отладки. Если строк нет — молчим.
+  bool busy = false;
+  Timer.periodic(const Duration(seconds: 3), (_) async {
+    if (busy) return;
+    final lines = AppLogger.drainPending();
+    if (lines.isEmpty) return;
+    busy = true;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final urlPref =
+          (prefs.getString(_SettingsScreenState.kLogServerUrlKey) ?? '').trim();
+      final tokenPref =
+          (prefs.getString(_SettingsScreenState.kLogServerTokenKey) ?? '')
+              .trim();
+      final url = urlPref.isEmpty ? kDefaultLogServerUrl : urlPref;
+      final token = tokenPref.isEmpty ? kDefaultLogServerToken : tokenPref;
+      final ok =
+          await LogUploader.sendLive(baseUrl: url, token: token, lines: lines);
+      if (!ok) AppLogger.requeuePending(lines); // вернём, попробуем позже
+    } catch (_) {
+      AppLogger.requeuePending(lines);
+    } finally {
+      busy = false;
+    }
+  });
 }
 
-BrandmenServer? globalServer;
 
 /// Глобальные UI-настройки, на которые экраны реагируют вживую.
 class AppSettings {
@@ -89,8 +115,8 @@ class AppSettings {
 Future<void> _startServer() async {
   try {
     await MediaConfig.resolveDir();
-    globalServer = BrandmenServer();
-    await globalServer!.start();
+    BrandmenServer.instance = BrandmenServer();
+    await BrandmenServer.instance!.start();
     AppLogger.log(
         "HTTP сервер запущен на порту 5010, папка: ${MediaConfig.current}");
   } catch (e) {
@@ -98,6 +124,7 @@ Future<void> _startServer() async {
   }
   DiscoveryBeacon().start();
 }
+
 
 class BrandmenApp extends StatelessWidget {
   const BrandmenApp({super.key});
@@ -191,12 +218,13 @@ class _MainScreenState extends State<MainScreen> {
       if (mounted) setState(() {});
     });
     _checkForUpdate();
-    _regSub = globalServer?.onDeviceRegistered.listen(_onDeviceRegistered);
+    _regSub = BrandmenServer.instance?.onDeviceRegistered.listen(_onDeviceRegistered);
   }
 
   Future<void> _onDeviceRegistered(DeviceRegistration reg) async {
     await DeviceStorage.add(reg.ip, name: reg.name);
-    globalServer?.stopPairing();
+    BrandmenServer.instance?.stopPairing();
+
     _settingsKey.currentState?._stopPairing();
     // Устанавливаем ADB-соединение по WiFi сразу после сопряжения
     adb.checkDevice(reg.ip);
@@ -965,7 +993,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
   /// Спаривание по сети: открываем окно регистрации и ждём, пока планшет
   /// зарегистрируется (это делает глобальный _onDeviceRegistered).
   Future<void> _startNetworkPairing() async {
-    final server = globalServer;
+    final server = BrandmenServer.instance;
+
     if (server == null) {
       _toast("Сервер не запущен", warn: true);
       return;
@@ -2829,7 +2858,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   void _startPairing() {
     const seconds = 30;
-    globalServer?.startPairing(duration: const Duration(seconds: seconds));
+    BrandmenServer.instance?.startPairing(duration: const Duration(seconds: seconds));
     setState(() {
       _pairingActive = true;
       _pairingSecondsLeft = seconds;
@@ -2847,7 +2876,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   void _stopPairing() {
     _pairingTimer?.cancel();
-    globalServer?.stopPairing();
+    BrandmenServer.instance?.stopPairing();
+
     if (mounted) {
       setState(() {
         _pairingActive = false;

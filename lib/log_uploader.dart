@@ -80,6 +80,48 @@ class LogUploader {
     }
   }
 
+  /// Живой поток: дописать новые строки лога к серверному `_live.log`.
+  /// Лёгкий — шлёт только переданные строки. Возвращает true при успехе.
+  static Future<bool> sendLive({
+    required String baseUrl,
+    required String token,
+    required List<String> lines,
+  }) async {
+    final base = baseUrl.trim().replaceAll(RegExp(r'/+$'), '');
+    if (base.isEmpty || lines.isEmpty) return false;
+    final Uri uri;
+    try {
+      uri = Uri.parse('$base/live').replace(queryParameters: {
+        'site': Platform.localHostname,
+        'version': kAppVersion,
+      });
+    } catch (_) {
+      return false;
+    }
+    final targetHost = uri.host;
+    final httpClient = HttpClient()
+      ..badCertificateCallback = (cert, host, port) => host == targetHost;
+    final client = IOClient(httpClient);
+    try {
+      final resp = await client
+          .post(
+            uri,
+            headers: {
+              if (token.trim().isNotEmpty)
+                'Authorization': 'Bearer ${token.trim()}',
+              'Content-Type': 'text/plain; charset=utf-8',
+            },
+            body: utf8.encode(lines.join('\n')),
+          )
+          .timeout(const Duration(seconds: 10));
+      return resp.statusCode >= 200 && resp.statusCode < 300;
+    } catch (_) {
+      return false;
+    } finally {
+      client.close();
+    }
+  }
+
   static Future<List<String>> _fullLog() async {
     final path = AppLogger.logPath;
     if (path == null) return AppLogger.lines;

@@ -59,7 +59,7 @@ def list_sites():
         sp = os.path.join(DIR, site)
         if not os.path.isdir(sp):
             continue
-        files = sorted(f for f in os.listdir(sp) if f.endswith(".log"))
+        files = sorted(f for f in os.listdir(sp) if f.endswith(".log") and not f.startswith("_"))
         last = files[-1] if files else None
         mtime = os.path.getmtime(os.path.join(sp, last)) if last else 0
         out.append({
@@ -92,11 +92,37 @@ class H(BaseHTTPRequestHandler):
 
     def do_POST(self):
         u = urlparse(self.path)
+        q = parse_qs(u.query)
+        if u.path == "/live":
+            # Живой поток: дописываем новые строки в один файл _live.log на сайт,
+            # обрезаем по размеру, чтобы не рос бесконечно. Для отладки в реалтайме.
+            if not authed(self):
+                return self._send(401, "unauthorized")
+            site = safe(q.get("site", [""])[0])
+            n = int(self.headers.get("Content-Length", "0") or "0")
+            body = self.rfile.read(n) if n else b""
+            d = os.path.join(DIR, site)
+            os.makedirs(d, exist_ok=True)
+            lf = os.path.join(d, "_live.log")
+            with open(lf, "ab") as f:
+                f.write(body)
+                if not body.endswith(b"\n"):
+                    f.write(b"\n")
+            try:
+                cap = 2 * 1024 * 1024
+                if os.path.getsize(lf) > cap:
+                    with open(lf, "rb") as f:
+                        f.seek(-cap // 2, os.SEEK_END)
+                        tail = f.read()
+                    with open(lf, "wb") as f:
+                        f.write(b"...(truncated)...\n" + tail)
+            except Exception:
+                pass
+            return self._send(200, "ok")
         if u.path != "/logs":
             return self._send(404, "not found")
         if not authed(self):
             return self._send(401, "unauthorized")
-        q = parse_qs(u.query)
         site = safe(q.get("site", [""])[0])
         version = safe(q.get("version", [""])[0])
         n = int(self.headers.get("Content-Length", "0") or "0")
@@ -115,8 +141,15 @@ class H(BaseHTTPRequestHandler):
         q = parse_qs(u.query)
         if u.path == "/":
             return self._send(200, "brandmen log server")
-        if u.path in ("/list", "/view", "/dash") and not authed(self):
+        if u.path in ("/list", "/view", "/dash", "/live") and not authed(self):
             return self._send(401, "unauthorized")
+        if u.path == "/live":
+            site = safe(q.get("site", [""])[0])
+            lf = os.path.join(DIR, site, "_live.log")
+            if not os.path.isfile(lf):
+                return self._send(404, "no live stream for site")
+            with open(lf, "rb") as fh:
+                return self._send(200, fh.read())
         if u.path == "/list":
             return self._send(200, json.dumps(list_sites(), ensure_ascii=False, indent=2),
                               "application/json; charset=utf-8")
@@ -126,7 +159,7 @@ class H(BaseHTTPRequestHandler):
             sp = os.path.join(DIR, site)
             if f in ("", "last", "latest"):
                 files = sorted(x for x in os.listdir(sp)) if os.path.isdir(sp) else []
-                files = [x for x in files if x.endswith(".log")]
+                files = [x for x in files if x.endswith(".log") and not x.startswith("_")]
                 if not files:
                     return self._send(404, "no logs for site")
                 f = files[-1]
