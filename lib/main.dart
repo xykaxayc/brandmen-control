@@ -28,7 +28,39 @@ void main() async {
   await AppLogger.init();
   await AppSettings.load();
   await _startServer();
+  _startLogAutoUpload();
   runApp(const BrandmenApp());
+}
+
+/// Автоотправка лога на сервер — чтобы каждый ПК сам появлялся на дашборде и
+/// слал диагностику без ручного нажатия ☆. Адрес/токен берём из Настроек, а
+/// если там пусто — зашитые по умолчанию (kDefaultLogServerUrl/Token).
+/// Первая отправка вскоре после старта, затем периодически.
+void _startLogAutoUpload() {
+  Future<void> tick() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final urlPref =
+          (prefs.getString(_SettingsScreenState.kLogServerUrlKey) ?? '').trim();
+      final tokenPref =
+          (prefs.getString(_SettingsScreenState.kLogServerTokenKey) ?? '')
+              .trim();
+      final url = urlPref.isEmpty ? kDefaultLogServerUrl : urlPref;
+      final token = tokenPref.isEmpty ? kDefaultLogServerToken : tokenPref;
+      if (url.isEmpty) return;
+      final res = await LogUploader.send(baseUrl: url, token: token);
+      if (!res.ok) {
+        AppLogger.log('[LOG-AUTO] отправка не удалась: ${res.message}');
+      }
+    } catch (e) {
+      AppLogger.log('[LOG-AUTO] ошибка автоотправки: $e');
+    }
+  }
+
+  // ПК должен появиться на дашборде вскоре после запуска.
+  Timer(const Duration(seconds: 45), tick);
+  // Дальше — регулярно, для мониторинга «жив/что со связью».
+  Timer.periodic(const Duration(minutes: 15), (_) => tick());
 }
 
 BrandmenServer? globalServer;
@@ -2906,8 +2938,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
       setState(() {
         _timeController.text = prefs.getString('autoOffTime') ?? "22:00";
         autoOffEnabled = prefs.getBool('autoOffEnabled') ?? false;
-        _logUrlController.text = prefs.getString(kLogServerUrlKey) ?? "";
-        _logTokenController.text = prefs.getString(kLogServerTokenKey) ?? "";
+        _logUrlController.text =
+            prefs.getString(kLogServerUrlKey) ?? kDefaultLogServerUrl;
+        _logTokenController.text =
+            prefs.getString(kLogServerTokenKey) ?? kDefaultLogServerToken;
       });
     }
   }
@@ -3862,8 +3896,12 @@ class _LogsScreenState extends State<LogsScreen> {
 
   Future<void> _sendLog() async {
     final prefs = await SharedPreferences.getInstance();
-    final url = prefs.getString(_SettingsScreenState.kLogServerUrlKey) ?? '';
-    final token = prefs.getString(_SettingsScreenState.kLogServerTokenKey) ?? '';
+    final urlPref =
+        (prefs.getString(_SettingsScreenState.kLogServerUrlKey) ?? '').trim();
+    final tokenPref =
+        (prefs.getString(_SettingsScreenState.kLogServerTokenKey) ?? '').trim();
+    final url = urlPref.isEmpty ? kDefaultLogServerUrl : urlPref;
+    final token = tokenPref.isEmpty ? kDefaultLogServerToken : tokenPref;
     if (url.trim().isEmpty) {
       _snack("Укажите адрес сервера логов в Настройках", warn: true);
       return;

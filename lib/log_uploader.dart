@@ -4,6 +4,14 @@ import 'package:http/io_client.dart';
 import 'logger.dart';
 import 'updater.dart' show kAppVersion;
 
+/// Адрес и токен сервера логов по умолчанию — зашиты, чтобы каждый ПК слал
+/// логи на наш сервер сам, без ручной настройки. Можно переопределить в
+/// Настройках (ключи log_server_url / log_server_token). Сервер — приёмник
+/// `server-logs/logserver.py` на порту 8443 (самоподписанный TLS принимается
+/// через badCertificateCallback ниже, т.к. host совпадает с адресом).
+const String kDefaultLogServerUrl = 'https://77.246.102.205:8443';
+const String kDefaultLogServerToken = '933897b46de4e38806e6d6669d768e9c';
+
 /// Отправка лога на свой сервер.
 ///
 /// Контракт сервера:
