@@ -273,6 +273,17 @@ class AdbManager {
     if (httpAvailable) {
       health = await DeviceHttp(ip).health();
     }
+    // Логируем РЕАЛЬНОЕ состояние планшета — иначе в логе видны только ошибки
+    // и не понять, почему «не играет» (пустой плейлист / нет файла / завис).
+    if (health != null) {
+      AppLogger.log('[СТАТУС] $ip: online http=$httpAvailable adb=$adbOnline '
+          'v${health['version']} играет=${health['playing']} '
+          'ролик="${health['current']}" плейлист=${health['index']}/${health['total']} '
+          'место=${health['freeMb']}МБ');
+    } else {
+      AppLogger.log('[СТАТУС] $ip: '
+          '${(adbOnline || httpAvailable) ? "online но health недоступен (http=$httpAvailable adb=$adbOnline)" : "ОФЛАЙН (не отвечает 5011/ADB)"}');
+    }
     return DeviceStatus(
       ip: ip,
       online: adbOnline || httpAvailable,
@@ -379,17 +390,37 @@ class AdbManager {
   /// Проверяет, что плеер РЕАЛЬНО играет, а не просто принял команду запуска.
   /// На HyperOS HTTP-launch может вернуть ok, но видео не выйдет на экран —
   /// поэтому опрашиваем /api/control/now несколько раз и ждём playing=true.
-  Future<bool> verifyPlaying(String ip, {int attempts = 6}) async {
+  ///
+  /// ВАЖНО: сразу после launch плеер на 10–30 с роняет свой HTTP-сервер
+  /// (controlNow → connection refused / timeout). Старое окно в ~5 с не
+  /// дожидалось возврата сервера и давало ЛОЖНОЕ «не играет», хотя планшет
+  /// играет. Поэтому ждём дольше (до ~30 с) и терпим отказы подключения как
+  /// «сервер ещё перезапускается». Если же сервер ответил, но playing=false
+  /// несколько раз подряд — это уже настоящая проблема, выходим раньше.
+  Future<bool> verifyPlaying(String ip, {int attempts = 30}) async {
     final client = DeviceHttp(ip);
+    int connectedNotPlaying = 0;
     for (int i = 0; i < attempts; i++) {
-      await Future.delayed(const Duration(milliseconds: 800));
+      await Future.delayed(const Duration(seconds: 1));
       final now = await client.controlNow();
-      if (now != null && now['playing'] == true) {
+      if (now == null) {
+        // Сервер недоступен (перезапускается после launch) — ждём дальше.
+        continue;
+      }
+      if (now['playing'] == true) {
         AppLogger.log('verifyPlaying $ip: играет (попытка ${i + 1})');
         return true;
       }
+      // Сервер отвечает, но не играет — даём несколько шансов (загрузка
+      // первого ролика), затем считаем, что реально не играет.
+      if (++connectedNotPlaying >= 8) {
+        AppLogger.log('verifyPlaying $ip: сервер отвечает, но НЕ играет '
+            '($connectedNotPlaying проверок) — реальная проблема');
+        return false;
+      }
     }
-    AppLogger.log('verifyPlaying $ip: НЕ играет после $attempts попыток');
+    AppLogger.log('verifyPlaying $ip: НЕ играет после $attempts попыток '
+        '(возможно сервер не вернулся после launch)');
     return false;
   }
 
