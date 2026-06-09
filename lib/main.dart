@@ -741,6 +741,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
   // остаются отзывчивыми.
   bool _busy = false;
   bool _bulkCancel = false;
+  // Текущее положение общего (мастер) ползунка яркости — применяется ко всем
+  // онлайн-планшетам сразу. По умолчанию максимум (255).
+  int _masterBrightness = 255;
 
   // Инлайн-состояние операции по каждому планшету (ip → DeviceOp) и набор ip,
   // для которых запрошена отмена.
@@ -1451,6 +1454,18 @@ class _DashboardScreenState extends State<DashboardScreen> {
     _clearOpLater(ip);
   }
 
+  /// Применяет яркость ко всем онлайн-планшетам сразу (общий ползунок).
+  Future<void> _setBrightnessAll(int level) async {
+    final online = saved.where((d) => statuses[d.ip]?.online == true).toList();
+    if (online.isEmpty) {
+      _toast("Нет онлайн-устройств", warn: true);
+      return;
+    }
+    AppLogger.log('[UI] Общая яркость → ${level * 100 ~/ 255}% '
+        'на ${online.length} планшетах');
+    await Future.wait(online.map((d) => adb.setBrightness(d.ip, level)));
+  }
+
   void _endShift() async {
     final confirmed = await showDialog<bool>(
         context: context,
@@ -1573,6 +1588,42 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           horizontal: 18, vertical: 16),
                       shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(12)),
+                    ),
+                  ),
+                  // Общий ползунок яркости — применяется ко всем онлайн сразу.
+                  Container(
+                    width: 240,
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    decoration: BoxDecoration(
+                      border: Border.all(color: const Color(0x80FFC107)),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.brightness_6_rounded,
+                            color: Colors.amber, size: 20),
+                        Expanded(
+                          child: Slider(
+                            value: _masterBrightness.toDouble(),
+                            min: 1,
+                            max: 255,
+                            divisions: 50,
+                            activeColor: Colors.amber,
+                            label: "${_masterBrightness * 100 ~/ 255}%",
+                            onChanged: saved.isEmpty
+                                ? null
+                                : (v) => setState(
+                                    () => _masterBrightness = v.round()),
+                            onChangeEnd: (v) => _setBrightnessAll(v.round()),
+                          ),
+                        ),
+                        SizedBox(
+                          width: 38,
+                          child: Text("${_masterBrightness * 100 ~/ 255}%",
+                              style: const TextStyle(
+                                  color: Colors.white70, fontSize: 12),
+                              textAlign: TextAlign.right)),
+                      ],
                     ),
                   ),
                   OutlinedButton.icon(
