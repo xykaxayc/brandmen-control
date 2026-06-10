@@ -74,6 +74,19 @@ def list_sites():
 
 class H(BaseHTTPRequestHandler):
     server_version = "brandmen-logs/1.0"
+    # Рвём зависшие соединения — иначе мёртвые клиенты копят потоки.
+    timeout = 30
+
+    def setup(self):
+        # TLS-handshake ЗДЕСЬ, в потоке этого соединения. Раньше слушающий
+        # сокет был обёрнут целиком (wrap_socket в main), и handshake шёл в
+        # accept-потоке: один зависший клиент (сканер/полуоткрытое соединение)
+        # блокировал приём ВСЕХ соединений — сервер «висел» при живом процессе
+        # (очередь listen переполнена, снаружи таймауты). 2026-06-10.
+        self.request.settimeout(20)
+        self.request = self.server.ssl_context.wrap_socket(
+            self.request, server_side=True)
+        super().setup()
 
     def _send(self, code, body, ctype="text/plain; charset=utf-8"):
         if isinstance(body, str):
@@ -197,11 +210,25 @@ class H(BaseHTTPRequestHandler):
         return self._send(404, "not found")
 
 
+class QuietThreadingHTTPServer(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def handle_error(self, request, client_address):
+        # Сканеры и не-TLS мусор валятся на handshake — одна строка в журнал
+        # вместо полного трейсбека на каждое такое соединение.
+        import sys
+        et, ev = sys.exc_info()[:2]
+        name = et.__name__ if et else "?"
+        print(f"conn error {client_address}: {name}: {ev}", flush=True)
+
+
 def main():
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ctx.load_cert_chain(CERT, KEY)
-    httpd = ThreadingHTTPServer(("0.0.0.0", PORT), H)
-    httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
+    httpd = QuietThreadingHTTPServer(("0.0.0.0", PORT), H)
+    # НЕ оборачиваем слушающий сокет: TLS делается per-соединение в H.setup(),
+    # чтобы handshake не блокировал accept-поток (причина зависания 2026-06-09).
+    httpd.ssl_context = ctx
     print(f"brandmen log server on :{PORT}  dir={DIR}  token={'yes' if TOKEN else 'no'}", flush=True)
     httpd.serve_forever()
 

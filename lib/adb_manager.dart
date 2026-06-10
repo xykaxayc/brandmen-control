@@ -23,6 +23,13 @@ class DeviceStatus {
   // true — плеер device owner, обновления ставятся молча; false — нужен ручной
   // тап «Установить»; null — статус неизвестен (старый плеер / нет HTTP).
   final bool? deviceOwner;
+  // Диагностика доступов из /health (null — старый плеер не сообщает):
+  // SHA-256 подписи APK, разрешение на установку, исключение из оптимизации
+  // батареи, «поверх других приложений».
+  final String? signature;
+  final bool? canInstall;
+  final bool? batteryExempt;
+  final bool? overlay;
 
   DeviceStatus({
     required this.ip,
@@ -36,7 +43,23 @@ class DeviceStatus {
     this.playerPlaying,
     this.currentClip,
     this.deviceOwner,
+    this.signature,
+    this.canInstall,
+    this.batteryExempt,
+    this.overlay,
   });
+
+  /// Эталонная подпись CI-сборок APK (SHA-256 release.keystore из репо).
+  /// Если планшет сообщает другую — обновления поверх не установятся.
+  static const String expectedSignature =
+      'ADB11DDA61FA878E0B60363BC1CDA0EE657E04362A0FC21167E46E13454B13D4';
+
+  /// null — подпись неизвестна (старый плеер), true — совпадает с эталоном.
+  bool? get signatureOk {
+    final s = signature;
+    if (s == null || s.isEmpty) return null;
+    return s.toUpperCase() == expectedSignature;
+  }
 
   String get transport {
     if (httpAvailable && adbOnline) return 'HTTP + ADB';
@@ -234,28 +257,37 @@ class AdbManager {
     return map;
   }
 
-  // Проверяет статус одного устройства по IP, при необходимости переподключает
-  Future<DeviceStatus> checkDevice(String ip) async {
+  // Проверяет статус одного устройства по IP, при необходимости переподключает.
+  // [knownDevices] — заранее снятый снимок `adb devices` (checkAll снимает его
+  // один раз на всех, а не по разу на устройство).
+  Future<DeviceStatus> checkDevice(String ip,
+      {Map<String, String>? knownDevices}) async {
     final adb = await _getAdb();
     final id = '$ip:5555';
     final httpAvailableFuture = DeviceHttp.isAvailable(ip);
 
-    final current = await _listAdbDevices();
+    final current = knownDevices ?? await _listAdbDevices();
     var status = current[id];
     String? adbError;
 
     if (status != 'device') {
-      // Пробуем переподключить
+      // Пробуем переподключить (HTTP-проверка тем временем идёт параллельно).
+      // Первая попытка — всегда; вторая — только если планшет молчит и по
+      // HTTP (иначе ADB вторичен и не стоит лишних секунд). Третьей нет:
+      // мёртвый IP от неё не оживал, а refresh с офлайн-планшетом
+      // растягивался до ~16с.
       await _run(adb, ['disconnect', id], timeout: const Duration(seconds: 2));
-      final connectResult = await _retry(
-        'ADB connect $id',
-        () => _run(adb, ['connect', id], timeout: const Duration(seconds: 4)),
-        (r) =>
-            r.stdout.toString().toLowerCase().contains('connected') ||
-            r.stdout.toString().toLowerCase().contains('already connected'),
-      );
-      final out = connectResult.stdout.toString().toLowerCase();
-      if (!out.contains('connected')) {
+      bool connected(ProcessResult r) =>
+          r.stdout.toString().toLowerCase().contains('connected');
+      var connectResult =
+          await _run(adb, ['connect', id], timeout: const Duration(seconds: 4));
+      if (!connected(connectResult) && !await httpAvailableFuture) {
+        AppLogger.log('ADB connect $id: попытка 1/2 не удалась, повтор...');
+        await Future.delayed(const Duration(milliseconds: 700));
+        connectResult = await _run(adb, ['connect', id],
+            timeout: const Duration(seconds: 4));
+      }
+      if (!connected(connectResult)) {
         adbError = connectResult.stderr.toString().trim().isEmpty
             ? connectResult.stdout.toString().trim()
             : connectResult.stderr.toString().trim();
@@ -267,12 +299,17 @@ class AdbManager {
 
     final adbOnline = status == 'device';
     final httpAvailable = await httpAvailableFuture;
-    final battery = adbOnline ? await _getBattery(id) : "??";
     // Если доступен по HTTP — тянем /health (версия, место, что играет).
     Map<String, dynamic>? health;
     if (httpAvailable) {
       health = await DeviceHttp(ip).health();
     }
+    // Батарея: из /health, если плеер её отдаёт (без ADB-команды на каждый
+    // refresh); иначе по ADB как раньше. Плеер шлёт -1, если уровень неизвестен.
+    final healthBattery = health?['battery'] as int?;
+    final battery = (healthBattery != null && healthBattery > 0)
+        ? '$healthBattery'
+        : (adbOnline ? await _getBattery(id) : "??");
     // Логируем РЕАЛЬНОЕ состояние планшета — иначе в логе видны только ошибки
     // и не понять, почему «не играет» (пустой плейлист / нет файла / завис).
     if (health != null) {
@@ -296,6 +333,10 @@ class AdbManager {
       playerPlaying: health?['playing'] as bool?,
       currentClip: health?['current'] as String?,
       deviceOwner: health?['deviceOwner'] as bool?,
+      signature: health?['signature'] as String?,
+      canInstall: health?['canInstall'] as bool?,
+      batteryExempt: health?['batteryExempt'] as bool?,
+      overlay: health?['overlay'] as bool?,
     );
   }
 
@@ -323,11 +364,14 @@ class AdbManager {
   }) async {
     if (ips.isEmpty) return [];
     final results = <DeviceStatus>[];
+    // Снимок `adb devices` один раз на всю проверку — раньше каждый
+    // checkDevice снимал его заново.
+    final known = await _listAdbDevices();
     const batchSize = 3;
     for (var i = 0; i < ips.length; i += batchSize) {
       final batch = ips.skip(i).take(batchSize);
       await Future.wait(batch.map((ip) async {
-        final status = await checkDevice(ip);
+        final status = await checkDevice(ip, knownDevices: known);
         results.add(status);
         onResult?.call(status);
         return status;
@@ -496,12 +540,14 @@ class AdbManager {
       );
     }
 
-    final localFiles = localFolder.listSync().whereType<File>().where((f) {
+    final allLocal = localFolder.listSync().whereType<File>().toList();
+    final allLocalNames = allLocal.map((f) => p.basename(f.path)).toSet();
+    final localFiles = allLocal.where((f) {
       final name = p.basename(f.path);
       final lower = name.toLowerCase();
       if (lower.startsWith('.')) return false;
       // Исходник заменён сконвертированным mp4 — не отправляем его.
-      if (Transcoder.hasMp4Twin(localDir, name)) return false;
+      if (Transcoder.hasMp4TwinIn(allLocalNames, name)) return false;
       return lower == 'playlist.m3u' || isVideoFile(lower);
     }).toList();
 
@@ -626,12 +672,14 @@ class AdbManager {
 
     final remoteSizes = await _remoteSizes(adb, id);
 
-    final localFiles = localFolder.listSync().whereType<File>().where((f) {
+    final allLocal = localFolder.listSync().whereType<File>().toList();
+    final allLocalNames = allLocal.map((f) => p.basename(f.path)).toSet();
+    final localFiles = allLocal.where((f) {
       final name = p.basename(f.path);
       final lower = name.toLowerCase();
       if (lower.startsWith('.')) return false;
       // Исходник заменён сконвертированным mp4 — не отправляем его.
-      if (Transcoder.hasMp4Twin(localDir, name)) return false;
+      if (Transcoder.hasMp4TwinIn(allLocalNames, name)) return false;
       return lower == 'playlist.m3u' || isVideoFile(lower);
     }).toList();
 
@@ -764,6 +812,44 @@ class AdbManager {
       _ok,
       attempts: 2,
     );
+  }
+
+  /// Чинит доступ по ADB: выдаёт app-op (разрешение «Установка неизвестных
+  /// приложений» / «Поверх других приложений») или вносит плеер в whitelist
+  /// оптимизации батареи. Возвращает успех и вывод устройства.
+  Future<({bool ok, String output})> fixAccess(String ip, String fix) async {
+    final adb = await _getAdb();
+    final id = '$ip:5555';
+    const pkg = 'com.brandmen.ads';
+    final List<String> shellCmd;
+    switch (fix) {
+      case 'canInstall':
+        shellCmd = ['appops', 'set', pkg, 'REQUEST_INSTALL_PACKAGES', 'allow'];
+        break;
+      case 'overlay':
+        shellCmd = ['appops', 'set', pkg, 'SYSTEM_ALERT_WINDOW', 'allow'];
+        break;
+      case 'batteryExempt':
+        shellCmd = ['dumpsys', 'deviceidle', 'whitelist', '+$pkg'];
+        break;
+      default:
+        return (ok: false, output: 'неизвестный фикс: $fix');
+    }
+    await _retry(
+      'ADB connect $ip',
+      () => _run(adb, ['connect', id], timeout: const Duration(seconds: 4)),
+      _ok,
+      attempts: 2,
+    );
+    final r = await _run(adb, ['-s', id, 'shell', ...shellCmd],
+        timeout: const Duration(seconds: 8));
+    final out = '${r.stdout}${r.stderr}'.trim();
+    final ok = r.exitCode == 0 &&
+        !out.toLowerCase().contains('error') &&
+        !out.toLowerCase().contains('exception');
+    AppLogger.log('[ДОСТУП] $fix → $ip: ${ok ? "OK" : "ошибка"} '
+        '${out.isEmpty ? "" : "($out)"}');
+    return (ok: ok, output: out.isEmpty ? 'выполнено' : out);
   }
 
   /// Делает плеер device owner — тогда обновления ставятся молча.
@@ -975,6 +1061,17 @@ class AdbManager {
   }
 
   Future<String?> takeScreenshot(String ip, String savePath) async {
+    // Сначала HTTP (если плеер поддерживает /api/control/screenshot) — один
+    // запрос вместо трёх ADB-команд, и превью работает у HTTP-only планшетов.
+    final png = await DeviceHttp(ip).screenshotPng();
+    if (png != null) {
+      try {
+        await File(savePath).writeAsBytes(png);
+        return savePath;
+      } catch (e) {
+        AppLogger.log("Скриншот $ip: не удалось сохранить ($e), пробую ADB");
+      }
+    }
     final adb = await _getAdb();
     final id = '$ip:5555';
     try {

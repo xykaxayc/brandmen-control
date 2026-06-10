@@ -13,6 +13,7 @@ import 'package:desktop_drop/desktop_drop.dart';
 import 'server.dart';
 import 'discovery.dart';
 import 'adb_manager.dart';
+import 'device_http.dart';
 import 'logger.dart';
 import 'tray_manager.dart';
 import 'device_storage.dart';
@@ -362,10 +363,19 @@ class _MainScreenState extends State<MainScreen> {
       ),
     );
 
+    // Колбэк прилетает на каждый сетевой чанк (сотни раз в секунду) —
+    // перерисовываем диалог не чаще ~10 раз/с. Фазы после загрузки
+    // (распаковка/применение, progress ≥ 0.86) показываем всегда.
+    var lastDialogUpdate = DateTime.fromMillisecondsSinceEpoch(0);
     AppUpdater.downloadAndApply(info, (p, s) {
       if (!mounted || cancelledByUser) return;
       progress = p;
       status = s;
+      if (p < 0.86) {
+        final now = DateTime.now();
+        if (now.difference(lastDialogUpdate).inMilliseconds < 100) return;
+        lastDialogUpdate = now;
+      }
       setDialog?.call(() {});
     }, cancel: cancel).then((ok) {
       if (cancelledByUser) return; // диалог уже закрыт крестиком
@@ -805,6 +815,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   @override
   void initState() {
     super.initState();
+    _cleanupOldThumbs();
     _refresh();
     _screenshotTimer =
         Timer.periodic(const Duration(minutes: 5), (timer) => _captureAll());
@@ -830,7 +841,20 @@ class _DashboardScreenState extends State<DashboardScreen> {
     AppLogger.log('[UI] Обновление статусов: ${list.length} планшетов');
     // Карточки показываем сразу (со старым/пустым статусом), а статус каждого
     // планшета подставляем по мере готовности — не ждём, пока проверятся все.
-    if (mounted) setState(() => saved = list);
+    if (mounted) {
+      setState(() {
+        saved = list;
+        // Убираем статусы/превью удалённых планшетов — иначе счётчик
+        // «N из M в сети» врёт, а файлы превью копятся.
+        final ips = list.map((d) => d.ip).toSet();
+        statuses.removeWhere((ip, _) => !ips.contains(ip));
+        _thumbnails.removeWhere((ip, path) {
+          if (ips.contains(ip)) return false;
+          _disposeThumbFile(path);
+          return true;
+        });
+      });
+    }
     await adb.checkAll(
       list.map((d) => d.ip).toList(),
       onResult: (status) {
@@ -844,13 +868,44 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   /// Снимок экрана одного планшета (для мгновенного превью при обнаружении).
+  ///
+  /// Имя файла с меткой времени: FileImage кэширует картинку по пути, и при
+  /// перезаписи того же файла превью на карточке НЕ обновлялось до перезапуска
+  /// приложения (и AnimatedSwitcher с ключом-путём не видел смены). Новый путь
+  /// на каждый снимок решает обе проблемы; старый файл удаляем.
   Future<void> _captureOne(String ip) async {
     final tempDir = await getTemporaryDirectory();
-    final path = p.join(tempDir.path, "thumb_${ip.replaceAll('.', '_')}.png");
+    final path = p.join(tempDir.path,
+        "thumb_${ip.replaceAll('.', '_')}_${DateTime.now().millisecondsSinceEpoch}.png");
     final result = await adb.takeScreenshot(ip, path);
-    if (result != null && mounted) {
-      setState(() => _thumbnails[ip] = result);
-    }
+    if (result == null) return;
+    final old = _thumbnails[ip];
+    if (mounted) setState(() => _thumbnails[ip] = result);
+    if (old != null && old != result) _disposeThumbFile(old);
+  }
+
+  /// Удаляет старый файл превью и выбрасывает его из кэша декодированных
+  /// картинок (иначе растровые копии копятся в памяти).
+  void _disposeThumbFile(String path) {
+    final f = File(path);
+    FileImage(f).evict();
+    f.delete().catchError((_) => f);
+  }
+
+  /// Чистит осиротевшие thumb_*.png прошлых запусков из temp-папки.
+  Future<void> _cleanupOldThumbs() async {
+    try {
+      final tempDir = await getTemporaryDirectory();
+      final live = _thumbnails.values.toSet();
+      await for (final e in tempDir.list()) {
+        if (e is File &&
+            p.basename(e.path).startsWith('thumb_') &&
+            e.path.endsWith('.png') &&
+            !live.contains(e.path)) {
+          await e.delete().catchError((_) => e);
+        }
+      }
+    } catch (_) {}
   }
 
   Future<void> _registerViaUsb() async {
@@ -1126,9 +1181,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Future<void> _showDeviceControls(SavedDevice dev) async {
-    final vol = await adb.getVolume(dev.ip);
-    final bright = await adb.getBrightness(dev.ip);
-    final volMax = await adb.getVolumeMax(dev.ip);
+    // Громкость/яркость/максимум приходят одним /api/control/status — раньше
+    // диалог открывался тремя одинаковыми запросами подряд. ADB-фолбэк
+    // остаётся на случай, когда HTTP недоступен.
+    final st = await DeviceHttp(dev.ip).controlStatus();
+    final vol = st != null ? st['volume']! : await adb.getVolume(dev.ip);
+    final bright =
+        st != null ? st['brightness']! : await adb.getBrightness(dev.ip);
+    final volMax = st?['volumeMax'] ?? 15;
     if (!mounted) return;
 
     int currentVol = vol;
@@ -1339,6 +1399,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
         : null;
 
     int failed = 0;
+    // Фаза 1: файлы — последовательно (WiFi-канал общий, параллельная заливка
+    // не ускоряет). Планшеты, которым нужен запуск, копим на фазу 2.
+    final toLaunch = <(SavedDevice, SyncResult)>[];
     for (final dev in online) {
       if (!mounted) return;
       final ip = dev.ip;
@@ -1374,31 +1437,61 @@ class _DashboardScreenState extends State<DashboardScreen> {
         continue;
       }
 
-      bool? launchOk;
-      if (launch && result.success && deviceOnline) {
-        _setOp(ip, DeviceOp.busy(mute ? "Запуск без звука…" : "Запуск…"));
-        await adb.wakeUp(ip, launchPlayer: true);
-        if (mute) await adb.setVolume(ip, 0);
-        _setOp(ip, const DeviceOp.busy("Проверка запуска…"));
-        launchOk = await adb.verifyPlaying(ip);
-      }
-
       if (!result.success) {
         _setOp(ip, DeviceOp.error(humanizeError(result.error)));
-      } else if (launchOk == false) {
-        failed++;
-        AppLogger.log('Запуск: плеер не подтвердил запуск на ${dev.name}');
-        _setOp(ip, const DeviceOp.error("Не запустился"));
+        _clearOpLater(ip, after: const Duration(seconds: 8));
+        continue;
+      }
+
+      if (launch && deviceOnline) {
+        _setOp(ip, const DeviceOp.busy("Ожидает запуска…"));
+        toLaunch.add((dev, result));
       } else {
         final base = !sync
             ? "Запущено"
             : (result.pushed.isEmpty
                 ? "Актуально"
                 : "Готово: ${result.pushed.length}");
-        _setOp(ip, DeviceOp.success(launchOk == true ? "$base ▶" : base));
+        _setOp(ip, DeviceOp.success(base));
         _captureOne(ip);
+        _clearOpLater(ip, after: const Duration(seconds: 8));
       }
-      _clearOpLater(ip, after: const Duration(seconds: 8));
+    }
+
+    // Фаза 2: запуск и проверка «реально играет» — батчами по 3 параллельно.
+    // Раньше шло строго по одному, а verifyPlaying ждёт до 30с на планшет:
+    // «Запустить все» на 6 планшетах растягивалось на минуты.
+    const launchBatch = 3;
+    for (var i = 0; i < toLaunch.length; i += launchBatch) {
+      if (!mounted) return;
+      final batch = toLaunch.skip(i).take(launchBatch);
+      await Future.wait(batch.map((entry) async {
+        final (dev, result) = entry;
+        final ip = dev.ip;
+        if (_bulkCancel) {
+          _setOp(ip, null);
+          return;
+        }
+        _setOp(ip, DeviceOp.busy(mute ? "Запуск без звука…" : "Запуск…"));
+        await adb.wakeUp(ip, launchPlayer: true);
+        if (mute) await adb.setVolume(ip, 0);
+        _setOp(ip, const DeviceOp.busy("Проверка запуска…"));
+        final launchOk = await adb.verifyPlaying(ip);
+        if (!launchOk) {
+          failed++;
+          AppLogger.log('Запуск: плеер не подтвердил запуск на ${dev.name}');
+          _setOp(ip, const DeviceOp.error("Не запустился"));
+        } else {
+          final base = !sync
+              ? "Запущено"
+              : (result.pushed.isEmpty
+                  ? "Актуально"
+                  : "Готово: ${result.pushed.length}");
+          _setOp(ip, DeviceOp.success("$base ▶"));
+          _captureOne(ip);
+        }
+        _clearOpLater(ip, after: const Duration(seconds: 8));
+      }));
     }
 
     if (failed > 0) {
@@ -1809,6 +1902,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           color:
                               isOnline ? Colors.greenAccent : Colors.white38)),
                   _autoUpdateBadge(dev, status),
+                  _accessBadge(dev, status),
                 ],
               ),
               if (isOnline)
@@ -1847,6 +1941,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           ? Image.file(File(_thumbnails[dev.ip]!),
                               fit: BoxFit.cover,
                               gaplessPlayback: true,
+                              // Скриншот планшета ~1920×1200, а превью ~250px:
+                              // без cacheWidth каждый держал бы ~9 МБ в памяти
+                              // и тормозил декодированием полного размера.
+                              cacheWidth: 560,
                               key: ValueKey(_thumbnails[dev.ip]))
                           : Container(
                               key: const ValueKey('placeholder'),
@@ -2112,6 +2210,209 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
+  /// Сколько проблем с доступами сообщил планшет (только явные false; null —
+  /// старый плеер без диагностики, не считаем).
+  int _accessIssueCount(DeviceStatus? s) {
+    if (s == null) return 0;
+    int n = 0;
+    if (s.signatureOk == false) n++;
+    if (s.canInstall == false) n++;
+    if (s.batteryExempt == false) n++;
+    if (s.overlay == false) n++;
+    return n;
+  }
+
+  /// Бейдж «проблемы с доступами» на карточке: появляется, когда плеер сам
+  /// сообщил, что чего-то не хватает (подпись/установка/батарея/поверх).
+  Widget _accessBadge(SavedDevice dev, DeviceStatus? status) {
+    final n = _accessIssueCount(status);
+    if (n == 0) return const SizedBox.shrink();
+    final critical = status?.signatureOk == false;
+    final color = critical ? Colors.redAccent : Colors.orangeAccent.shade100;
+    return Padding(
+      padding: const EdgeInsets.only(left: 6),
+      child: Tooltip(
+        message: critical
+            ? "Чужая подпись APK — обновления не установятся!\n"
+                "Нажмите — чек-лист доступов."
+            : "Не хватает доступов: $n.\nНажмите — чек-лист и исправление.",
+        child: InkWell(
+          onTap: () => _showAccessChecklist(dev),
+          borderRadius: BorderRadius.circular(4),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.gpp_maybe_rounded, size: 14, color: color),
+              Text("$n",
+                  style: TextStyle(
+                      fontSize: 10, color: color, fontWeight: FontWeight.bold)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Чек-лист доступов планшета: что плеер сообщил о подписи и разрешениях,
+  /// с кнопками «Исправить» по ADB там, где это возможно без рук на планшете.
+  Future<void> _showAccessChecklist(SavedDevice dev) async {
+    String? busyFix; // ключ фикса, который сейчас выполняется
+
+    await showDialog(
+      context: context,
+      builder: (c) => StatefulBuilder(builder: (c, setLocal) {
+        final st = statuses[dev.ip];
+        final adbOk = st?.adbOnline ?? false;
+
+        Future<void> runFix(String key) async {
+          setLocal(() => busyFix = key);
+          final res = await adb.fixAccess(dev.ip, key);
+          // Перечитываем /health — чек-лист и бейдж обновятся сразу.
+          final fresh = await adb.checkDevice(dev.ip);
+          if (mounted) setState(() => statuses[dev.ip] = fresh);
+          setLocal(() => busyFix = null);
+          if (!res.ok) _toast("Не удалось: ${res.output}", warn: true);
+        }
+
+        Widget row(String title, String hint, bool? ok, {String? fixKey}) {
+          final icon = ok == null
+              ? const Icon(Icons.help_outline_rounded,
+                  size: 18, color: Colors.white30)
+              : ok
+                  ? const Icon(Icons.check_circle_rounded,
+                      size: 18, color: Colors.greenAccent)
+                  : const Icon(Icons.cancel_rounded,
+                      size: 18, color: Colors.redAccent);
+          return Padding(
+            padding: const EdgeInsets.symmetric(vertical: 6),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                icon,
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(title, style: const TextStyle(fontSize: 13)),
+                      Text(ok == null ? "нет данных (старый плеер)" : hint,
+                          style: const TextStyle(
+                              fontSize: 11, color: Colors.white38)),
+                    ],
+                  ),
+                ),
+                if (ok == false && fixKey != null)
+                  busyFix == fixKey
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2))
+                      : TextButton(
+                          onPressed: (adbOk && busyFix == null)
+                              ? () => runFix(fixKey)
+                              : null,
+                          child: Text(adbOk ? "Исправить" : "нужен ADB",
+                              style: const TextStyle(fontSize: 12)),
+                        ),
+              ],
+            ),
+          );
+        }
+
+        final sigOk = st?.signatureOk;
+        return AlertDialog(
+          backgroundColor: const Color(0xFF2C2C2E),
+          title: Row(
+            children: [
+              const Icon(Icons.gpp_good_rounded,
+                  color: Colors.lightBlueAccent, size: 22),
+              const SizedBox(width: 10),
+              Expanded(
+                  child: Text("Доступы: ${dev.name}",
+                      style: const TextStyle(fontSize: 16))),
+            ],
+          ),
+          content: SizedBox(
+            width: 480,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                row(
+                    "Подпись APK",
+                    sigOk == true
+                        ? "совпадает с CI-сборкой — обновления совместимы"
+                        : "ЧУЖАЯ подпись — обновления поверх не установятся",
+                    sigOk),
+                if (sigOk == false) ...[
+                  const Padding(
+                    padding: EdgeInsets.only(left: 28, bottom: 4),
+                    child: Text(
+                      "Лечение: удалить плеер и поставить заново с ПК "
+                      "(ролики в Movies/ads сохранятся):",
+                      style: TextStyle(fontSize: 11, color: Colors.white54),
+                    ),
+                  ),
+                  const Padding(
+                    padding: EdgeInsets.only(left: 28, bottom: 6),
+                    child: SelectableText(
+                      "adb uninstall com.brandmen.ads\nзатем «Обновить APK» из Настроек",
+                      style: TextStyle(
+                          fontSize: 11,
+                          fontFamily: 'monospace',
+                          color: Colors.lightBlueAccent),
+                    ),
+                  ),
+                ],
+                row(
+                    "Установка обновлений",
+                    "разрешение «Установка неизвестных приложений» — без него "
+                        "окно обновления не появится",
+                    st?.canInstall,
+                    fixKey: 'canInstall'),
+                row(
+                    "Оптимизация батареи",
+                    "исключение из оптимизации — иначе прошивка убивает плеер "
+                        "в фоне",
+                    st?.batteryExempt,
+                    fixKey: 'batteryExempt'),
+                row(
+                    "Поверх других приложений",
+                    "нужно для вывода плеера на экран из фона (бутстрап FSI)",
+                    st?.overlay,
+                    fixKey: 'overlay'),
+                row(
+                    "Device owner",
+                    st?.deviceOwner == true
+                        ? "обновления ставятся молча, права выдаются сами"
+                        : "не owner: обновления с подтверждением (это допустимо)",
+                    st?.deviceOwner),
+                if (st?.deviceOwner == false)
+                  Padding(
+                    padding: const EdgeInsets.only(left: 28),
+                    child: TextButton(
+                      onPressed: () {
+                        Navigator.pop(c);
+                        _showDeviceOwnerHelp(dev);
+                      },
+                      child: const Text("Как сделать device owner…",
+                          style: TextStyle(fontSize: 12)),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(c),
+                child: const Text("Закрыть",
+                    style: TextStyle(color: Colors.white54))),
+          ],
+        );
+      }),
+    );
+  }
+
   /// Предупреждение «планшет не ставит обновления сам» (не device owner).
   /// Показывается только если: статус известен и явно false, и включён тумблер
   /// в Настройках. Когда все планшеты провижинены — бейджи исчезают сами, плюс
@@ -2182,6 +2483,10 @@ class MediaScreen extends StatefulWidget {
 
 class _MediaScreenState extends State<MediaScreen> {
   List<File> videos = [];
+  // Размеры файлов (path → байты), заполняется в _loadVideos: build и каждый
+  // элемент списка раньше делали lengthSync() на каждый rebuild — синхронный
+  // диск-IO на каждый тик перетаскивания/выбора.
+  final Map<String, int> _sizes = {};
   late Directory _videoDir;
   bool _dragging = false;
   String? _customSourceDir;
@@ -2262,13 +2567,15 @@ class _MediaScreenState extends State<MediaScreen> {
   }
 
   Future<void> _loadVideos() async {
-    final disk = _videoDir.listSync().whereType<File>().where((f) {
+    final allOnDisk = _videoDir.listSync().whereType<File>().toList();
+    final allNames = allOnDisk.map((f) => p.basename(f.path)).toSet();
+    final disk = allOnDisk.where((f) {
       final name = p.basename(f.path);
       final lower = name.toLowerCase();
       if (lower.startsWith('.')) return false;
       if (lower == _playlistFileName) return false;
       // Не показываем исходник, если он уже сконвертирован в mp4.
-      if (Transcoder.hasMp4Twin(_videoDir.path, name)) return false;
+      if (Transcoder.hasMp4TwinIn(allNames, name)) return false;
       return isVideoFile(lower);
     }).toList();
 
@@ -2289,7 +2596,19 @@ class _MediaScreenState extends State<MediaScreen> {
     final livePaths = ordered.map((f) => f.path).toSet();
     _selected.removeWhere((path) => !livePaths.contains(path));
 
-    if (mounted) setState(() => videos = ordered);
+    final sizes = <String, int>{};
+    for (final f in ordered) {
+      sizes[f.path] = await f.length();
+    }
+
+    if (mounted) {
+      setState(() {
+        videos = ordered;
+        _sizes
+          ..clear()
+          ..addAll(sizes);
+      });
+    }
     if (savedOrder.length != ordered.length) {
       await _saveOrderAndPlaylist();
     }
@@ -2513,7 +2832,8 @@ class _MediaScreenState extends State<MediaScreen> {
   @override
   Widget build(BuildContext context) {
     final totalMb =
-        videos.fold<int>(0, (s, f) => s + f.lengthSync()) / (1024 * 1024);
+        videos.fold<int>(0, (s, f) => s + (_sizes[f.path] ?? 0)) /
+            (1024 * 1024);
 
     return DropTarget(
       onDragEntered: (_) => setState(() => _dragging = true),
@@ -2775,7 +3095,8 @@ class _MediaScreenState extends State<MediaScreen> {
   }
 
   Widget _videoItem(File file, int index, {required Key key}) {
-    final sizeMb = (file.lengthSync() / (1024 * 1024)).toStringAsFixed(1);
+    final sizeMb =
+        ((_sizes[file.path] ?? 0) / (1024 * 1024)).toStringAsFixed(1);
     final selected = _selected.contains(file.path);
     return Container(
       key: key,
@@ -4183,19 +4504,25 @@ class _LogsScreenState extends State<LogsScreen> {
                               TextStyle(color: Colors.white24, fontSize: 13)),
                     );
                   }
+                  // SelectionArea + Text вместо SelectableText на каждую
+                  // строку: SelectableText — тяжёлый виджет, тысячи штук
+                  // заметно тормозили rebuild при потоке логов. Выделение
+                  // (в т.ч. через несколько строк) работает через область.
                   return Scrollbar(
                     controller: _scroll,
-                    child: ListView.builder(
-                      controller: _scroll,
-                      itemCount: lines.length,
-                      itemBuilder: (_, i) => Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 1),
-                        child: SelectableText(
-                          lines[i],
-                          style: TextStyle(
-                            fontFamily: 'monospace',
-                            fontSize: 12,
-                            color: _colorFor(lines[i]),
+                    child: SelectionArea(
+                      child: ListView.builder(
+                        controller: _scroll,
+                        itemCount: lines.length,
+                        itemBuilder: (_, i) => Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 1),
+                          child: Text(
+                            lines[i],
+                            style: TextStyle(
+                              fontFamily: 'monospace',
+                              fontSize: 12,
+                              color: _colorFor(lines[i]),
+                            ),
                           ),
                         ),
                       ),

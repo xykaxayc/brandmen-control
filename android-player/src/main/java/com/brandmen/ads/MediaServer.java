@@ -278,6 +278,83 @@ public class MediaServer {
 
     // ---- Health / diagnostics ----
 
+    private String cachedSignature;
+
+    /** SHA-256 отпечаток подписи APK — ПК сравнивает с эталоном CI-сборки,
+     *  чтобы сразу видеть «обновления не встанут поверх» (чужая подпись). */
+    private String signatureSha256() {
+        if (cachedSignature != null) return cachedSignature;
+        try {
+            android.content.pm.PackageManager pm = appContext.getPackageManager();
+            android.content.pm.Signature[] sigs;
+            if (android.os.Build.VERSION.SDK_INT >= 28) {
+                android.content.pm.SigningInfo si = pm.getPackageInfo(
+                        appContext.getPackageName(),
+                        android.content.pm.PackageManager.GET_SIGNING_CERTIFICATES).signingInfo;
+                sigs = si != null ? si.getApkContentsSigners() : null;
+            } else {
+                sigs = pm.getPackageInfo(appContext.getPackageName(),
+                        android.content.pm.PackageManager.GET_SIGNATURES).signatures;
+            }
+            if (sigs != null && sigs.length > 0) {
+                java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
+                byte[] d = md.digest(sigs[0].toByteArray());
+                StringBuilder sb = new StringBuilder();
+                for (byte b : d) sb.append(String.format("%02X", b));
+                cachedSignature = sb.toString();
+                return cachedSignature;
+            }
+        } catch (Exception ignored) {}
+        cachedSignature = "";
+        return cachedSignature;
+    }
+
+    private int batteryLevel() {
+        try {
+            android.os.BatteryManager bm = (android.os.BatteryManager)
+                    appContext.getSystemService(Context.BATTERY_SERVICE);
+            if (bm != null) {
+                int v = bm.getIntProperty(
+                        android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY);
+                if (v > 0) return v;
+            }
+        } catch (Exception ignored) {}
+        return -1;
+    }
+
+    /** Разрешена ли этому приложению установка APK (нужно для окна обновления). */
+    private boolean canRequestInstalls() {
+        try {
+            if (android.os.Build.VERSION.SDK_INT < 26) return true;
+            return appContext.getPackageManager().canRequestPackageInstalls();
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** Исключено ли приложение из оптимизации батареи (иначе прошивка убивает). */
+    private boolean isBatteryExempt() {
+        try {
+            if (android.os.Build.VERSION.SDK_INT < 23) return true;
+            android.os.PowerManager pm = (android.os.PowerManager)
+                    appContext.getSystemService(Context.POWER_SERVICE);
+            return pm != null && pm.isIgnoringBatteryOptimizations(
+                    appContext.getPackageName());
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** Есть ли «поверх других приложений» (бутстрап вывода плеера из фона). */
+    private boolean canDrawOverlays() {
+        try {
+            if (android.os.Build.VERSION.SDK_INT < 23) return true;
+            return android.provider.Settings.canDrawOverlays(appContext);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     private void handleHealth(OutputStream out) throws IOException {
         long uptime = System.currentTimeMillis() - startTime;
         long freeMb = 0, totalMb = 0;
@@ -303,6 +380,11 @@ public class MediaServer {
                 + ",\"index\":" + idx
                 + ",\"total\":" + total
                 + ",\"deviceOwner\":" + isDeviceOwner()
+                + ",\"battery\":" + batteryLevel()
+                + ",\"signature\":\"" + signatureSha256() + "\""
+                + ",\"canInstall\":" + canRequestInstalls()
+                + ",\"batteryExempt\":" + isBatteryExempt()
+                + ",\"overlay\":" + canDrawOverlays()
                 + ",\"current\":\"" + escJson(name == null ? "" : name) + "\"}");
     }
 

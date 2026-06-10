@@ -125,6 +125,7 @@ class LogUploader {
   static Future<List<String>> _fullLog() async {
     final path = AppLogger.logPath;
     if (path == null) return AppLogger.lines;
+    await AppLogger.flush();
     try {
       final f = File(path);
       if (await f.exists()) return await f.readAsLines();
