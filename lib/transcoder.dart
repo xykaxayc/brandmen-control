@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:convert';
 import 'package:path/path.dart' as p;
 import 'logger.dart';
 
@@ -84,6 +85,13 @@ class Transcoder {
     return File(p.join(dir, '$base.mp4')).existsSync();
   }
 
+  /// То же, но по заранее собранному набору имён файлов папки — без
+  /// existsSync() на каждый файл (при фильтрации целого списка это O(n²) IO).
+  static bool hasMp4TwinIn(Set<String> fileNames, String fileName) {
+    if (!_isConvertible(fileName)) return false;
+    return fileNames.contains('${p.basenameWithoutExtension(fileName)}.mp4');
+  }
+
   /// Конвертирует все не-mp4 видео в папке в `<имя>.mp4` (рядом, оригинал не
   /// удаляется). Уже сконвертированные пропускаются (кэш по времени изменения).
   /// После конвертации переписывает playlist.m3u: не-mp4 имена → mp4.
@@ -140,38 +148,65 @@ class Transcoder {
       if (await tmp.exists()) await tmp.delete();
 
       AppLogger.log('ffmpeg: конвертирую ${p.basename(src.path)} → $base.mp4');
-      final r = await Process.run(ffmpeg, [
-        '-y',
-        '-i', src.path,
-        '-map', '0:v:0',
-        '-map', '0:a:0?',
-        '-map_metadata', '-1',
-        '-map_chapters', '-1',
-        '-sn',
-        '-dn',
-        '-f', 'mp4',
-        '-c:v', 'libx264',
-        '-profile:v', 'baseline',
-        '-level:v', '3.1',
-        '-preset', 'veryfast',
-        '-crf', '23',
-        '-maxrate', '5000k',
-        '-bufsize', '10000k',
-        '-x264-params', 'bframes=0:ref=1',
-        '-pix_fmt', 'yuv420p', // важно для совместимости с Android-декодерами
-        '-colorspace', 'bt709',
-        '-color_primaries', 'bt709',
-        '-color_trc', 'bt709',
-        // гарантируем чётные размеры (требование H.264)
-        '-vf',
-        'scale=w=min(1280\\,iw):h=min(720\\,ih):force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2,setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709',
-        '-c:a', 'aac',
-        '-b:a', '128k',
-        '-movflags', '+faststart',
-        tmp.path,
-      ]);
+      Process? process;
+      int exitCode = -1;
+      String errStr = '';
+      try {
+        process = await Process.start(ffmpeg, [
+          '-y',
+          '-loglevel', 'error',
+          '-i', src.path,
+          '-map', '0:v:0',
+          '-map', '0:a:0?',
+          '-map_metadata', '-1',
+          '-map_chapters', '-1',
+          '-sn',
+          '-dn',
+          '-f', 'mp4',
+          '-c:v', 'libx264',
+          '-profile:v', 'baseline',
+          '-level:v', '3.1',
+          '-preset', 'veryfast',
+          '-crf', '23',
+          '-maxrate', '5000k',
+          '-bufsize', '10000k',
+          '-x264-params', 'bframes=0:ref=1',
+          '-pix_fmt', 'yuv420p',
+          '-colorspace', 'bt709',
+          '-color_primaries', 'bt709',
+          '-color_trc', 'bt709',
+          '-vf',
+          'scale=w=min(1280\\,iw):h=min(720\\,ih):force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2,setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709',
+          '-c:a', 'aac',
+          '-b:a', '128k',
+          '-movflags', '+faststart',
+          tmp.path,
+        ]);
 
-      if (r.exitCode == 0 && await tmp.exists()) {
+        final errBuffer = StringBuffer();
+        final stdoutSub = process.stdout.listen((_) {});
+        final stderrSub = process.stderr.transform(utf8.decoder).listen((data) {
+          errBuffer.write(data);
+          if (errBuffer.length > 2000) {
+            errBuffer.clear();
+            errBuffer.write('[truncated] ');
+          }
+        });
+
+        exitCode = await process.exitCode;
+        errStr = errBuffer.toString();
+
+        await stdoutSub.cancel();
+        await stderrSub.cancel();
+      } catch (e) {
+        if (process != null) {
+          process.kill();
+        }
+        exitCode = -1;
+        errStr = e.toString();
+      }
+
+      if (exitCode == 0 && await tmp.exists()) {
         final out = File(outPath);
         if (await out.exists()) await out.delete();
         await tmp.rename(outPath);
@@ -182,7 +217,7 @@ class Transcoder {
         failed.add(p.basename(src.path));
         if (await tmp.exists()) await tmp.delete();
         AppLogger.log(
-            'ffmpeg: ошибка ${p.basename(src.path)} (код ${r.exitCode}): ${r.stderr}');
+            'ffmpeg: ошибка ${p.basename(src.path)} (код $exitCode): $errStr');
       }
     }
 

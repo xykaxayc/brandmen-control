@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:isolate';
 import 'logger.dart';
 import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart' as io;
@@ -27,8 +28,11 @@ Future<String> _getFileHash(File file) async {
       _hashCache[cacheKey] = cached; // освежаем порядок (LRU)
       return cached;
     }
-    final hash = await md5.bind(file.openRead()).first;
-    final h = hash.toString();
+    // В отдельном изоляте: md5 по гигабайтам видео в главном изоляте
+    // подвешивал UI, пока планшет запрашивал манифест с холодным кэшем.
+    final path = file.path;
+    final h = await Isolate.run(
+        () async => (await md5.bind(File(path).openRead()).first).toString());
     if (_hashCache.length >= _hashCacheMax) {
       _hashCache.remove(_hashCache.keys.first); // выбрасываем самый старый
     }
@@ -82,23 +86,30 @@ class BrandmenServer {
               headers: {'content-type': 'application/json; charset=utf-8'});
         }
         final allFiles = dir.listSync().whereType<File>().toList();
+        final allNames = allFiles.map((f) => p.basename(f.path)).toSet();
         final videos = allFiles.where((f) {
           final name = p.basename(f.path);
           if (!isVideoFile(name)) return false;
           // Исходник заменён сконвертированным mp4 — не отдаём его.
-          return !Transcoder.hasMp4Twin(videoDir, name);
+          return !Transcoder.hasMp4TwinIn(allNames, name);
         });
         final playlist = allFiles
             .where((f) => p.basename(f.path).toLowerCase() == 'playlist.m3u');
 
-        // Хешируем файлы параллельно: на первом запросе (холодный кэш)
-        // последовательный await по каждому файлу складывался в секунды.
+        // Хешируем параллельно, но батчами: на холодном кэше каждый хеш —
+        // отдельный изолят, и без ограничения 30 файлов читали бы диск
+        // одновременно.
         final entries = [...videos, ...playlist];
-        final files = await Future.wait(entries.map((f) async => {
-              "name": p.basename(f.path),
-              "size": await f.length(),
-              "md5": await _getFileHash(f),
-            }));
+        final files = <Map<String, dynamic>>[];
+        const hashBatch = 4;
+        for (var i = 0; i < entries.length; i += hashBatch) {
+          files.addAll(await Future.wait(
+              entries.skip(i).take(hashBatch).map((f) async => {
+                    "name": p.basename(f.path),
+                    "size": await f.length(),
+                    "md5": await _getFileHash(f),
+                  })));
+        }
 
         return Response.ok(jsonEncode({"files": files}),
             headers: {'content-type': 'application/json; charset=utf-8'});

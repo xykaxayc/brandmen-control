@@ -288,10 +288,28 @@ class DeviceHttp {
           'index': (j['index'] as num? ?? -1).toInt(),
           'total': (j['total'] as num? ?? 0).toInt(),
           'current': (j['current'] as String? ?? ''),
+          // Опциональные поля (новые версии плеера): без них null.
+          'deviceOwner': j['deviceOwner'] as bool?,
+          'battery': (j['battery'] as num?)?.toInt(),
         };
       }
     } catch (e) {
       AppLogger.log('DeviceHttp.health $ip: $e');
+    }
+    return null;
+  }
+
+  /// Скриншот экрана планшета (PNG) по HTTP — один запрос вместо трёх
+  /// ADB-команд (rm/screencap/pull). Возвращает null, если плеер не
+  /// поддерживает эндпоинт или недоступен — тогда вызывающий падает на ADB.
+  Future<List<int>?> screenshotPng() async {
+    try {
+      final r = await http
+          .get(Uri.parse('$_base/api/control/screenshot'))
+          .timeout(const Duration(seconds: 5));
+      if (r.statusCode == 200 && r.bodyBytes.isNotEmpty) return r.bodyBytes;
+    } catch (_) {
+      // Молча: эндпоинт опциональный, опрашивается каждые 5 минут.
     }
     return null;
   }
