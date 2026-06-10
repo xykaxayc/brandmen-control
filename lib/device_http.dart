@@ -291,6 +291,11 @@ class DeviceHttp {
           // Опциональные поля (новые версии плеера): без них null.
           'deviceOwner': j['deviceOwner'] as bool?,
           'battery': (j['battery'] as num?)?.toInt(),
+          // Диагностика доступов (плеер v0.88+): подпись APK и разрешения.
+          'signature': j['signature'] as String?,
+          'canInstall': j['canInstall'] as bool?,
+          'batteryExempt': j['batteryExempt'] as bool?,
+          'overlay': j['overlay'] as bool?,
         };
       }
     } catch (e) {

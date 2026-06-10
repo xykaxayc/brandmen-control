@@ -1902,6 +1902,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           color:
                               isOnline ? Colors.greenAccent : Colors.white38)),
                   _autoUpdateBadge(dev, status),
+                  _accessBadge(dev, status),
                 ],
               ),
               if (isOnline)
@@ -2207,6 +2208,209 @@ class _DashboardScreenState extends State<DashboardScreen> {
         );
       }
     }
+  }
+
+  /// Сколько проблем с доступами сообщил планшет (только явные false; null —
+  /// старый плеер без диагностики, не считаем).
+  int _accessIssueCount(DeviceStatus? s) {
+    if (s == null) return 0;
+    int n = 0;
+    if (s.signatureOk == false) n++;
+    if (s.canInstall == false) n++;
+    if (s.batteryExempt == false) n++;
+    if (s.overlay == false) n++;
+    return n;
+  }
+
+  /// Бейдж «проблемы с доступами» на карточке: появляется, когда плеер сам
+  /// сообщил, что чего-то не хватает (подпись/установка/батарея/поверх).
+  Widget _accessBadge(SavedDevice dev, DeviceStatus? status) {
+    final n = _accessIssueCount(status);
+    if (n == 0) return const SizedBox.shrink();
+    final critical = status?.signatureOk == false;
+    final color = critical ? Colors.redAccent : Colors.orangeAccent.shade100;
+    return Padding(
+      padding: const EdgeInsets.only(left: 6),
+      child: Tooltip(
+        message: critical
+            ? "Чужая подпись APK — обновления не установятся!\n"
+                "Нажмите — чек-лист доступов."
+            : "Не хватает доступов: $n.\nНажмите — чек-лист и исправление.",
+        child: InkWell(
+          onTap: () => _showAccessChecklist(dev),
+          borderRadius: BorderRadius.circular(4),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.gpp_maybe_rounded, size: 14, color: color),
+              Text("$n",
+                  style: TextStyle(
+                      fontSize: 10, color: color, fontWeight: FontWeight.bold)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Чек-лист доступов планшета: что плеер сообщил о подписи и разрешениях,
+  /// с кнопками «Исправить» по ADB там, где это возможно без рук на планшете.
+  Future<void> _showAccessChecklist(SavedDevice dev) async {
+    String? busyFix; // ключ фикса, который сейчас выполняется
+
+    await showDialog(
+      context: context,
+      builder: (c) => StatefulBuilder(builder: (c, setLocal) {
+        final st = statuses[dev.ip];
+        final adbOk = st?.adbOnline ?? false;
+
+        Future<void> runFix(String key) async {
+          setLocal(() => busyFix = key);
+          final res = await adb.fixAccess(dev.ip, key);
+          // Перечитываем /health — чек-лист и бейдж обновятся сразу.
+          final fresh = await adb.checkDevice(dev.ip);
+          if (mounted) setState(() => statuses[dev.ip] = fresh);
+          setLocal(() => busyFix = null);
+          if (!res.ok) _toast("Не удалось: ${res.output}", warn: true);
+        }
+
+        Widget row(String title, String hint, bool? ok, {String? fixKey}) {
+          final icon = ok == null
+              ? const Icon(Icons.help_outline_rounded,
+                  size: 18, color: Colors.white30)
+              : ok
+                  ? const Icon(Icons.check_circle_rounded,
+                      size: 18, color: Colors.greenAccent)
+                  : const Icon(Icons.cancel_rounded,
+                      size: 18, color: Colors.redAccent);
+          return Padding(
+            padding: const EdgeInsets.symmetric(vertical: 6),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                icon,
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(title, style: const TextStyle(fontSize: 13)),
+                      Text(ok == null ? "нет данных (старый плеер)" : hint,
+                          style: const TextStyle(
+                              fontSize: 11, color: Colors.white38)),
+                    ],
+                  ),
+                ),
+                if (ok == false && fixKey != null)
+                  busyFix == fixKey
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2))
+                      : TextButton(
+                          onPressed: (adbOk && busyFix == null)
+                              ? () => runFix(fixKey)
+                              : null,
+                          child: Text(adbOk ? "Исправить" : "нужен ADB",
+                              style: const TextStyle(fontSize: 12)),
+                        ),
+              ],
+            ),
+          );
+        }
+
+        final sigOk = st?.signatureOk;
+        return AlertDialog(
+          backgroundColor: const Color(0xFF2C2C2E),
+          title: Row(
+            children: [
+              const Icon(Icons.gpp_good_rounded,
+                  color: Colors.lightBlueAccent, size: 22),
+              const SizedBox(width: 10),
+              Expanded(
+                  child: Text("Доступы: ${dev.name}",
+                      style: const TextStyle(fontSize: 16))),
+            ],
+          ),
+          content: SizedBox(
+            width: 480,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                row(
+                    "Подпись APK",
+                    sigOk == true
+                        ? "совпадает с CI-сборкой — обновления совместимы"
+                        : "ЧУЖАЯ подпись — обновления поверх не установятся",
+                    sigOk),
+                if (sigOk == false) ...[
+                  const Padding(
+                    padding: EdgeInsets.only(left: 28, bottom: 4),
+                    child: Text(
+                      "Лечение: удалить плеер и поставить заново с ПК "
+                      "(ролики в Movies/ads сохранятся):",
+                      style: TextStyle(fontSize: 11, color: Colors.white54),
+                    ),
+                  ),
+                  const Padding(
+                    padding: EdgeInsets.only(left: 28, bottom: 6),
+                    child: SelectableText(
+                      "adb uninstall com.brandmen.ads\nзатем «Обновить APK» из Настроек",
+                      style: TextStyle(
+                          fontSize: 11,
+                          fontFamily: 'monospace',
+                          color: Colors.lightBlueAccent),
+                    ),
+                  ),
+                ],
+                row(
+                    "Установка обновлений",
+                    "разрешение «Установка неизвестных приложений» — без него "
+                        "окно обновления не появится",
+                    st?.canInstall,
+                    fixKey: 'canInstall'),
+                row(
+                    "Оптимизация батареи",
+                    "исключение из оптимизации — иначе прошивка убивает плеер "
+                        "в фоне",
+                    st?.batteryExempt,
+                    fixKey: 'batteryExempt'),
+                row(
+                    "Поверх других приложений",
+                    "нужно для вывода плеера на экран из фона (бутстрап FSI)",
+                    st?.overlay,
+                    fixKey: 'overlay'),
+                row(
+                    "Device owner",
+                    st?.deviceOwner == true
+                        ? "обновления ставятся молча, права выдаются сами"
+                        : "не owner: обновления с подтверждением (это допустимо)",
+                    st?.deviceOwner),
+                if (st?.deviceOwner == false)
+                  Padding(
+                    padding: const EdgeInsets.only(left: 28),
+                    child: TextButton(
+                      onPressed: () {
+                        Navigator.pop(c);
+                        _showDeviceOwnerHelp(dev);
+                      },
+                      child: const Text("Как сделать device owner…",
+                          style: TextStyle(fontSize: 12)),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(c),
+                child: const Text("Закрыть",
+                    style: TextStyle(color: Colors.white54))),
+          ],
+        );
+      }),
+    );
   }
 
   /// Предупреждение «планшет не ставит обновления сам» (не device owner).

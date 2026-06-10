@@ -23,6 +23,13 @@ class DeviceStatus {
   // true — плеер device owner, обновления ставятся молча; false — нужен ручной
   // тап «Установить»; null — статус неизвестен (старый плеер / нет HTTP).
   final bool? deviceOwner;
+  // Диагностика доступов из /health (null — старый плеер не сообщает):
+  // SHA-256 подписи APK, разрешение на установку, исключение из оптимизации
+  // батареи, «поверх других приложений».
+  final String? signature;
+  final bool? canInstall;
+  final bool? batteryExempt;
+  final bool? overlay;
 
   DeviceStatus({
     required this.ip,
@@ -36,7 +43,23 @@ class DeviceStatus {
     this.playerPlaying,
     this.currentClip,
     this.deviceOwner,
+    this.signature,
+    this.canInstall,
+    this.batteryExempt,
+    this.overlay,
   });
+
+  /// Эталонная подпись CI-сборок APK (SHA-256 release.keystore из репо).
+  /// Если планшет сообщает другую — обновления поверх не установятся.
+  static const String expectedSignature =
+      'ADB11DDA61FA878E0B60363BC1CDA0EE657E04362A0FC21167E46E13454B13D4';
+
+  /// null — подпись неизвестна (старый плеер), true — совпадает с эталоном.
+  bool? get signatureOk {
+    final s = signature;
+    if (s == null || s.isEmpty) return null;
+    return s.toUpperCase() == expectedSignature;
+  }
 
   String get transport {
     if (httpAvailable && adbOnline) return 'HTTP + ADB';
@@ -282,9 +305,9 @@ class AdbManager {
       health = await DeviceHttp(ip).health();
     }
     // Батарея: из /health, если плеер её отдаёт (без ADB-команды на каждый
-    // refresh); иначе по ADB как раньше.
+    // refresh); иначе по ADB как раньше. Плеер шлёт -1, если уровень неизвестен.
     final healthBattery = health?['battery'] as int?;
-    final battery = healthBattery != null
+    final battery = (healthBattery != null && healthBattery > 0)
         ? '$healthBattery'
         : (adbOnline ? await _getBattery(id) : "??");
     // Логируем РЕАЛЬНОЕ состояние планшета — иначе в логе видны только ошибки
@@ -310,6 +333,10 @@ class AdbManager {
       playerPlaying: health?['playing'] as bool?,
       currentClip: health?['current'] as String?,
       deviceOwner: health?['deviceOwner'] as bool?,
+      signature: health?['signature'] as String?,
+      canInstall: health?['canInstall'] as bool?,
+      batteryExempt: health?['batteryExempt'] as bool?,
+      overlay: health?['overlay'] as bool?,
     );
   }
 
@@ -785,6 +812,44 @@ class AdbManager {
       _ok,
       attempts: 2,
     );
+  }
+
+  /// Чинит доступ по ADB: выдаёт app-op (разрешение «Установка неизвестных
+  /// приложений» / «Поверх других приложений») или вносит плеер в whitelist
+  /// оптимизации батареи. Возвращает успех и вывод устройства.
+  Future<({bool ok, String output})> fixAccess(String ip, String fix) async {
+    final adb = await _getAdb();
+    final id = '$ip:5555';
+    const pkg = 'com.brandmen.ads';
+    final List<String> shellCmd;
+    switch (fix) {
+      case 'canInstall':
+        shellCmd = ['appops', 'set', pkg, 'REQUEST_INSTALL_PACKAGES', 'allow'];
+        break;
+      case 'overlay':
+        shellCmd = ['appops', 'set', pkg, 'SYSTEM_ALERT_WINDOW', 'allow'];
+        break;
+      case 'batteryExempt':
+        shellCmd = ['dumpsys', 'deviceidle', 'whitelist', '+$pkg'];
+        break;
+      default:
+        return (ok: false, output: 'неизвестный фикс: $fix');
+    }
+    await _retry(
+      'ADB connect $ip',
+      () => _run(adb, ['connect', id], timeout: const Duration(seconds: 4)),
+      _ok,
+      attempts: 2,
+    );
+    final r = await _run(adb, ['-s', id, 'shell', ...shellCmd],
+        timeout: const Duration(seconds: 8));
+    final out = '${r.stdout}${r.stderr}'.trim();
+    final ok = r.exitCode == 0 &&
+        !out.toLowerCase().contains('error') &&
+        !out.toLowerCase().contains('exception');
+    AppLogger.log('[ДОСТУП] $fix → $ip: ${ok ? "OK" : "ошибка"} '
+        '${out.isEmpty ? "" : "($out)"}');
+    return (ok: ok, output: out.isEmpty ? 'выполнено' : out);
   }
 
   /// Делает плеер device owner — тогда обновления ставятся молча.
