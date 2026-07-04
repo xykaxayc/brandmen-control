@@ -39,6 +39,7 @@ public class PlayerService extends Service implements MediaServer.ControlCallbac
     private static final String ADS_DIR = "/sdcard/Movies/ads";
 
     private MediaServer mediaServer;
+    private CommandPoller commandPoller;
     private android.net.wifi.WifiManager.WifiLock wifiLock;
     private android.net.wifi.WifiManager.MulticastLock multicastLock;
     private AudioManager audioManager;
@@ -75,6 +76,14 @@ public class PlayerService extends Service implements MediaServer.ControlCallbac
         } catch (Exception e) {
             android.util.Log.e("PlayerService", "MediaServer start failed: " + e.getMessage());
         }
+        // Outbound-канал: планшет сам забирает команды с сервера (управляем даже
+        // без прямого доступа из локалки).
+        try {
+            commandPoller = new CommandPoller(this, this, mainHandler);
+            commandPoller.start();
+        } catch (Exception e) {
+            android.util.Log.e("PlayerService", "CommandPoller start failed: " + e.getMessage());
+        }
     }
 
     @Override
@@ -89,6 +98,7 @@ public class PlayerService extends Service implements MediaServer.ControlCallbac
     @Override
     public void onDestroy() {
         mainHandler.removeCallbacks(netHeal);
+        if (commandPoller != null) commandPoller.stop();
         if (mediaServer != null) mediaServer.stop();
         releaseLocks();
         super.onDestroy();

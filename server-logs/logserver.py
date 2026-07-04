@@ -27,6 +27,7 @@ import json
 import html
 import time
 import datetime
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -37,9 +38,102 @@ CERT = os.environ.get("CERT", os.path.join(os.path.dirname(os.path.abspath(__fil
 KEY = os.environ.get("KEY", os.path.join(os.path.dirname(os.path.abspath(__file__)), "key.pem"))
 os.makedirs(DIR, exist_ok=True)
 
+# --- Очередь команд для планшетов (outbound-канал) -------------------------
+# Планшет сам ходит на сервер (poll), забирает команды и шлёт ack. Это убирает
+# зависимость «ПК должен дотянуться до планшета в локалке»: пока у планшета есть
+# интернет — он управляем, IP/NAT не важны.
+CMDS_DIR = os.environ.get("CMDS_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "cmds"))
+os.makedirs(CMDS_DIR, exist_ok=True)
+CMDS_LOCK = threading.Lock()
+CMDS_KEEP = 50  # сколько последних команд на планшет хранить
+
 
 def safe(s):
     return (re.sub(r"[^A-Za-z0-9._-]", "_", (s or ""))[:120]) or "unknown"
+
+
+def _cmds_path(site):
+    return os.path.join(CMDS_DIR, safe(site) + ".json")
+
+
+def _load_cmds(site):
+    try:
+        with open(_cmds_path(site), "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {"meta": {}, "queue": []}
+
+
+def _save_cmds(site, data):
+    tmp = _cmds_path(site) + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
+    os.replace(tmp, _cmds_path(site))
+
+
+def enqueue_cmd(site, cmd, args):
+    with CMDS_LOCK:
+        data = _load_cmds(site)
+        cid = int(data.get("next_id", 1))
+        data["next_id"] = cid + 1
+        data.setdefault("queue", []).append({
+            "id": cid, "cmd": cmd, "args": args or {},
+            "status": "pending", "result": "",
+            "ts": datetime.datetime.utcnow().isoformat() + "Z",
+        })
+        data["queue"] = data["queue"][-CMDS_KEEP:]
+        _save_cmds(site, data)
+        return cid
+
+
+def poll_cmds(site, meta=None):
+    """Возвращает pending-команды и помечает их sent (чтобы не выполнить дважды)."""
+    with CMDS_LOCK:
+        data = _load_cmds(site)
+        if meta:
+            m = data.setdefault("meta", {})
+            m.update(meta)
+            m["last_seen"] = datetime.datetime.utcnow().isoformat() + "Z"
+        pending = [c for c in data.get("queue", []) if c["status"] == "pending"]
+        for c in pending:
+            c["status"] = "sent"
+        _save_cmds(site, data)
+        return [{"id": c["id"], "cmd": c["cmd"], "args": c["args"]} for c in pending]
+
+
+def ack_cmd(site, cid, ok, result):
+    with CMDS_LOCK:
+        data = _load_cmds(site)
+        for c in data.get("queue", []):
+            if c["id"] == cid:
+                c["status"] = "done" if ok else "error"
+                c["result"] = str(result or "")[:500]
+                c["ack_ts"] = datetime.datetime.utcnow().isoformat() + "Z"
+                break
+        _save_cmds(site, data)
+
+
+def list_cmd_sites():
+    out = []
+    if not os.path.isdir(CMDS_DIR):
+        return out
+    for fn in sorted(os.listdir(CMDS_DIR)):
+        if not fn.endswith(".json"):
+            continue
+        site = fn[:-5]
+        data = _load_cmds(site)
+        meta = data.get("meta", {})
+        ls = meta.get("last_seen")
+        age = None
+        if ls:
+            try:
+                t = datetime.datetime.strptime(ls, "%Y-%m-%dT%H:%M:%S.%fZ")
+                age = round((datetime.datetime.utcnow() - t).total_seconds() / 60, 1)
+            except Exception:
+                age = None
+        out.append({"site": site, "meta": meta, "age_min": age,
+                    "queue": data.get("queue", [])[-8:]})
+    return out
 
 
 def authed(handler):
@@ -103,9 +197,88 @@ class H(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
+    def _cmds_console(self, tok):
+        tok = html.escape(tok or "")
+        rows = []
+        for s in list_cmd_sites():
+            site = html.escape(s["site"])
+            meta = s.get("meta", {})
+            name = html.escape(str(meta.get("name") or meta.get("model") or s["site"]))
+            ip = html.escape(str(meta.get("ip") or ""))
+            ver = html.escape(str(meta.get("v") or ""))
+            age = s["age_min"]
+            color = "#4c4" if (age is not None and age < 2) else ("#fc0" if (age is not None and age < 10) else "#f44")
+            seen = "—" if age is None else (str(age) + " мин назад")
+            q = s.get("queue", [])[-4:]
+            qhtml = "<br>".join(
+                f"#{c['id']} {html.escape(c['cmd'])} — {html.escape(c['status'])}"
+                + (f": {html.escape(str(c.get('result','')))}" if c.get("result") else "")
+                for c in reversed(q)
+            ) or "<i>пусто</i>"
+            btns = "".join(
+                f"<button onclick=\"send('{site}','{c}')\">{label}</button> "
+                for c, label in [("launch", "▶ Запустить"), ("restart", "⟳ С начала"),
+                                 ("wake", "☀ Разбудить"), ("sleep", "🌙 Сон"),
+                                 ("reboot", "⏻ Ребут")]
+            )
+            rows.append(
+                f"<tr><td><b>{name}</b><br><small>{site}</small></td>"
+                f"<td>{ip}</td><td>{ver}</td>"
+                f"<td style='color:{color}'>{seen}</td>"
+                f"<td>{btns}</td><td><small>{qhtml}</small></td></tr>"
+            )
+        body = "".join(rows) or "<tr><td colspan=6><i>планшеты ещё не выходили на связь</i></td></tr>"
+        return (
+            "<html><head><meta charset='utf-8'><title>Brandmen — команды</title>"
+            "<meta http-equiv='refresh' content='15'>"
+            "<style>body{font-family:system-ui;background:#111;color:#ddd;padding:20px}"
+            "table{border-collapse:collapse}td{border:1px solid #333;padding:6px 10px;vertical-align:top}"
+            "button{background:#234;color:#cef;border:1px solid #456;border-radius:6px;"
+            "padding:4px 8px;margin:2px;cursor:pointer}button:hover{background:#345}</style>"
+            "<script>function send(site,cmd){fetch('/commands/enqueue?site='+encodeURIComponent(site)"
+            "+'&token=" + tok + "',{method:'POST',headers:{'Content-Type':'application/json'},"
+            "body:JSON.stringify({cmd:cmd})}).then(r=>r.ok?location.reload():alert('ошибка '+r.status))}"
+            "</script></head><body>"
+            "<h2>Brandmen — команды планшетам</h2>"
+            "<p>Планшет забирает команду в течение ~15 c. Зелёный = на связи (&lt;2 мин). Обновление каждые 15 c.</p>"
+            "<table><tr><td>Планшет</td><td>IP</td><td>Версия</td><td>На связи</td>"
+            "<td>Команды</td><td>Последние</td></tr>" + body + "</table></body></html>"
+        )
+
+    def _read_json(self):
+        n = int(self.headers.get("Content-Length", "0") or "0")
+        raw = self.rfile.read(n) if n else b""
+        try:
+            return json.loads(raw.decode("utf-8")) if raw else {}
+        except Exception:
+            return {}
+
     def do_POST(self):
         u = urlparse(self.path)
         q = parse_qs(u.query)
+        # --- Команды планшетам --------------------------------------------
+        if u.path == "/commands/enqueue":
+            if not authed(self):
+                return self._send(401, "unauthorized")
+            site = safe(q.get("site", [""])[0])
+            b = self._read_json()
+            cmd = str(b.get("cmd", "")).strip()
+            if not cmd:
+                return self._send(400, "missing cmd")
+            cid = enqueue_cmd(site, cmd, b.get("args") or {})
+            print(f"[cmd] enqueue {site} <- {cmd} #{cid}", flush=True)
+            return self._send(200, json.dumps({"id": cid}), "application/json; charset=utf-8")
+        if u.path == "/commands/ack":
+            if not authed(self):
+                return self._send(401, "unauthorized")
+            site = safe(q.get("site", [""])[0])
+            b = self._read_json()
+            try:
+                cid = int(b.get("id"))
+            except Exception:
+                return self._send(400, "missing id")
+            ack_cmd(site, cid, bool(b.get("ok", True)), b.get("result", ""))
+            return self._send(200, "ok")
         if u.path == "/live":
             # Живой поток: дописываем новые строки в один файл _live.log на сайт,
             # обрезаем по размеру, чтобы не рос бесконечно. Для отладки в реалтайме.
@@ -154,8 +327,21 @@ class H(BaseHTTPRequestHandler):
         q = parse_qs(u.query)
         if u.path == "/":
             return self._send(200, "brandmen log server")
-        if u.path in ("/list", "/view", "/dash", "/live") and not authed(self):
+        if u.path == "/commands/poll":
+            if not authed(self):
+                return self._send(401, "unauthorized")
+            site = safe(q.get("site", [""])[0])
+            meta = {k: q.get(k, [""])[0] for k in ("name", "ip", "v", "model") if q.get(k)}
+            return self._send(200, json.dumps(poll_cmds(site, meta), ensure_ascii=False),
+                              "application/json; charset=utf-8")
+        if u.path in ("/list", "/view", "/dash", "/live", "/cmds", "/commands") and not authed(self):
             return self._send(401, "unauthorized")
+        if u.path == "/commands":
+            return self._send(200, json.dumps(list_cmd_sites(), ensure_ascii=False, indent=2),
+                              "application/json; charset=utf-8")
+        if u.path == "/cmds":
+            return self._send(200, self._cmds_console(q.get("token", [""])[0]),
+                              "text/html; charset=utf-8")
         if u.path == "/live":
             site = safe(q.get("site", [""])[0])
             lf = os.path.join(DIR, site, "_live.log")
