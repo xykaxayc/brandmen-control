@@ -16,6 +16,9 @@ public class WatchdogReceiver extends BroadcastReceiver {
     @Override
     public void onReceive(Context context, Intent intent) {
         try { PlayerService.start(context); } catch (Exception ignored) {}
+        // Страховка на случай, если сервис был убит и его быстрый цикл не работал:
+        // проверяем сеть и чиним WiFi прямо из будильника.
+        try { NetworkWatchdog.checkAndHeal(context); } catch (Exception ignored) {}
         // Перепланировать следующий тик (будильник одноразовый).
         Kiosk.scheduleWatchdog(context);
     }

@@ -25,6 +25,7 @@ import java.util.*;
  *   POST /api/control/brightness?level= — set brightness (0..255)
  *   POST /api/control/launch        — reload playlist and play
  *   POST /api/control/restart       — restart playback from the first clip
+ *   POST /api/control/reboot        — reboot device (device owner only)
  *   GET  /api/control/status        — {"volume":8,"volumeMax":15,"brightness":128}
  *   GET  /api/control/now           — {"index":0,"total":3,"name":"ad.mp4","playing":true}
  *   POST /api/update/install        — upload an APK (Content-Length required) and install it
@@ -51,6 +52,8 @@ public class MediaServer {
         void onInstallApk(File apkFile);
         /** Снять с приложения статус device owner (вернуть планшет в обычный режим). */
         default void onClearDeviceOwner() {}
+        /** Перезагрузить устройство (только device owner). */
+        default void onReboot() {}
     }
 
     private final String mediaDir;
@@ -255,6 +258,12 @@ public class MediaServer {
                 mainHandler.post(callback::onClearDeviceOwner);
                 sendJson(out, 200, "{\"ok\":true}");
                 break;
+            case "reboot":
+                // Перезагрузка по команде оператора (без ADB). Сработает только на
+                // device owner; ответ отправляем ДО ребута.
+                sendJson(out, 200, "{\"ok\":true}");
+                mainHandler.post(callback::onReboot);
+                break;
             case "volume": {
                 int level = parseParam(params.get("level"), parseJsonInt(body, "level", -1));
                 if (level < 0) { sendJson(out, 400, "{\"error\":\"missing level\"}"); return; }
@@ -380,6 +389,7 @@ public class MediaServer {
                 + ",\"index\":" + idx
                 + ",\"total\":" + total
                 + ",\"deviceOwner\":" + isDeviceOwner()
+                + ",\"online\":" + NetworkWatchdog.isOnline(appContext)
                 + ",\"battery\":" + batteryLevel()
                 + ",\"signature\":\"" + signatureSha256() + "\""
                 + ",\"canInstall\":" + canRequestInstalls()
