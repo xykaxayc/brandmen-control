@@ -290,6 +290,7 @@ class DeviceHttp {
           'current': (j['current'] as String? ?? ''),
           // Опциональные поля (новые версии плеера): без них null.
           'deviceOwner': j['deviceOwner'] as bool?,
+          'online': j['online'] as bool?,
           'battery': (j['battery'] as num?)?.toInt(),
           // Диагностика доступов (плеер v0.88+): подпись APK и разрешения.
           'signature': j['signature'] as String?,
@@ -323,6 +324,8 @@ class DeviceHttp {
   Future<bool> httpSleep() => controlAction('sleep');
   Future<bool> launch() => controlAction('launch');
   Future<bool> restart() => controlAction('restart');
+  /// Перезагрузка планшета (сработает только если он device owner). Без ADB.
+  Future<bool> reboot() => controlAction('reboot');
   Future<bool> setVolumeHttp(int level) => controlAction('volume', {'level': level});
   Future<bool> setBrightnessHttp(int level) => controlAction('brightness', {'level': level});
 }

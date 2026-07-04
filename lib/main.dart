@@ -101,15 +101,28 @@ class AppSettings {
 
   static const _kBadgeKey = 'show_auto_update_badge';
 
+  /// Режим разработчика: показывает техническое управление (ребут, статусы,
+  /// диагностика). Для персонала выключен — интерфейс остаётся простым.
+  static final ValueNotifier<bool> developerMode = ValueNotifier(false);
+
+  static const _kDevKey = 'developer_mode';
+
   static Future<void> load() async {
     final prefs = await SharedPreferences.getInstance();
     showAutoUpdateBadge.value = prefs.getBool(_kBadgeKey) ?? true;
+    developerMode.value = prefs.getBool(_kDevKey) ?? false;
   }
 
   static Future<void> setShowAutoUpdateBadge(bool value) async {
     showAutoUpdateBadge.value = value;
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_kBadgeKey, value);
+  }
+
+  static Future<void> setDeveloperMode(bool value) async {
+    developerMode.value = value;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_kDevKey, value);
   }
 }
 
@@ -1189,6 +1202,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final bright =
         st != null ? st['brightness']! : await adb.getBrightness(dev.ip);
     final volMax = st?['volumeMax'] ?? 15;
+    // Техданные (версия/owner/онлайн) тянем только в режиме разработчика —
+    // персоналу лишний запрос не нужен.
+    final health = AppSettings.developerMode.value
+        ? await DeviceHttp(dev.ip).health()
+        : null;
     if (!mounted) return;
 
     int currentVol = vol;
@@ -1273,6 +1291,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                               textAlign: TextAlign.right)),
                     ],
                   ),
+                  if (AppSettings.developerMode.value)
+                    ..._devSection(dev, health, c),
                 ],
               ),
             ),
@@ -1285,6 +1305,87 @@ class _DashboardScreenState extends State<DashboardScreen> {
         ),
       ),
     );
+  }
+
+  /// Техническая секция диалога управления — видна только в режиме разработчика.
+  /// Персоналу (режим выключен) показываются лишь громкость и яркость.
+  List<Widget> _devSection(
+      SavedDevice dev, Map<String, dynamic>? health, BuildContext dialogCtx) {
+    String yn(bool? b) => b == null ? "—" : (b ? "да" : "нет");
+    final ver = (health?['version'] ?? '') as String;
+    final owner = health?['deviceOwner'] as bool?;
+    final online = health?['online'] as bool?;
+    final batt = health?['battery'] as int?;
+    final info = [
+      if (ver.isNotEmpty) "версия $ver",
+      "owner: ${yn(owner)}",
+      "онлайн: ${yn(online)}",
+      if (batt != null && batt >= 0) "батарея $batt%",
+    ].join(" · ");
+    return [
+      const SizedBox(height: 20),
+      const Divider(color: Colors.white12, height: 1),
+      const SizedBox(height: 12),
+      const Row(children: [
+        Icon(Icons.build_rounded, size: 15, color: Colors.orangeAccent),
+        SizedBox(width: 6),
+        Text("Режим разработчика",
+            style: TextStyle(
+                color: Colors.orangeAccent,
+                fontSize: 12,
+                fontWeight: FontWeight.bold)),
+      ]),
+      const SizedBox(height: 8),
+      Align(
+        alignment: Alignment.centerLeft,
+        child: Text(info,
+            style: const TextStyle(color: Colors.white54, fontSize: 12)),
+      ),
+      const SizedBox(height: 12),
+      Align(
+        alignment: Alignment.centerLeft,
+        child: OutlinedButton.icon(
+          style: OutlinedButton.styleFrom(
+            foregroundColor: Colors.redAccent,
+            side: const BorderSide(color: Colors.redAccent),
+          ),
+          icon: const Icon(Icons.restart_alt_rounded, size: 18),
+          label: const Text("Перезагрузить планшет"),
+          onPressed: () => _confirmAndReboot(dev, dialogCtx),
+        ),
+      ),
+      if (owner == false) ...[
+        const SizedBox(height: 6),
+        const Text("Ребут работает только в режиме Device Owner",
+            style: TextStyle(color: Colors.white38, fontSize: 11)),
+      ],
+    ];
+  }
+
+  Future<void> _confirmAndReboot(SavedDevice dev, BuildContext dialogCtx) async {
+    final ok = await showDialog<bool>(
+      context: dialogCtx,
+      builder: (c) => AlertDialog(
+        backgroundColor: const Color(0xFF2C2C2E),
+        title: const Text("Перезагрузить планшет?", style: TextStyle(fontSize: 16)),
+        content: Text("«${dev.name}» перезагрузится. Займёт ~1 минуту.",
+            style: const TextStyle(color: Colors.white70)),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(c, false),
+              child: const Text("Отмена")),
+          TextButton(
+              onPressed: () => Navigator.pop(c, true),
+              child: const Text("Перезагрузить",
+                  style: TextStyle(color: Colors.redAccent))),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    final done = await DeviceHttp(dev.ip).reboot();
+    if (!mounted) return;
+    _toast(done ? "Планшет перезагружается" : "Не удалось (нужен Device Owner)",
+        warn: !done);
   }
 
   Future<void> _syncAndPlay(SavedDevice dev) => _runDeviceSync(dev, launch: true);
@@ -4004,6 +4105,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       activeThumbColor: Colors.blue,
                       onChanged: (v) => AppSettings.setShowAutoUpdateBadge(v)),
                 )),
+          ]),
+          const SizedBox(height: 20),
+          _sectionCard("Режим разработчика", [
+            _settingRow(
+                "Показать техническое управление",
+                ValueListenableBuilder<bool>(
+                  valueListenable: AppSettings.developerMode,
+                  builder: (_, value, __) => Switch(
+                      value: value,
+                      activeThumbColor: Colors.orange,
+                      onChanged: (v) => AppSettings.setDeveloperMode(v)),
+                )),
+            const SizedBox(height: 8),
+            const Text(
+              "Включает в карточках планшетов ребут, статусы (owner/онлайн/версия) "
+              "и диагностику. Для персонала держите выключенным — управление проще.",
+              style: TextStyle(color: Colors.white38, fontSize: 12),
+            ),
           ]),
           const SizedBox(height: 20),
           _sectionCard("Сервер логов (диагностика)", [
