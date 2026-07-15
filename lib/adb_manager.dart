@@ -67,6 +67,23 @@ class DeviceStatus {
     if (adbOnline) return 'ADB';
     return 'offline';
   }
+
+  /// Готовность именно к автономному управлению по Wi‑Fi: плеер отвечает
+  /// напрямую, а Device Owner сможет восстановить Wi‑Fi, перезагрузиться и
+  /// применить обновление без человека у экрана.
+  bool get fullWifiControlReady =>
+      httpAvailable &&
+      deviceOwner == true &&
+      canInstall != false &&
+      batteryExempt != false;
+
+  String get wifiControlHint {
+    if (!httpAvailable) return 'нет связи с плеером';
+    if (deviceOwner != true) return 'нужно подготовить Device Owner';
+    if (canInstall == false) return 'разрешите установку обновлений';
+    if (batteryExempt == false) return 'исключите из экономии батареи';
+    return 'готов к самостоятельному восстановлению';
+  }
 }
 
 class SyncResult {
@@ -203,8 +220,8 @@ class AdbManager {
       await stdoutSub.cancel();
       await stderrSub.cancel();
 
-      return ProcessResult(
-          process.pid, exitCode, stdoutBuffer.toString(), stderrBuffer.toString());
+      return ProcessResult(process.pid, exitCode, stdoutBuffer.toString(),
+          stderrBuffer.toString());
     } on TimeoutException {
       if (process != null) {
         process.kill();
@@ -217,7 +234,6 @@ class AdbManager {
       return ProcessResult(0, -1, '', e.toString());
     }
   }
-
 
   static Future<T> _retry<T>(
     String label,
@@ -417,16 +433,28 @@ class AdbManager {
     final id = '$ip:5555';
     await _retry(
       'wakeUp $ip',
-      () => _run(adb, ['-s', id, 'shell', 'input', 'keyevent', 'KEYCODE_WAKEUP']),
+      () =>
+          _run(adb, ['-s', id, 'shell', 'input', 'keyevent', 'KEYCODE_WAKEUP']),
       _ok,
     );
     await _run(adb, ['-s', id, 'shell', 'wm', 'dismiss-keyguard']);
     if (launchPlayer) {
-      await _run(adb, ['-s', id, 'shell', 'am', 'force-stop', 'com.brandmen.ads'],
+      await _run(
+          adb, ['-s', id, 'shell', 'am', 'force-stop', 'com.brandmen.ads'],
           timeout: const Duration(seconds: 4));
-      await _run(adb,
-          ['-s', id, 'shell', 'monkey', '-p', 'com.brandmen.ads',
-           '-c', 'android.intent.category.LAUNCHER', '1'],
+      await _run(
+          adb,
+          [
+            '-s',
+            id,
+            'shell',
+            'monkey',
+            '-p',
+            'com.brandmen.ads',
+            '-c',
+            'android.intent.category.LAUNCHER',
+            '1'
+          ],
           timeout: const Duration(seconds: 6));
     }
   }
@@ -476,12 +504,18 @@ class AdbManager {
     void Function(int done, int total, String filename)? onProgress,
     bool tryHttpFirst = true,
     bool Function()? isCancelled,
+    // После перекодирования нельзя полагаться на совпадение размера: новый
+    // H.264-файл теоретически может иметь тот же размер, но другое содержимое.
+    // В этом режиме отправляем весь актуальный набор на каждый планшет.
+    bool forceUpload = false,
   }) async {
     final httpOk = tryHttpFirst && await DeviceHttp.isAvailable(ip);
     if (httpOk) {
       AppLogger.log('Sync $ip: используем HTTP (порт 5011)');
       final httpResult = await _syncViaHttp(ip, localDir,
-          onProgress: onProgress, isCancelled: isCancelled);
+          onProgress: onProgress,
+          isCancelled: isCancelled,
+          forceUpload: forceUpload);
       if (httpResult.success) return httpResult;
 
       // Пользователь нажал «Отмена» — не уходим в ADB-фолбэк.
@@ -489,7 +523,8 @@ class AdbManager {
 
       AppLogger.log(
           'Sync $ip: HTTP не завершился, пробую ADB fallback: ${httpResult.error}');
-      final adbResult = await _syncViaAdb(ip, localDir, onProgress: onProgress);
+      final adbResult = await _syncViaAdb(ip, localDir,
+          onProgress: onProgress, forceUpload: forceUpload);
       if (adbResult.success) {
         return SyncResult(
           success: true,
@@ -510,7 +545,8 @@ class AdbManager {
     AppLogger.log(tryHttpFirst
         ? 'Sync $ip: HTTP недоступен, используем ADB'
         : 'Sync $ip: используем ADB без проверки HTTP');
-    return _syncViaAdb(ip, localDir, onProgress: onProgress);
+    return _syncViaAdb(ip, localDir,
+        onProgress: onProgress, forceUpload: forceUpload);
   }
 
   Future<SyncResult> _syncViaHttp(
@@ -518,6 +554,7 @@ class AdbManager {
     String localDir, {
     void Function(int done, int total, String filename)? onProgress,
     bool Function()? isCancelled,
+    required bool forceUpload,
   }) async {
     final client = DeviceHttp(ip);
     final localFolder = Directory(localDir);
@@ -550,6 +587,14 @@ class AdbManager {
       if (Transcoder.hasMp4TwinIn(allLocalNames, name)) return false;
       return lower == 'playlist.m3u' || isVideoFile(lower);
     }).toList();
+    // Плейлист публикуем последним: он не должен ссылаться на ролики, которые
+    // ещё находятся в пути. Имена дополнительно стабилизируют порядок лога.
+    localFiles.sort((a, b) {
+      final aPlaylist = p.basename(a.path).toLowerCase() == 'playlist.m3u';
+      final bPlaylist = p.basename(b.path).toLowerCase() == 'playlist.m3u';
+      if (aPlaylist != bPlaylist) return aPlaylist ? 1 : -1;
+      return p.basename(a.path).compareTo(p.basename(b.path));
+    });
 
     // Проверка свободного места на планшете перед заливкой: считаем, сколько
     // байт реально нужно докачать, и сверяем с /health (запас 50 МБ).
@@ -588,7 +633,10 @@ class AdbManager {
       for (int i = 0; i < localFiles.length; i++) {
         if (isCancelled?.call() ?? false) {
           return SyncResult(
-              success: false, pushed: pushed, error: 'Отменено', transport: 'HTTP');
+              success: false,
+              pushed: pushed,
+              error: 'Отменено',
+              transport: 'HTTP');
         }
         final f = localFiles[i];
         final name = p.basename(f.path);
@@ -597,7 +645,9 @@ class AdbManager {
 
         onProgress?.call(i, localFiles.length, name);
 
-        if (!isPlaylist && remoteFiles[name] == localSize) continue;
+        if (!forceUpload && !isPlaylist && remoteFiles[name] == localSize) {
+          continue;
+        }
 
         AppLogger.log(
             'HTTP sync $ip: upload $name (${(localSize / 1024 / 1024).toStringAsFixed(1)} MB)');
@@ -641,6 +691,7 @@ class AdbManager {
     String ip,
     String localDir, {
     void Function(int done, int total, String filename)? onProgress,
+    required bool forceUpload,
   }) async {
     final adb = await _getAdb();
     final id = '$ip:5555';
@@ -703,7 +754,9 @@ class AdbManager {
       onProgress?.call(i, allOrdered.length, name);
 
       // playlist.m3u пушим ВСЕГДА (содержимое могло изменится при том же размере)
-      if (!isPlaylist && remoteSizes[name] == localSize) continue;
+      if (!forceUpload && !isPlaylist && remoteSizes[name] == localSize) {
+        continue;
+      }
 
       AppLogger.log(
           "Sync $ip: push $name (${(localSize / 1024 / 1024).toStringAsFixed(1)} MB)");
@@ -808,7 +861,8 @@ class AdbManager {
     final id = '$ip:5555';
     await _retry(
       'sleep $ip',
-      () => _run(adb, ['-s', id, 'shell', 'input', 'keyevent', 'KEYCODE_SLEEP']),
+      () =>
+          _run(adb, ['-s', id, 'shell', 'input', 'keyevent', 'KEYCODE_SLEEP']),
       _ok,
       attempts: 2,
     );
@@ -864,28 +918,72 @@ class AdbManager {
       _ok,
       attempts: 2,
     );
+    return _setDeviceOwnerTarget('$ip:5555');
+  }
+
+  /// Назначает owner на уже подключённом ADB-устройстве (IP или USB serial).
+  /// Вынесено отдельно: при первичной подготовке это надо сделать по USB,
+  /// *до* включения ADB по сети. Android разрешает назначить Device Owner
+  /// только на чистом устройстве, поэтому эта операция никогда не маскирует
+  /// отказ как «частично настроено».
+  Future<({bool ok, String output})> _setDeviceOwnerTarget(
+      String target) async {
+    final adb = await _getAdb();
     final r = await _run(
       adb,
       [
-        '-s', id, 'shell', 'dpm', 'set-device-owner',
+        '-s',
+        target,
+        'shell',
+        'dpm',
+        'set-device-owner',
         'com.brandmen.ads/com.brandmen.ads.DeviceAdminReceiver'
       ],
       timeout: const Duration(seconds: 10),
     );
     final out = '${r.stdout}${r.stderr}'.trim();
-    final ok = r.exitCode == 0 && out.toLowerCase().contains('success');
-    return (ok: ok, output: out.isEmpty ? 'нет вывода от устройства' : out);
+    if (r.exitCode != 0 || !out.toLowerCase().contains('success')) {
+      return (
+        ok: false,
+        output: out.isEmpty ? 'нет вывода от устройства' : out
+      );
+    }
+
+    // Ответ dpm «Success» — ещё не достаточное доказательство: сразу читаем
+    // реального владельца политики и не показываем готовность, пока не увидим
+    // именно наш пакет.
+    final check = await _run(
+        adb, ['-s', target, 'shell', 'dpm', 'get-device-owner'],
+        timeout: const Duration(seconds: 6));
+    final verified =
+        '${check.stdout}${check.stderr}'.contains('com.brandmen.ads');
+    return (
+      ok: verified,
+      output: verified
+          ? 'Device Owner назначен и подтверждён устройством'
+          : '$out\nНе удалось подтвердить статус Device Owner'
+    );
   }
 
   Future<void> setVolume(String ip, int level) async {
     if (await DeviceHttp(ip).setVolumeHttp(level)) return;
-    AppLogger.log('[КОМАНДА] громкость=$level → $ip: HTTP не прошёл, пробую ADB');
+    AppLogger.log(
+        '[КОМАНДА] громкость=$level → $ip: HTTP не прошёл, пробую ADB');
     // ADB fallback
     final adb = await _getAdb();
     final id = '$ip:5555';
     await _run(adb, [
-      '-s', id, 'shell', 'cmd', 'media_session', 'volume',
-      '--stream', '3', '--set', '${level.clamp(0, 15)}', '--show'
+      '-s',
+      id,
+      'shell',
+      'cmd',
+      'media_session',
+      'volume',
+      '--stream',
+      '3',
+      '--set',
+      '${level.clamp(0, 15)}',
+      '--show'
     ]);
   }
 
@@ -895,8 +993,19 @@ class AdbManager {
     // ADB fallback
     final adb = await _getAdb();
     final id = '$ip:5555';
-    final r = await _run(adb,
-        ['-s', id, 'shell', 'cmd', 'media_session', 'volume', '--stream', '3', '--get'],
+    final r = await _run(
+        adb,
+        [
+          '-s',
+          id,
+          'shell',
+          'cmd',
+          'media_session',
+          'volume',
+          '--stream',
+          '3',
+          '--get'
+        ],
         timeout: const Duration(seconds: 4));
     final out = r.stdout.toString() + r.stderr.toString();
     final match = RegExp(r'volume is (\d+)').firstMatch(out);
@@ -917,9 +1026,26 @@ class AdbManager {
     // ADB fallback
     final adb = await _getAdb();
     final id = '$ip:5555';
-    await _run(adb, ['-s', id, 'shell', 'settings', 'put', 'system', 'screen_brightness_mode', '0']);
-    await _run(adb, ['-s', id, 'shell', 'settings', 'put', 'system',
-        'screen_brightness', '${level.clamp(1, 255)}']);
+    await _run(adb, [
+      '-s',
+      id,
+      'shell',
+      'settings',
+      'put',
+      'system',
+      'screen_brightness_mode',
+      '0'
+    ]);
+    await _run(adb, [
+      '-s',
+      id,
+      'shell',
+      'settings',
+      'put',
+      'system',
+      'screen_brightness',
+      '${level.clamp(1, 255)}'
+    ]);
   }
 
   Future<int> getBrightness(String ip) async {
@@ -934,8 +1060,12 @@ class AdbManager {
     return int.tryParse(r.stdout.toString().trim()) ?? 128;
   }
 
-  // Регистрация: получает IP USB-планшета, включает TCP, возвращает IP
-  Future<String?> registerViaUsb(String usbDeviceId) async {
+  // Регистрация: получает IP USB-планшета, при необходимости назначает
+  // Device Owner, включает TCP и возвращает IP. Device Owner делаем именно
+  // по USB: после factory reset Wi-Fi ADB ещё не настроен.
+  Future<({String? ip, bool ownerReady, String message})> registerViaUsb(
+      String usbDeviceId,
+      {bool makeDeviceOwner = false}) async {
     final adb = await _getAdb();
     try {
       final ipResult =
@@ -952,7 +1082,25 @@ class AdbManager {
 
       if (ip == null || ip.isEmpty) {
         AppLogger.log("USB ($usbDeviceId): не удалось получить IP");
-        return null;
+        return (
+          ip: null,
+          ownerReady: false,
+          message: 'не удалось определить IP'
+        );
+      }
+
+      var ownerReady = false;
+      var message = '';
+      if (makeDeviceOwner) {
+        AppLogger.log('USB ($usbDeviceId): назначаю Device Owner...');
+        final owner = await _setDeviceOwnerTarget(usbDeviceId);
+        if (!owner.ok) {
+          // Не включаем сетевое ADB как будто планшет подготовлен: оператор
+          // сразу получает ясный результат и может сбросить устройство.
+          return (ip: ip, ownerReady: false, message: owner.output);
+        }
+        ownerReady = true;
+        message = owner.output;
       }
 
       AppLogger.log("USB ($usbDeviceId): IP=$ip, включаем TCP/IP...");
@@ -962,10 +1110,10 @@ class AdbManager {
       await _run(adb, ['connect', '$ip:5555'],
           timeout: const Duration(seconds: 5));
       AppLogger.log("USB: подключено $ip:5555");
-      return ip;
+      return (ip: ip, ownerReady: ownerReady, message: message);
     } catch (e) {
       AppLogger.log("Ошибка USB регистрации ($usbDeviceId): $e");
-      return null;
+      return (ip: null, ownerReady: false, message: '$e');
     }
   }
 
@@ -999,9 +1147,9 @@ class AdbManager {
     // синк, работает без ADB. Плеер сам покажет окно установки поверх себя.
     try {
       final apk = File(apkPath);
-      if (await apk.exists() &&
-          await DeviceHttp(ip).installApkHttp(apk)) {
-        AppLogger.log('installApk $ip: доставлен по HTTP, окно установки на планшете');
+      if (await apk.exists() && await DeviceHttp(ip).installApkHttp(apk)) {
+        AppLogger.log(
+            'installApk $ip: доставлен по HTTP, окно установки на планшете');
         return ApkInstallResult.dialogShown;
       }
       AppLogger.log('installApk $ip: HTTP-установка недоступна, пробую ADB');
@@ -1037,22 +1185,35 @@ class AdbManager {
     // «Установить обновление?» появляется поверх плеера; человеку остаётся
     // один тап, без проводника и поиска файла в «Загрузках».
     if (pushOk) {
-      AppLogger.log('installApk $ip: запускаю системный установщик на экране планшета');
-      final am = await _run(adb, [
-        '-s', id, 'shell', 'am', 'start',
-        '-a', 'android.intent.action.VIEW',
-        '-d', 'file:///sdcard/Download/BrandmenAds.apk',
-        '-t', 'application/vnd.android.package-archive',
-      ], timeout: const Duration(seconds: 10));
+      AppLogger.log(
+          'installApk $ip: запускаю системный установщик на экране планшета');
+      final am = await _run(
+          adb,
+          [
+            '-s',
+            id,
+            'shell',
+            'am',
+            'start',
+            '-a',
+            'android.intent.action.VIEW',
+            '-d',
+            'file:///sdcard/Download/BrandmenAds.apk',
+            '-t',
+            'application/vnd.android.package-archive',
+          ],
+          timeout: const Duration(seconds: 10));
       final amOut = (am.stdout.toString() + am.stderr.toString()).toLowerCase();
       final shown = am.exitCode == 0 &&
           !amOut.contains('error') &&
           !amOut.contains('exception');
       if (shown) {
-        AppLogger.log('installApk $ip: окно установки открыто на планшете (ADB)');
+        AppLogger.log(
+            'installApk $ip: окно установки открыто на планшете (ADB)');
         return ApkInstallResult.dialogShown;
       }
-      AppLogger.log('installApk $ip: установщик не открылся ($amOut) — файл в «Загрузках»');
+      AppLogger.log(
+          'installApk $ip: установщик не открылся ($amOut) — файл в «Загрузках»');
     }
 
     return pushOk
