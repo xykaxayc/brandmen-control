@@ -119,6 +119,25 @@ final class Kiosk {
     }
 
     /**
+     * Немедленный ребут по команде оператора (device owner). В отличие от
+     * авто-эскалации сети — без анти-цикла: раз попросили, значит надо. Вернёт
+     * false, если не device owner или API старше 24 (тогда перезагрузить нельзя).
+     */
+    static boolean reboot(Context ctx) {
+        try {
+            Context app = ctx.getApplicationContext();
+            if (Build.VERSION.SDK_INT < 24 || !isDeviceOwner(app)) return false;
+            DevicePolicyManager dpm = dpm(app);
+            if (dpm == null) return false;
+            dpm.reboot(admin(app));
+            return true;
+        } catch (Exception e) {
+            android.util.Log.w(TAG, "reboot: " + e.getMessage());
+            return false;
+        }
+    }
+
+    /**
      * Watchdog: неточный будильник, который периодически поднимает сервис, если
      * система его всё-таки прибила. Пробивает Doze (setAndAllowWhileIdle) и не
      * требует разрешения SCHEDULE_EXACT_ALARM. Перепланируется при каждом срабатывании.

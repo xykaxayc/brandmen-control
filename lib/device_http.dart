@@ -288,6 +288,15 @@ class DeviceHttp {
           'index': (j['index'] as num? ?? -1).toInt(),
           'total': (j['total'] as num? ?? 0).toInt(),
           'current': (j['current'] as String? ?? ''),
+          // Опциональные поля (новые версии плеера): без них null.
+          'deviceOwner': j['deviceOwner'] as bool?,
+          'online': j['online'] as bool?,
+          'battery': (j['battery'] as num?)?.toInt(),
+          // Диагностика доступов (плеер v0.88+): подпись APK и разрешения.
+          'signature': j['signature'] as String?,
+          'canInstall': j['canInstall'] as bool?,
+          'batteryExempt': j['batteryExempt'] as bool?,
+          'overlay': j['overlay'] as bool?,
         };
       }
     } catch (e) {
@@ -296,10 +305,27 @@ class DeviceHttp {
     return null;
   }
 
+  /// Скриншот экрана планшета (PNG) по HTTP — один запрос вместо трёх
+  /// ADB-команд (rm/screencap/pull). Возвращает null, если плеер не
+  /// поддерживает эндпоинт или недоступен — тогда вызывающий падает на ADB.
+  Future<List<int>?> screenshotPng() async {
+    try {
+      final r = await http
+          .get(Uri.parse('$_base/api/control/screenshot'))
+          .timeout(const Duration(seconds: 5));
+      if (r.statusCode == 200 && r.bodyBytes.isNotEmpty) return r.bodyBytes;
+    } catch (_) {
+      // Молча: эндпоинт опциональный, опрашивается каждые 5 минут.
+    }
+    return null;
+  }
+
   Future<bool> wake() => controlAction('wake');
   Future<bool> httpSleep() => controlAction('sleep');
   Future<bool> launch() => controlAction('launch');
   Future<bool> restart() => controlAction('restart');
+  /// Перезагрузка планшета (сработает только если он device owner). Без ADB.
+  Future<bool> reboot() => controlAction('reboot');
   Future<bool> setVolumeHttp(int level) => controlAction('volume', {'level': level});
   Future<bool> setBrightnessHttp(int level) => controlAction('brightness', {'level': level});
 }

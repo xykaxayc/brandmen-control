@@ -39,12 +39,22 @@ public class PlayerService extends Service implements MediaServer.ControlCallbac
     private static final String ADS_DIR = "/sdcard/Movies/ads";
 
     private MediaServer mediaServer;
+    private CommandPoller commandPoller;
     private android.net.wifi.WifiManager.WifiLock wifiLock;
     private android.net.wifi.WifiManager.MulticastLock multicastLock;
     private AudioManager audioManager;
     private android.app.admin.DevicePolicyManager dpm;
     private ComponentName adminComponent;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
+
+    /** Быстрый цикл само-восстановления сети, пока сервис жив (backstop — watchdog-будильник). */
+    private static final long NET_HEAL_INTERVAL_MS = 60_000L;
+    private final Runnable netHeal = new Runnable() {
+        @Override public void run() {
+            try { NetworkWatchdog.checkAndHeal(PlayerService.this); } catch (Exception ignored) {}
+            mainHandler.postDelayed(this, NET_HEAL_INTERVAL_MS);
+        }
+    };
 
     @Override
     public void onCreate() {
@@ -58,11 +68,21 @@ public class PlayerService extends Service implements MediaServer.ControlCallbac
         // Применяем kiosk-политики (если device owner) и планируем watchdog —
         // идемпотентно, повторные старты сервиса безопасны.
         try { Kiosk.applyPolicies(this); } catch (Exception ignored) {}
+        // Само-восстановление сети: сразу и затем раз в минуту, пока сервис жив.
+        mainHandler.postDelayed(netHeal, NET_HEAL_INTERVAL_MS);
         try {
             mediaServer = new MediaServer(this, ADS_DIR, this);
             mediaServer.start();
         } catch (Exception e) {
             android.util.Log.e("PlayerService", "MediaServer start failed: " + e.getMessage());
+        }
+        // Outbound-канал: планшет сам забирает команды с сервера (управляем даже
+        // без прямого доступа из локалки).
+        try {
+            commandPoller = new CommandPoller(this, this, mainHandler);
+            commandPoller.start();
+        } catch (Exception e) {
+            android.util.Log.e("PlayerService", "CommandPoller start failed: " + e.getMessage());
         }
     }
 
@@ -77,6 +97,8 @@ public class PlayerService extends Service implements MediaServer.ControlCallbac
 
     @Override
     public void onDestroy() {
+        mainHandler.removeCallbacks(netHeal);
+        if (commandPoller != null) commandPoller.stop();
         if (mediaServer != null) mediaServer.stop();
         releaseLocks();
         super.onDestroy();
@@ -209,6 +231,11 @@ public class PlayerService extends Service implements MediaServer.ControlCallbac
     @Override public void onClearDeviceOwner() {
         boolean ok = Kiosk.clearDeviceOwner(this);
         android.util.Log.w("PlayerService", "clearDeviceOwner: " + ok);
+    }
+
+    @Override public void onReboot() {
+        boolean ok = Kiosk.reboot(this);
+        android.util.Log.w("PlayerService", "reboot: " + ok);
     }
 
     @Override public void onSleep() {

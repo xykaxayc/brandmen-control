@@ -56,12 +56,14 @@ jobs:
       # FFmpeg и ADB не меняются между сборками — кэшируем, чтобы не качать
       # каждый раз (раньше это занимало ~6 мин и ~1 мин соответственно).
       # Чтобы обновить бинарник — поднять версию в ключе кэша (…-v1 → -v2).
+      # v2: помимо ffmpeg.exe кэшируем и ffprobe.exe (нужен для проверки кодека
+      # внутри .mp4). Обновление бинарников — поднять версию ключа (…-v2 → -v3).
       - name: Cache FFmpeg
         id: cache-ffmpeg
         uses: actions/cache@v4
         with:
           path: tools-cache/ffmpeg
-          key: ffmpeg-win64-gpl-v1
+          key: ffmpeg-win64-gpl-v2
 
       - name: Download FFmpeg
         if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
@@ -73,6 +75,8 @@ jobs:
           New-Item -ItemType Directory -Force -Path 'tools-cache\ffmpeg'
           $ffmpeg = Get-ChildItem -Path 'ffmpeg-dist' -Filter 'ffmpeg.exe' -Recurse | Select-Object -First 1
           Copy-Item $ffmpeg.FullName 'tools-cache\ffmpeg\ffmpeg.exe'
+          $ffprobe = Get-ChildItem -Path 'ffmpeg-dist' -Filter 'ffprobe.exe' -Recurse | Select-Object -First 1
+          Copy-Item $ffprobe.FullName 'tools-cache\ffmpeg\ffprobe.exe'
           Remove-Item 'ffmpeg.zip','ffmpeg-dist' -Recurse -Force
 
       - name: Cache ADB platform-tools
@@ -97,6 +101,7 @@ jobs:
           $rel = 'build\windows\x64\runner\Release'
           New-Item -ItemType Directory -Force -Path "$rel\ffmpeg"
           Copy-Item 'tools-cache\ffmpeg\ffmpeg.exe' "$rel\ffmpeg\ffmpeg.exe" -Force
+          Copy-Item 'tools-cache\ffmpeg\ffprobe.exe' "$rel\ffmpeg\ffprobe.exe" -Force
           Copy-Item 'tools-cache\platform-tools' "$rel\platform-tools" -Recurse -Force
 
       - name: Zip release

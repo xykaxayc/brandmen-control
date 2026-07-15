@@ -13,6 +13,7 @@ import 'package:desktop_drop/desktop_drop.dart';
 import 'server.dart';
 import 'discovery.dart';
 import 'adb_manager.dart';
+import 'device_http.dart';
 import 'logger.dart';
 import 'tray_manager.dart';
 import 'device_storage.dart';
@@ -90,7 +91,6 @@ void _startLogAutoUpload() {
   });
 }
 
-
 /// Глобальные UI-настройки, на которые экраны реагируют вживую.
 class AppSettings {
   /// Показывать бейдж «не ставит обновления сам» на карточках планшетов,
@@ -100,15 +100,28 @@ class AppSettings {
 
   static const _kBadgeKey = 'show_auto_update_badge';
 
+  /// Режим разработчика: показывает техническое управление (ребут, статусы,
+  /// диагностика). Для персонала выключен — интерфейс остаётся простым.
+  static final ValueNotifier<bool> developerMode = ValueNotifier(false);
+
+  static const _kDevKey = 'developer_mode';
+
   static Future<void> load() async {
     final prefs = await SharedPreferences.getInstance();
     showAutoUpdateBadge.value = prefs.getBool(_kBadgeKey) ?? true;
+    developerMode.value = prefs.getBool(_kDevKey) ?? false;
   }
 
   static Future<void> setShowAutoUpdateBadge(bool value) async {
     showAutoUpdateBadge.value = value;
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_kBadgeKey, value);
+  }
+
+  static Future<void> setDeveloperMode(bool value) async {
+    developerMode.value = value;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_kDevKey, value);
   }
 }
 
@@ -124,7 +137,6 @@ Future<void> _startServer() async {
   }
   DiscoveryBeacon().start();
 }
-
 
 class BrandmenApp extends StatelessWidget {
   const BrandmenApp({super.key});
@@ -204,8 +216,7 @@ class _MainScreenState extends State<MainScreen> {
     }
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text("Лог: $path"),
-          duration: const Duration(seconds: 6)));
+          content: Text("Лог: $path"), duration: const Duration(seconds: 6)));
     }
   }
 
@@ -218,7 +229,8 @@ class _MainScreenState extends State<MainScreen> {
       if (mounted) setState(() {});
     });
     _checkForUpdate();
-    _regSub = BrandmenServer.instance?.onDeviceRegistered.listen(_onDeviceRegistered);
+    _regSub =
+        BrandmenServer.instance?.onDeviceRegistered.listen(_onDeviceRegistered);
   }
 
   Future<void> _onDeviceRegistered(DeviceRegistration reg) async {
@@ -362,12 +374,22 @@ class _MainScreenState extends State<MainScreen> {
       ),
     );
 
+    // Колбэк прилетает на каждый сетевой чанк (сотни раз в секунду) —
+    // перерисовываем диалог не чаще ~10 раз/с. Фазы после загрузки
+    // (распаковка/применение, progress ≥ 0.86) показываем всегда.
+    var lastDialogUpdate = DateTime.fromMillisecondsSinceEpoch(0);
     AppUpdater.downloadAndApply(info, (p, s) {
       if (!mounted || cancelledByUser) return;
       progress = p;
       status = s;
+      if (p < 0.86) {
+        final now = DateTime.now();
+        if (now.difference(lastDialogUpdate).inMilliseconds < 100) return;
+        lastDialogUpdate = now;
+      }
       setDialog?.call(() {});
-    }, cancel: cancel).then((ok) {
+    }, cancel: cancel)
+        .then((ok) {
       if (cancelledByUser) return; // диалог уже закрыт крестиком
       if (!ok && mounted) {
         Navigator.of(context, rootNavigator: true).pop();
@@ -384,7 +406,8 @@ class _MainScreenState extends State<MainScreen> {
         backgroundColor: const Color(0xFF2C2C2E),
         title: const Row(
           children: [
-            Icon(Icons.error_outline_rounded, color: Colors.redAccent, size: 22),
+            Icon(Icons.error_outline_rounded,
+                color: Colors.redAccent, size: 22),
             SizedBox(width: 10),
             Text('Не удалось обновить', style: TextStyle(fontSize: 17)),
           ],
@@ -412,7 +435,8 @@ class _MainScreenState extends State<MainScreen> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(c),
-            child: const Text('Закрыть', style: TextStyle(color: Colors.white54)),
+            child:
+                const Text('Закрыть', style: TextStyle(color: Colors.white54)),
           ),
           ElevatedButton.icon(
             onPressed: () {
@@ -518,9 +542,7 @@ class _MainScreenState extends State<MainScreen> {
                 const SizedBox(height: 4),
                 const Text("v$kAppVersion",
                     style: TextStyle(
-                        fontSize: 10,
-                        color: Colors.white54,
-                        letterSpacing: 1)),
+                        fontSize: 10, color: Colors.white54, letterSpacing: 1)),
                 const SizedBox(height: 46),
                 _navItem(0, Icons.grid_view_rounded, "Планшеты"),
                 _navItem(1, Icons.play_circle_fill_rounded, "Медиатека"),
@@ -637,8 +659,7 @@ class _MainScreenState extends State<MainScreen> {
                               ? Colors.white70
                               : Colors.white60,
                       fontSize: 14,
-                      fontWeight:
-                          active ? FontWeight.w600 : FontWeight.normal),
+                      fontWeight: active ? FontWeight.w600 : FontWeight.normal),
                   child: Text(label),
                 ),
               ],
@@ -683,7 +704,9 @@ class DashboardScreen extends StatefulWidget {
 String humanizeError(String? raw) {
   if (raw == null || raw.trim().isEmpty) return 'Неизвестная ошибка';
   final s = raw.toLowerCase();
-  if (s.contains('timeout') || s.contains('timed out') || s.contains('deadline')) {
+  if (s.contains('timeout') ||
+      s.contains('timed out') ||
+      s.contains('deadline')) {
     return 'Планшет не ответил вовремя — проверьте, что он включён и в сети';
   }
   if (s.contains('certificate') || s.contains('handshake')) {
@@ -701,7 +724,8 @@ String humanizeError(String? raw) {
   if (s.contains('no space') || s.contains('enospc')) {
     return 'На планшете закончилось место';
   }
-  if (s.contains('adb') && !RegExp(r'[а-яё]', caseSensitive: false).hasMatch(raw)) {
+  if (s.contains('adb') &&
+      !RegExp(r'[а-яё]', caseSensitive: false).hasMatch(raw)) {
     return 'Связь по USB (ADB) недоступна — работаем по сети';
   }
   // Уже человеческое русское сообщение — оставляем как есть.
@@ -776,8 +800,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   /// Через [after] убирает терминальный статус (успех/ошибка), если его не
   /// сменила новая операция. Сравнение по identity — чтобы не стереть свежий.
-  void _clearOpLater(String ip,
-      {Duration after = const Duration(seconds: 5)}) {
+  void _clearOpLater(String ip, {Duration after = const Duration(seconds: 5)}) {
     final snapshot = _ops[ip];
     if (snapshot == null) return;
     Future.delayed(after, () {
@@ -797,7 +820,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
       ..showSnackBar(SnackBar(
         content: Text(message),
         behavior: SnackBarBehavior.floating,
-        backgroundColor: warn ? Colors.orange.shade800 : const Color(0xFF333335),
+        backgroundColor:
+            warn ? Colors.orange.shade800 : const Color(0xFF333335),
         duration: const Duration(seconds: 3),
       ));
   }
@@ -805,6 +829,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   @override
   void initState() {
     super.initState();
+    _cleanupOldThumbs();
     _refresh();
     _screenshotTimer =
         Timer.periodic(const Duration(minutes: 5), (timer) => _captureAll());
@@ -830,7 +855,20 @@ class _DashboardScreenState extends State<DashboardScreen> {
     AppLogger.log('[UI] Обновление статусов: ${list.length} планшетов');
     // Карточки показываем сразу (со старым/пустым статусом), а статус каждого
     // планшета подставляем по мере готовности — не ждём, пока проверятся все.
-    if (mounted) setState(() => saved = list);
+    if (mounted) {
+      setState(() {
+        saved = list;
+        // Убираем статусы/превью удалённых планшетов — иначе счётчик
+        // «N из M в сети» врёт, а файлы превью копятся.
+        final ips = list.map((d) => d.ip).toSet();
+        statuses.removeWhere((ip, _) => !ips.contains(ip));
+        _thumbnails.removeWhere((ip, path) {
+          if (ips.contains(ip)) return false;
+          _disposeThumbFile(path);
+          return true;
+        });
+      });
+    }
     await adb.checkAll(
       list.map((d) => d.ip).toList(),
       onResult: (status) {
@@ -844,16 +882,47 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   /// Снимок экрана одного планшета (для мгновенного превью при обнаружении).
+  ///
+  /// Имя файла с меткой времени: FileImage кэширует картинку по пути, и при
+  /// перезаписи того же файла превью на карточке НЕ обновлялось до перезапуска
+  /// приложения (и AnimatedSwitcher с ключом-путём не видел смены). Новый путь
+  /// на каждый снимок решает обе проблемы; старый файл удаляем.
   Future<void> _captureOne(String ip) async {
     final tempDir = await getTemporaryDirectory();
-    final path = p.join(tempDir.path, "thumb_${ip.replaceAll('.', '_')}.png");
+    final path = p.join(tempDir.path,
+        "thumb_${ip.replaceAll('.', '_')}_${DateTime.now().millisecondsSinceEpoch}.png");
     final result = await adb.takeScreenshot(ip, path);
-    if (result != null && mounted) {
-      setState(() => _thumbnails[ip] = result);
-    }
+    if (result == null) return;
+    final old = _thumbnails[ip];
+    if (mounted) setState(() => _thumbnails[ip] = result);
+    if (old != null && old != result) _disposeThumbFile(old);
   }
 
-  Future<void> _registerViaUsb() async {
+  /// Удаляет старый файл превью и выбрасывает его из кэша декодированных
+  /// картинок (иначе растровые копии копятся в памяти).
+  void _disposeThumbFile(String path) {
+    final f = File(path);
+    FileImage(f).evict();
+    f.delete().catchError((_) => f);
+  }
+
+  /// Чистит осиротевшие thumb_*.png прошлых запусков из temp-папки.
+  Future<void> _cleanupOldThumbs() async {
+    try {
+      final tempDir = await getTemporaryDirectory();
+      final live = _thumbnails.values.toSet();
+      await for (final e in tempDir.list()) {
+        if (e is File &&
+            p.basename(e.path).startsWith('thumb_') &&
+            e.path.endsWith('.png') &&
+            !live.contains(e.path)) {
+          await e.delete().catchError((_) => e);
+        }
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _registerViaUsb({bool prepareFullWifiControl = false}) async {
     setState(() => _isRegistering = true);
     final usbDevices = await adb.getUsbDevices();
     if (!mounted) {
@@ -881,15 +950,26 @@ class _DashboardScreenState extends State<DashboardScreen> {
     int added = 0;
     for (final id in usbDevices) {
       AppLogger.log("Регистрация через USB: $id");
-      final ip = await adb.registerViaUsb(id);
+      final registration =
+          await adb.registerViaUsb(id, makeDeviceOwner: prepareFullWifiControl);
+      final ip = registration.ip;
       if (!mounted) return;
+      if (prepareFullWifiControl && !registration.ownerReady) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Планшет $id не подготовлен: ${registration.message}'),
+          backgroundColor: Colors.orange.shade800,
+        ));
+        continue;
+      }
       if (ip != null) {
         final nextIndex = (await DeviceStorage.load()).length + 1;
         await DeviceStorage.add(ip, name: "Планшет $nextIndex");
         if (!mounted) return;
         added++;
+        final ownerNote =
+            prepareFullWifiControl ? ' Полное управление по Wi‑Fi готово.' : '';
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text("Планшет $ip зарегистрирован и сохранён"),
+          content: Text("Планшет $ip зарегистрирован и сохранён.$ownerNote"),
           backgroundColor: Colors.green.shade700,
         ));
       } else {
@@ -915,14 +995,20 @@ class _DashboardScreenState extends State<DashboardScreen> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              _addOption(
-                  Icons.usb_rounded,
-                  Colors.greenAccent,
-                  "По USB",
-                  "Планшет подключён кабелем, включена отладка по USB",
-                  () {
+              _addOption(Icons.usb_rounded, Colors.greenAccent, "По USB",
+                  "Планшет подключён кабелем, включена отладка по USB", () {
                 Navigator.pop(c);
                 _registerViaUsb();
+              }),
+              const SizedBox(height: 10),
+              _addOption(
+                  Icons.admin_panel_settings_rounded,
+                  Colors.lightBlueAccent,
+                  "Полное управление по Wi‑Fi",
+                  "Чистый планшет по USB: назначит Device Owner, затем включит Wi‑Fi ADB",
+                  () {
+                Navigator.pop(c);
+                _registerViaUsb(prepareFullWifiControl: true);
               }),
               const SizedBox(height: 10),
               _addOption(
@@ -935,12 +1021,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 _startNetworkPairing();
               }),
               const SizedBox(height: 10),
-              _addOption(
-                  Icons.keyboard_rounded,
-                  Colors.white70,
-                  "Вручную по IP",
-                  "Если знаете IP-адрес планшета в сети",
-                  () {
+              _addOption(Icons.keyboard_rounded, Colors.white70,
+                  "Вручную по IP", "Если знаете IP-адрес планшета в сети", () {
                 Navigator.pop(c);
                 _addByIp();
               }),
@@ -1086,8 +1168,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         ),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(c),
-              child: const Text("Отмена")),
+              onPressed: () => Navigator.pop(c), child: const Text("Отмена")),
           TextButton(
               onPressed: () => Navigator.pop(c, controller.text.trim()),
               child: const Text("Добавить")),
@@ -1126,9 +1207,19 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Future<void> _showDeviceControls(SavedDevice dev) async {
-    final vol = await adb.getVolume(dev.ip);
-    final bright = await adb.getBrightness(dev.ip);
-    final volMax = await adb.getVolumeMax(dev.ip);
+    // Громкость/яркость/максимум приходят одним /api/control/status — раньше
+    // диалог открывался тремя одинаковыми запросами подряд. ADB-фолбэк
+    // остаётся на случай, когда HTTP недоступен.
+    final st = await DeviceHttp(dev.ip).controlStatus();
+    final vol = st != null ? st['volume']! : await adb.getVolume(dev.ip);
+    final bright =
+        st != null ? st['brightness']! : await adb.getBrightness(dev.ip);
+    final volMax = st?['volumeMax'] ?? 15;
+    // Техданные (версия/owner/онлайн) тянем только в режиме разработчика —
+    // персоналу лишний запрос не нужен.
+    final health = AppSettings.developerMode.value
+        ? await DeviceHttp(dev.ip).health()
+        : null;
     if (!mounted) return;
 
     int currentVol = vol;
@@ -1165,7 +1256,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       const SizedBox(width: 12),
                       Expanded(
                         child: Slider(
-                          value: currentVol.toDouble().clamp(0, maxVol.toDouble()),
+                          value:
+                              currentVol.toDouble().clamp(0, maxVol.toDouble()),
                           min: 0,
                           max: maxVol.toDouble(),
                           divisions: maxVol,
@@ -1213,6 +1305,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                               textAlign: TextAlign.right)),
                     ],
                   ),
+                  if (AppSettings.developerMode.value)
+                    ..._devSection(dev, health, c),
                 ],
               ),
             ),
@@ -1227,7 +1321,91 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  Future<void> _syncAndPlay(SavedDevice dev) => _runDeviceSync(dev, launch: true);
+  /// Техническая секция диалога управления — видна только в режиме разработчика.
+  /// Персоналу (режим выключен) показываются лишь громкость и яркость.
+  List<Widget> _devSection(
+      SavedDevice dev, Map<String, dynamic>? health, BuildContext dialogCtx) {
+    String yn(bool? b) => b == null ? "—" : (b ? "да" : "нет");
+    final ver = (health?['version'] ?? '') as String;
+    final owner = health?['deviceOwner'] as bool?;
+    final online = health?['online'] as bool?;
+    final batt = health?['battery'] as int?;
+    final info = [
+      if (ver.isNotEmpty) "версия $ver",
+      "owner: ${yn(owner)}",
+      "онлайн: ${yn(online)}",
+      if (batt != null && batt >= 0) "батарея $batt%",
+    ].join(" · ");
+    return [
+      const SizedBox(height: 20),
+      const Divider(color: Colors.white12, height: 1),
+      const SizedBox(height: 12),
+      const Row(children: [
+        Icon(Icons.build_rounded, size: 15, color: Colors.orangeAccent),
+        SizedBox(width: 6),
+        Text("Режим разработчика",
+            style: TextStyle(
+                color: Colors.orangeAccent,
+                fontSize: 12,
+                fontWeight: FontWeight.bold)),
+      ]),
+      const SizedBox(height: 8),
+      Align(
+        alignment: Alignment.centerLeft,
+        child: Text(info,
+            style: const TextStyle(color: Colors.white54, fontSize: 12)),
+      ),
+      const SizedBox(height: 12),
+      Align(
+        alignment: Alignment.centerLeft,
+        child: OutlinedButton.icon(
+          style: OutlinedButton.styleFrom(
+            foregroundColor: Colors.redAccent,
+            side: const BorderSide(color: Colors.redAccent),
+          ),
+          icon: const Icon(Icons.restart_alt_rounded, size: 18),
+          label: const Text("Перезагрузить планшет"),
+          onPressed: () => _confirmAndReboot(dev, dialogCtx),
+        ),
+      ),
+      if (owner == false) ...[
+        const SizedBox(height: 6),
+        const Text("Ребут работает только в режиме Device Owner",
+            style: TextStyle(color: Colors.white38, fontSize: 11)),
+      ],
+    ];
+  }
+
+  Future<void> _confirmAndReboot(
+      SavedDevice dev, BuildContext dialogCtx) async {
+    final ok = await showDialog<bool>(
+      context: dialogCtx,
+      builder: (c) => AlertDialog(
+        backgroundColor: const Color(0xFF2C2C2E),
+        title: const Text("Перезагрузить планшет?",
+            style: TextStyle(fontSize: 16)),
+        content: Text("«${dev.name}» перезагрузится. Займёт ~1 минуту.",
+            style: const TextStyle(color: Colors.white70)),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(c, false),
+              child: const Text("Отмена")),
+          TextButton(
+              onPressed: () => Navigator.pop(c, true),
+              child: const Text("Перезагрузить",
+                  style: TextStyle(color: Colors.redAccent))),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    final done = await DeviceHttp(dev.ip).reboot();
+    if (!mounted) return;
+    _toast(done ? "Планшет перезагружается" : "Не удалось (нужен Device Owner)",
+        warn: !done);
+  }
+
+  Future<void> _syncAndPlay(SavedDevice dev) =>
+      _runDeviceSync(dev, launch: true);
   Future<void> _syncOnly(SavedDevice dev) => _runDeviceSync(dev, launch: false);
 
   /// Синхронизация (и опц. запуск) одного планшета — БЕЗ модалки: весь прогресс
@@ -1239,18 +1417,33 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (_ops[ip]?.isBusy ?? false) return;
     _cancel.remove(ip);
     bool cancelled() => _cancel.contains(ip);
-    AppLogger.log('[UI] Нажато: ${launch ? "Синхронизировать и играть" : "Синхронизировать"} '
+    AppLogger.log(
+        '[UI] Нажато: ${launch ? "Синхронизировать и играть" : "Синхронизировать"} '
         '— ${dev.name} ($ip)');
 
     _setOp(ip, const DeviceOp.busy("Подключение…"));
     final mediaDir = await MediaConfig.resolveDir();
     final norm =
         await Transcoder.normalizeDir(mediaDir, onProgress: (file, i, total) {
-      _setOp(ip,
-          DeviceOp.busy("Конвертация $i/$total", progress: total > 0 ? i / total : null));
+      _setOp(
+          ip,
+          DeviceOp.busy("Конвертация $i/$total",
+              progress: total > 0 ? i / total : null));
     });
     if (cancelled()) {
       _setOp(ip, null);
+      return;
+    }
+    // Нельзя отправлять смешанный набор: если хотя бы один ролик не приведён
+    // к единому профилю, оставляем на планшете предыдущий рабочий плейлист.
+    if (norm.ffmpegMissing || norm.failed.isNotEmpty) {
+      _setOp(
+          ip,
+          DeviceOp.error(norm.ffmpegMissing
+              ? 'Нужен ffmpeg для подготовки видео'
+              : 'Не удалось подготовить: ${norm.failed.join(', ')}'));
+      _clearOpLater(ip, after: const Duration(seconds: 10));
+      if (norm.ffmpegMissing) await _showFfmpegMissingDialog();
       return;
     }
 
@@ -1259,10 +1452,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
       mediaDir,
       tryHttpFirst: statuses[ip]?.httpAvailable ?? true,
       isCancelled: cancelled,
+      forceUpload: norm.converted.isNotEmpty,
       onProgress: (done, total, file) {
         if (file.isNotEmpty) {
-          _setOp(ip,
-              DeviceOp.busy("$done/$total", progress: total > 0 ? done / total : null));
+          _setOp(
+              ip,
+              DeviceOp.busy("$done/$total",
+                  progress: total > 0 ? done / total : null));
         }
       },
     );
@@ -1338,7 +1534,25 @@ class _DashboardScreenState extends State<DashboardScreen> {
           })
         : null;
 
+    // Общая папка должна быть либо полностью подготовлена, либо не отправлена
+    // никому: иначе часть планшетов получила бы новый набор, а часть — старый.
+    if (sync && (norm?.ffmpegMissing == true || norm!.failed.isNotEmpty)) {
+      final normalization = norm;
+      final reason = normalization!.ffmpegMissing
+          ? 'Нужен ffmpeg для подготовки видео'
+          : 'Не удалось подготовить: ${normalization.failed.join(', ')}';
+      for (final dev in online) {
+        _setOp(dev.ip, DeviceOp.error(reason));
+        _clearOpLater(dev.ip, after: const Duration(seconds: 10));
+      }
+      if (normalization.ffmpegMissing) await _showFfmpegMissingDialog();
+      return;
+    }
+
     int failed = 0;
+    // Фаза 1: файлы — последовательно (WiFi-канал общий, параллельная заливка
+    // не ускоряет). Планшеты, которым нужен запуск, копим на фазу 2.
+    final toLaunch = <(SavedDevice, SyncResult)>[];
     for (final dev in online) {
       if (!mounted) return;
       final ip = dev.ip;
@@ -1356,6 +1570,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           mediaDir,
           tryHttpFirst: statuses[ip]?.httpAvailable ?? true,
           isCancelled: () => _bulkCancel,
+          forceUpload: norm?.converted.isNotEmpty ?? false,
           onProgress: (done, total, file) {
             if (file.isEmpty) return;
             _setOp(
@@ -1365,7 +1580,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
           },
         );
       } else {
-        result = const SyncResult(success: true, pushed: [], transport: 'launch');
+        result =
+            const SyncResult(success: true, pushed: [], transport: 'launch');
       }
 
       // Отмена во время синка этого устройства — снимаем статус и выходим.
@@ -1374,31 +1590,61 @@ class _DashboardScreenState extends State<DashboardScreen> {
         continue;
       }
 
-      bool? launchOk;
-      if (launch && result.success && deviceOnline) {
-        _setOp(ip, DeviceOp.busy(mute ? "Запуск без звука…" : "Запуск…"));
-        await adb.wakeUp(ip, launchPlayer: true);
-        if (mute) await adb.setVolume(ip, 0);
-        _setOp(ip, const DeviceOp.busy("Проверка запуска…"));
-        launchOk = await adb.verifyPlaying(ip);
-      }
-
       if (!result.success) {
         _setOp(ip, DeviceOp.error(humanizeError(result.error)));
-      } else if (launchOk == false) {
-        failed++;
-        AppLogger.log('Запуск: плеер не подтвердил запуск на ${dev.name}');
-        _setOp(ip, const DeviceOp.error("Не запустился"));
+        _clearOpLater(ip, after: const Duration(seconds: 8));
+        continue;
+      }
+
+      if (launch && deviceOnline) {
+        _setOp(ip, const DeviceOp.busy("Ожидает запуска…"));
+        toLaunch.add((dev, result));
       } else {
         final base = !sync
             ? "Запущено"
             : (result.pushed.isEmpty
                 ? "Актуально"
                 : "Готово: ${result.pushed.length}");
-        _setOp(ip, DeviceOp.success(launchOk == true ? "$base ▶" : base));
+        _setOp(ip, DeviceOp.success(base));
         _captureOne(ip);
+        _clearOpLater(ip, after: const Duration(seconds: 8));
       }
-      _clearOpLater(ip, after: const Duration(seconds: 8));
+    }
+
+    // Фаза 2: запуск и проверка «реально играет» — батчами по 3 параллельно.
+    // Раньше шло строго по одному, а verifyPlaying ждёт до 30с на планшет:
+    // «Запустить все» на 6 планшетах растягивалось на минуты.
+    const launchBatch = 3;
+    for (var i = 0; i < toLaunch.length; i += launchBatch) {
+      if (!mounted) return;
+      final batch = toLaunch.skip(i).take(launchBatch);
+      await Future.wait(batch.map((entry) async {
+        final (dev, result) = entry;
+        final ip = dev.ip;
+        if (_bulkCancel) {
+          _setOp(ip, null);
+          return;
+        }
+        _setOp(ip, DeviceOp.busy(mute ? "Запуск без звука…" : "Запуск…"));
+        await adb.wakeUp(ip, launchPlayer: true);
+        if (mute) await adb.setVolume(ip, 0);
+        _setOp(ip, const DeviceOp.busy("Проверка запуска…"));
+        final launchOk = await adb.verifyPlaying(ip);
+        if (!launchOk) {
+          failed++;
+          AppLogger.log('Запуск: плеер не подтвердил запуск на ${dev.name}');
+          _setOp(ip, const DeviceOp.error("Не запустился"));
+        } else {
+          final base = !sync
+              ? "Запущено"
+              : (result.pushed.isEmpty
+                  ? "Актуально"
+                  : "Готово: ${result.pushed.length}");
+          _setOp(ip, DeviceOp.success("$base ▶"));
+          _captureOne(ip);
+        }
+        _clearOpLater(ip, after: const Duration(seconds: 8));
+      }));
     }
 
     if (failed > 0) {
@@ -1415,9 +1661,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
         backgroundColor: const Color(0xFF2C2C2E),
         title: const Text("Нужен ffmpeg"),
         content: const Text(
-          "Найдены ролики .mov/.mkv/.avi/.webm, которые могут не играть на "
-          "планшете (звук идёт, видео нет). Для автоконвертации в MP4 "
-          "установите ffmpeg:\n\n"
+          "Каждый ролик, включая .mp4, перед отправкой приводится к единому "
+          "профилю для планшетов. Для этого нужен ffmpeg:\n\n"
           "• macOS:  brew install ffmpeg\n"
           "• Windows: скачайте с ffmpeg.org и добавьте в PATH\n\n"
           "После установки повторите синхронизацию.",
@@ -1494,6 +1739,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
   @override
   Widget build(BuildContext context) {
     final onlineCount = statuses.values.where((s) => s.online).length;
+    final readyForWifiControl =
+        statuses.values.where((s) => s.fullWifiControlReady).length;
 
     return Padding(
       padding: const EdgeInsets.all(40.0),
@@ -1515,7 +1762,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           fontSize: 34,
                           fontWeight: FontWeight.w700,
                           letterSpacing: -1)),
-                  Text("$onlineCount из ${saved.length} в сети",
+                  Text(
+                      "$onlineCount из ${saved.length} в сети · "
+                      "$readyForWifiControl готовы к полному управлению",
                       style:
                           const TextStyle(color: Colors.white38, fontSize: 14)),
                 ],
@@ -1525,9 +1774,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 runSpacing: 12,
                 children: [
                   OutlinedButton.icon(
-                    onPressed: (_isRegistering || _busy)
-                        ? null
-                        : _showAddDeviceWizard,
+                    onPressed:
+                        (_isRegistering || _busy) ? null : _showAddDeviceWizard,
                     icon: _isRegistering
                         ? const SizedBox(
                             width: 16,
@@ -1618,11 +1866,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           ),
                         ),
                         SizedBox(
-                          width: 38,
-                          child: Text("${_masterBrightness * 100 ~/ 255}%",
-                              style: const TextStyle(
-                                  color: Colors.white70, fontSize: 12),
-                              textAlign: TextAlign.right)),
+                            width: 38,
+                            child: Text("${_masterBrightness * 100 ~/ 255}%",
+                                style: const TextStyle(
+                                    color: Colors.white70, fontSize: 12),
+                                textAlign: TextAlign.right)),
                       ],
                     ),
                   ),
@@ -1728,8 +1976,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             style: ElevatedButton.styleFrom(
               backgroundColor: Colors.blue,
               foregroundColor: Colors.white,
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 22, vertical: 16),
+              padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 16),
               shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(12)),
             ),
@@ -1752,194 +1999,259 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final canAct = isOnline && !_busy && !opBusy;
 
     return _HoverBuilder(
-      builder: (hovered) => AnimatedContainer(
-        duration: const Duration(milliseconds: 220),
-        curve: Curves.easeOut,
-        transform: hovered
-            ? Matrix4.translationValues(0, -3, 0)
-            : Matrix4.identity(),
-        decoration: BoxDecoration(
-          color: Colors.white.withValues(alpha: hovered ? 0.07 : 0.05),
-          borderRadius: BorderRadius.circular(24),
-          border: Border.all(
-              color: isOnline
-                  ? Colors.green.withValues(alpha: hovered ? 0.4 : 0.2)
-                  : Colors.white.withValues(alpha: 0.05)),
-          boxShadow: hovered
-              ? [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.25),
-                    blurRadius: 18,
-                    offset: const Offset(0, 6),
-                  )
-                ]
-              : null,
-        ),
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Row(
-                  children: [
-                    AnimatedContainer(
-                      duration: const Duration(milliseconds: 300),
-                      width: 10,
-                      height: 10,
-                      decoration: BoxDecoration(
-                        color: isOnline ? Colors.greenAccent : Colors.white24,
-                        shape: BoxShape.circle,
-                        boxShadow: isOnline
-                            ? [
-                                BoxShadow(
-                                  color: Colors.greenAccent
-                                      .withValues(alpha: 0.6),
-                                  blurRadius: 6,
-                                )
-                              ]
-                            : null,
+        builder: (hovered) => AnimatedContainer(
+              duration: const Duration(milliseconds: 220),
+              curve: Curves.easeOut,
+              transform: hovered
+                  ? Matrix4.translationValues(0, -3, 0)
+                  : Matrix4.identity(),
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: hovered ? 0.07 : 0.05),
+                borderRadius: BorderRadius.circular(24),
+                border: Border.all(
+                    color: isOnline
+                        ? Colors.green.withValues(alpha: hovered ? 0.4 : 0.2)
+                        : Colors.white.withValues(alpha: 0.05)),
+                boxShadow: hovered
+                    ? [
+                        BoxShadow(
+                          color: Colors.black.withValues(alpha: 0.25),
+                          blurRadius: 18,
+                          offset: const Offset(0, 6),
+                        )
+                      ]
+                    : null,
+              ),
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Row(
+                        children: [
+                          AnimatedContainer(
+                            duration: const Duration(milliseconds: 300),
+                            width: 10,
+                            height: 10,
+                            decoration: BoxDecoration(
+                              color: isOnline
+                                  ? Colors.greenAccent
+                                  : Colors.white24,
+                              shape: BoxShape.circle,
+                              boxShadow: isOnline
+                                  ? [
+                                      BoxShadow(
+                                        color: Colors.greenAccent
+                                            .withValues(alpha: 0.6),
+                                        blurRadius: 6,
+                                      )
+                                    ]
+                                  : null,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Text(
+                              isOnline
+                                  ? status?.transport ?? "Online"
+                                  : "Offline",
+                              style: TextStyle(
+                                  fontSize: 11,
+                                  color: isOnline
+                                      ? Colors.greenAccent
+                                      : Colors.white38)),
+                          _autoUpdateBadge(dev, status),
+                          _accessBadge(dev, status),
+                        ],
+                      ),
+                      if (isOnline)
+                        Row(
+                          children: [
+                            Icon(
+                                bat < 20
+                                    ? Icons.battery_alert_rounded
+                                    : Icons.battery_charging_full_rounded,
+                                size: 14,
+                                color: bat < 20
+                                    ? Colors.redAccent
+                                    : Colors.white24),
+                            const SizedBox(width: 4),
+                            Text("${status?.battery ?? "??"}%",
+                                style: TextStyle(
+                                    fontSize: 12,
+                                    color: bat < 20
+                                        ? Colors.redAccent
+                                        : Colors.white24,
+                                    fontWeight: FontWeight.bold)),
+                          ],
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Expanded(
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(12),
+                      child: AspectRatio(
+                        aspectRatio: 16 / 9,
+                        child: Stack(
+                          fit: StackFit.expand,
+                          children: [
+                            // Превью проявляется плавно при обновлении скриншота.
+                            AnimatedSwitcher(
+                              duration: const Duration(milliseconds: 350),
+                              switchInCurve: Curves.easeOut,
+                              child: _thumbnails.containsKey(dev.ip)
+                                  ? Image.file(File(_thumbnails[dev.ip]!),
+                                      fit: BoxFit.cover,
+                                      gaplessPlayback: true,
+                                      // Скриншот планшета ~1920×1200, а превью ~250px:
+                                      // без cacheWidth каждый держал бы ~9 МБ в памяти
+                                      // и тормозил декодированием полного размера.
+                                      cacheWidth: 560,
+                                      key: ValueKey(_thumbnails[dev.ip]))
+                                  : Container(
+                                      key: const ValueKey('placeholder'),
+                                      color: Colors.black26,
+                                      child: Icon(
+                                          isOnline
+                                              ? Icons.videocam_off_rounded
+                                              : Icons.wifi_off_rounded,
+                                          color: Colors.white10)),
+                            ),
+                            // Инлайн-статус операции (синк/запуск/итог) поверх превью.
+                            _opOverlay(dev),
+                          ],
+                        ),
                       ),
                     ),
-                  const SizedBox(width: 8),
-                  Text(isOnline ? status?.transport ?? "Online" : "Offline",
+                  ),
+                  const SizedBox(height: 12),
+                  Text(dev.name,
+                      style: const TextStyle(
+                          fontSize: 15, fontWeight: FontWeight.w600),
+                      overflow: TextOverflow.ellipsis),
+                  Text(dev.ip,
+                      style:
+                          const TextStyle(fontSize: 11, color: Colors.white38)),
+                  if (isOnline) ...[
+                    const SizedBox(height: 5),
+                    InkWell(
+                      onTap: () => _showDeviceOwnerHelp(dev),
+                      borderRadius: BorderRadius.circular(8),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: (status?.fullWifiControlReady == true
+                                  ? Colors.greenAccent
+                                  : Colors.orangeAccent)
+                              .withValues(alpha: 0.10),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Row(mainAxisSize: MainAxisSize.min, children: [
+                          Icon(
+                            status?.fullWifiControlReady == true
+                                ? Icons.verified_user_rounded
+                                : Icons.admin_panel_settings_outlined,
+                            size: 12,
+                            color: status?.fullWifiControlReady == true
+                                ? Colors.greenAccent
+                                : Colors.orangeAccent,
+                          ),
+                          const SizedBox(width: 5),
+                          Flexible(
+                            child: Text(
+                              status?.fullWifiControlReady == true
+                                  ? 'Полное Wi‑Fi управление'
+                                  : status?.wifiControlHint ??
+                                      'Проверяю готовность',
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 10,
+                                color: status?.fullWifiControlReady == true
+                                    ? Colors.greenAccent
+                                    : Colors.orangeAccent,
+                              ),
+                            ),
+                          ),
+                        ]),
+                      ),
+                    ),
+                  ],
+                  if (status?.playerVersion != null) ...[
+                    const SizedBox(height: 4),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(
+                            status?.playerPlaying == true
+                                ? Icons.play_circle_outline_rounded
+                                : Icons.pause_circle_outline_rounded,
+                            size: 12,
+                            color: status?.playerPlaying == true
+                                ? Colors.greenAccent
+                                : Colors.orangeAccent),
+                        const SizedBox(width: 4),
+                        Flexible(
+                          child: Text(
+                            "v${status?.playerVersion}"
+                            "${status?.freeMb != null ? " · ${status!.freeMb} МБ своб." : ""}",
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                                fontSize: 10, color: Colors.white38),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ] else if (!isOnline) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      "Не в сети",
                       style: TextStyle(
-                          fontSize: 11,
-                          color:
-                              isOnline ? Colors.greenAccent : Colors.white38)),
-                  _autoUpdateBadge(dev, status),
+                          fontSize: 10, color: Colors.redAccent.shade100),
+                    ),
+                    if (status?.lastError != null)
+                      Text(
+                        humanizeError(status?.lastError),
+                        textAlign: TextAlign.center,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style:
+                            const TextStyle(fontSize: 9, color: Colors.white30),
+                      ),
+                  ],
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      _smallAppleBtn(Icons.play_arrow_rounded,
+                          canAct ? () => _syncAndPlay(dev) : null,
+                          tooltip: "Синхронизировать плейлист и запустить"),
+                      const SizedBox(width: 8),
+                      _smallAppleBtn(Icons.sync_rounded,
+                          canAct ? () => _syncOnly(dev) : null,
+                          tooltip: "Только синхронизация (без перезапуска)"),
+                      const SizedBox(width: 8),
+                      _smallAppleBtn(Icons.volume_off_rounded,
+                          canAct ? () => _launchMuted(dev) : null,
+                          tooltip: "Запустить без звука (без синхронизации)"),
+                      const SizedBox(width: 8),
+                      _smallAppleBtn(Icons.tune_rounded,
+                          canControl ? () => _showDeviceControls(dev) : null,
+                          tooltip: "Громкость и яркость"),
+                      const SizedBox(width: 8),
+                      _smallAppleBtn(Icons.wb_sunny_rounded,
+                          canControl ? () => _wakeScreen(dev) : null,
+                          tooltip: "Включить экран"),
+                      const SizedBox(width: 8),
+                      _smallAppleBtn(Icons.power_settings_new_rounded,
+                          canControl ? () => _sleepScreen(dev) : null,
+                          tooltip: "Выключить экран"),
+                    ],
+                  )
                 ],
               ),
-              if (isOnline)
-                Row(
-                  children: [
-                    Icon(
-                        bat < 20
-                            ? Icons.battery_alert_rounded
-                            : Icons.battery_charging_full_rounded,
-                        size: 14,
-                        color: bat < 20 ? Colors.redAccent : Colors.white24),
-                    const SizedBox(width: 4),
-                    Text("${status?.battery ?? "??"}%",
-                        style: TextStyle(
-                            fontSize: 12,
-                            color: bat < 20 ? Colors.redAccent : Colors.white24,
-                            fontWeight: FontWeight.bold)),
-                  ],
-                ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Expanded(
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(12),
-              child: AspectRatio(
-                aspectRatio: 16 / 9,
-                child: Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    // Превью проявляется плавно при обновлении скриншота.
-                    AnimatedSwitcher(
-                      duration: const Duration(milliseconds: 350),
-                      switchInCurve: Curves.easeOut,
-                      child: _thumbnails.containsKey(dev.ip)
-                          ? Image.file(File(_thumbnails[dev.ip]!),
-                              fit: BoxFit.cover,
-                              gaplessPlayback: true,
-                              key: ValueKey(_thumbnails[dev.ip]))
-                          : Container(
-                              key: const ValueKey('placeholder'),
-                              color: Colors.black26,
-                              child: Icon(
-                                  isOnline
-                                      ? Icons.videocam_off_rounded
-                                      : Icons.wifi_off_rounded,
-                                  color: Colors.white10)),
-                    ),
-                    // Инлайн-статус операции (синк/запуск/итог) поверх превью.
-                    _opOverlay(dev),
-                  ],
-                ),
-              ),
-            ),
-          ),
-          const SizedBox(height: 12),
-          Text(dev.name,
-              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
-              overflow: TextOverflow.ellipsis),
-          Text(dev.ip,
-              style: const TextStyle(fontSize: 11, color: Colors.white38)),
-          if (status?.playerVersion != null) ...[
-            const SizedBox(height: 4),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(
-                    status?.playerPlaying == true
-                        ? Icons.play_circle_outline_rounded
-                        : Icons.pause_circle_outline_rounded,
-                    size: 12,
-                    color: status?.playerPlaying == true
-                        ? Colors.greenAccent
-                        : Colors.orangeAccent),
-                const SizedBox(width: 4),
-                Flexible(
-                  child: Text(
-                    "v${status?.playerVersion}"
-                    "${status?.freeMb != null ? " · ${status!.freeMb} МБ своб." : ""}",
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 10, color: Colors.white38),
-                  ),
-                ),
-              ],
-            ),
-          ] else if (!isOnline) ...[
-            const SizedBox(height: 4),
-            Text(
-              "Не в сети",
-              style: TextStyle(fontSize: 10, color: Colors.redAccent.shade100),
-            ),
-            if (status?.lastError != null)
-              Text(
-                humanizeError(status?.lastError),
-                textAlign: TextAlign.center,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 9, color: Colors.white30),
-              ),
-          ],
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              _smallAppleBtn(Icons.play_arrow_rounded,
-                  canAct ? () => _syncAndPlay(dev) : null,
-                  tooltip: "Синхронизировать плейлист и запустить"),
-              const SizedBox(width: 8),
-              _smallAppleBtn(Icons.sync_rounded,
-                  canAct ? () => _syncOnly(dev) : null,
-                  tooltip: "Только синхронизация (без перезапуска)"),
-              const SizedBox(width: 8),
-              _smallAppleBtn(Icons.volume_off_rounded,
-                  canAct ? () => _launchMuted(dev) : null,
-                  tooltip: "Запустить без звука (без синхронизации)"),
-              const SizedBox(width: 8),
-              _smallAppleBtn(Icons.tune_rounded,
-                  canControl ? () => _showDeviceControls(dev) : null,
-                  tooltip: "Громкость и яркость"),
-              const SizedBox(width: 8),
-              _smallAppleBtn(Icons.wb_sunny_rounded,
-                  canControl ? () => _wakeScreen(dev) : null,
-                  tooltip: "Включить экран"),
-              const SizedBox(width: 8),
-              _smallAppleBtn(Icons.power_settings_new_rounded,
-                  canControl ? () => _sleepScreen(dev) : null,
-                  tooltip: "Выключить экран"),
-            ],
-          )
-        ],
-      ),
-    ));
+            ));
   }
 
   /// Инлайн-оверлей операции поверх превью карточки: прогресс синка/запуска,
@@ -1983,7 +2295,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       textAlign: TextAlign.center,
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontSize: 11, color: Colors.white)),
+                      style:
+                          const TextStyle(fontSize: 11, color: Colors.white)),
                   // Отмена доступна для одиночной операции (в массовой — кнопка
                   // «Остановить» на панели).
                   if (op.isBusy && !_busy) ...[
@@ -1991,7 +2304,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     InkWell(
                       onTap: () => _cancelDeviceOp(dev.ip),
                       child: const Padding(
-                        padding: EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                        padding:
+                            EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                         child: Text("Отмена",
                             style: TextStyle(
                                 fontSize: 11, color: Colors.lightBlueAccent)),
@@ -2011,8 +2325,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   /// Помощник: сделать планшет device owner, чтобы обновления ставились молча.
   Future<void> _showDeviceOwnerHelp(SavedDevice dev) async {
-    const cmd =
-        "adb shell dpm set-device-owner com.brandmen.ads/com.brandmen.ads.DeviceAdminReceiver";
+    final status = statuses[dev.ip];
+    final adbReady = status?.adbOnline == true;
+    final directReady = status?.httpAvailable == true;
     await showDialog(
       context: context,
       builder: (c) => AlertDialog(
@@ -2023,33 +2338,51 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 color: Colors.orangeAccent, size: 22),
             const SizedBox(width: 10),
             Expanded(
-                child: Text("Авто-обновление: ${dev.name}",
+                child: Text("Полное управление: ${dev.name}",
                     style: const TextStyle(fontSize: 16))),
           ],
         ),
-        content: const SizedBox(
+        content: SizedBox(
           width: 460,
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                "Этот планшет не device owner — поэтому обновления APK не "
-                "ставятся сами (нужен ручной тап «Установить»).\n\n"
-                "Сделать device owner можно, только пока на планшете НЕТ "
-                "аккаунтов (Google и т.п.). Если аккаунт уже добавлен — нужен "
-                "factory reset, затем эта команда до добавления аккаунтов.",
+              const Text(
+                "Здесь планшет получает право сам восстановить Wi‑Fi, "
+                "перезагрузиться и поставить обновление. Это не просто "
+                "подключение к сети.",
                 style: TextStyle(color: Colors.white70, fontSize: 13),
               ),
-              SizedBox(height: 12),
-              Text("Команда (выполнить вручную при USB-подключении):",
-                  style: TextStyle(color: Colors.white54, fontSize: 12)),
-              SizedBox(height: 4),
-              SelectableText(cmd,
-                  style: TextStyle(
-                      color: Colors.lightBlueAccent,
-                      fontSize: 12,
-                      fontFamily: 'monospace')),
+              const SizedBox(height: 16),
+              _ownerStep(
+                  '1',
+                  'Плеер доступен по Wi‑Fi',
+                  directReady,
+                  directReady
+                      ? 'планшет отвечает'
+                      : 'проверьте питание и Wi‑Fi'),
+              _ownerStep(
+                  '2',
+                  'ADB по сети доступен',
+                  adbReady,
+                  adbReady
+                      ? 'можно подтвердить настройку'
+                      : 'нужен USB-кабель или уже включённый Wi‑Fi ADB'),
+              _ownerStep(
+                  '3',
+                  'Device Owner назначен',
+                  status?.deviceOwner == true,
+                  status?.deviceOwner == true
+                      ? 'полное управление включено'
+                      : 'только на чистом планшете без аккаунтов'),
+              const SizedBox(height: 10),
+              const Text(
+                'Если на планшете уже добавлен Google-аккаунт, Android не даст '
+                'назначить владельца. Сначала сбросьте планшет, подключите USB '
+                'и выберите «Полное управление по Wi‑Fi» при добавлении.',
+                style: TextStyle(color: Colors.orangeAccent, fontSize: 11),
+              ),
             ],
           ),
         ),
@@ -2059,19 +2392,51 @@ class _DashboardScreenState extends State<DashboardScreen> {
               child: const Text("Закрыть",
                   style: TextStyle(color: Colors.white54))),
           ElevatedButton.icon(
-            onPressed: () {
-              Navigator.pop(c);
-              _runSetDeviceOwner(dev);
-            },
+            onPressed: adbReady && status?.deviceOwner != true
+                ? () {
+                    Navigator.pop(c);
+                    _runSetDeviceOwner(dev);
+                  }
+                : null,
             icon: const Icon(Icons.play_arrow_rounded, size: 18),
-            label: const Text("Выполнить по ADB"),
+            label: Text(status?.deviceOwner == true
+                ? 'Уже настроен'
+                : (adbReady ? 'Назначить владельца' : 'Нужен ADB')),
             style: ElevatedButton.styleFrom(
               backgroundColor: Colors.blue,
               foregroundColor: Colors.white,
-              shape:
-                  RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10)),
             ),
           ),
+        ],
+      ),
+    );
+  }
+
+  Widget _ownerStep(String number, String title, bool ok, String detail) {
+    final color = ok ? Colors.greenAccent : Colors.orangeAccent;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 9),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          CircleAvatar(
+            radius: 11,
+            backgroundColor: color.withValues(alpha: 0.18),
+            child: Text(number, style: TextStyle(color: color, fontSize: 11)),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child:
+                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(title, style: const TextStyle(fontSize: 13)),
+              Text(detail,
+                  style: const TextStyle(color: Colors.white38, fontSize: 11)),
+            ]),
+          ),
+          Icon(ok ? Icons.check_circle_rounded : Icons.pending_outlined,
+              size: 18, color: color),
         ],
       ),
     );
@@ -2110,6 +2475,209 @@ class _DashboardScreenState extends State<DashboardScreen> {
         );
       }
     }
+  }
+
+  /// Сколько проблем с доступами сообщил планшет (только явные false; null —
+  /// старый плеер без диагностики, не считаем).
+  int _accessIssueCount(DeviceStatus? s) {
+    if (s == null) return 0;
+    int n = 0;
+    if (s.signatureOk == false) n++;
+    if (s.canInstall == false) n++;
+    if (s.batteryExempt == false) n++;
+    if (s.overlay == false) n++;
+    return n;
+  }
+
+  /// Бейдж «проблемы с доступами» на карточке: появляется, когда плеер сам
+  /// сообщил, что чего-то не хватает (подпись/установка/батарея/поверх).
+  Widget _accessBadge(SavedDevice dev, DeviceStatus? status) {
+    final n = _accessIssueCount(status);
+    if (n == 0) return const SizedBox.shrink();
+    final critical = status?.signatureOk == false;
+    final color = critical ? Colors.redAccent : Colors.orangeAccent.shade100;
+    return Padding(
+      padding: const EdgeInsets.only(left: 6),
+      child: Tooltip(
+        message: critical
+            ? "Чужая подпись APK — обновления не установятся!\n"
+                "Нажмите — чек-лист доступов."
+            : "Не хватает доступов: $n.\nНажмите — чек-лист и исправление.",
+        child: InkWell(
+          onTap: () => _showAccessChecklist(dev),
+          borderRadius: BorderRadius.circular(4),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.gpp_maybe_rounded, size: 14, color: color),
+              Text("$n",
+                  style: TextStyle(
+                      fontSize: 10, color: color, fontWeight: FontWeight.bold)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Чек-лист доступов планшета: что плеер сообщил о подписи и разрешениях,
+  /// с кнопками «Исправить» по ADB там, где это возможно без рук на планшете.
+  Future<void> _showAccessChecklist(SavedDevice dev) async {
+    String? busyFix; // ключ фикса, который сейчас выполняется
+
+    await showDialog(
+      context: context,
+      builder: (c) => StatefulBuilder(builder: (c, setLocal) {
+        final st = statuses[dev.ip];
+        final adbOk = st?.adbOnline ?? false;
+
+        Future<void> runFix(String key) async {
+          setLocal(() => busyFix = key);
+          final res = await adb.fixAccess(dev.ip, key);
+          // Перечитываем /health — чек-лист и бейдж обновятся сразу.
+          final fresh = await adb.checkDevice(dev.ip);
+          if (mounted) setState(() => statuses[dev.ip] = fresh);
+          setLocal(() => busyFix = null);
+          if (!res.ok) _toast("Не удалось: ${res.output}", warn: true);
+        }
+
+        Widget row(String title, String hint, bool? ok, {String? fixKey}) {
+          final icon = ok == null
+              ? const Icon(Icons.help_outline_rounded,
+                  size: 18, color: Colors.white30)
+              : ok
+                  ? const Icon(Icons.check_circle_rounded,
+                      size: 18, color: Colors.greenAccent)
+                  : const Icon(Icons.cancel_rounded,
+                      size: 18, color: Colors.redAccent);
+          return Padding(
+            padding: const EdgeInsets.symmetric(vertical: 6),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                icon,
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(title, style: const TextStyle(fontSize: 13)),
+                      Text(ok == null ? "нет данных (старый плеер)" : hint,
+                          style: const TextStyle(
+                              fontSize: 11, color: Colors.white38)),
+                    ],
+                  ),
+                ),
+                if (ok == false && fixKey != null)
+                  busyFix == fixKey
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2))
+                      : TextButton(
+                          onPressed: (adbOk && busyFix == null)
+                              ? () => runFix(fixKey)
+                              : null,
+                          child: Text(adbOk ? "Исправить" : "нужен ADB",
+                              style: const TextStyle(fontSize: 12)),
+                        ),
+              ],
+            ),
+          );
+        }
+
+        final sigOk = st?.signatureOk;
+        return AlertDialog(
+          backgroundColor: const Color(0xFF2C2C2E),
+          title: Row(
+            children: [
+              const Icon(Icons.gpp_good_rounded,
+                  color: Colors.lightBlueAccent, size: 22),
+              const SizedBox(width: 10),
+              Expanded(
+                  child: Text("Доступы: ${dev.name}",
+                      style: const TextStyle(fontSize: 16))),
+            ],
+          ),
+          content: SizedBox(
+            width: 480,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                row(
+                    "Подпись APK",
+                    sigOk == true
+                        ? "совпадает с CI-сборкой — обновления совместимы"
+                        : "ЧУЖАЯ подпись — обновления поверх не установятся",
+                    sigOk),
+                if (sigOk == false) ...[
+                  const Padding(
+                    padding: EdgeInsets.only(left: 28, bottom: 4),
+                    child: Text(
+                      "Лечение: удалить плеер и поставить заново с ПК "
+                      "(ролики в Movies/ads сохранятся):",
+                      style: TextStyle(fontSize: 11, color: Colors.white54),
+                    ),
+                  ),
+                  const Padding(
+                    padding: EdgeInsets.only(left: 28, bottom: 6),
+                    child: SelectableText(
+                      "adb uninstall com.brandmen.ads\nзатем «Обновить APK» из Настроек",
+                      style: TextStyle(
+                          fontSize: 11,
+                          fontFamily: 'monospace',
+                          color: Colors.lightBlueAccent),
+                    ),
+                  ),
+                ],
+                row(
+                    "Установка обновлений",
+                    "разрешение «Установка неизвестных приложений» — без него "
+                        "окно обновления не появится",
+                    st?.canInstall,
+                    fixKey: 'canInstall'),
+                row(
+                    "Оптимизация батареи",
+                    "исключение из оптимизации — иначе прошивка убивает плеер "
+                        "в фоне",
+                    st?.batteryExempt,
+                    fixKey: 'batteryExempt'),
+                row(
+                    "Поверх других приложений",
+                    "нужно для вывода плеера на экран из фона (бутстрап FSI)",
+                    st?.overlay,
+                    fixKey: 'overlay'),
+                row(
+                    "Device owner",
+                    st?.deviceOwner == true
+                        ? "обновления ставятся молча, права выдаются сами"
+                        : "не owner: обновления с подтверждением (это допустимо)",
+                    st?.deviceOwner),
+                if (st?.deviceOwner == false)
+                  Padding(
+                    padding: const EdgeInsets.only(left: 28),
+                    child: TextButton(
+                      onPressed: () {
+                        Navigator.pop(c);
+                        _showDeviceOwnerHelp(dev);
+                      },
+                      child: const Text("Как сделать device owner…",
+                          style: TextStyle(fontSize: 12)),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(c),
+                child: const Text("Закрыть",
+                    style: TextStyle(color: Colors.white54))),
+          ],
+        );
+      }),
+    );
   }
 
   /// Предупреждение «планшет не ставит обновления сам» (не device owner).
@@ -2170,7 +2738,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final wrapped = enabled
         ? btn
         : MouseRegion(cursor: SystemMouseCursors.basic, child: btn);
-    return tooltip != null ? Tooltip(message: tooltip, child: wrapped) : wrapped;
+    return tooltip != null
+        ? Tooltip(message: tooltip, child: wrapped)
+        : wrapped;
   }
 }
 
@@ -2182,6 +2752,10 @@ class MediaScreen extends StatefulWidget {
 
 class _MediaScreenState extends State<MediaScreen> {
   List<File> videos = [];
+  // Размеры файлов (path → байты), заполняется в _loadVideos: build и каждый
+  // элемент списка раньше делали lengthSync() на каждый rebuild — синхронный
+  // диск-IO на каждый тик перетаскивания/выбора.
+  final Map<String, int> _sizes = {};
   late Directory _videoDir;
   bool _dragging = false;
   String? _customSourceDir;
@@ -2262,13 +2836,15 @@ class _MediaScreenState extends State<MediaScreen> {
   }
 
   Future<void> _loadVideos() async {
-    final disk = _videoDir.listSync().whereType<File>().where((f) {
+    final allOnDisk = _videoDir.listSync().whereType<File>().toList();
+    final allNames = allOnDisk.map((f) => p.basename(f.path)).toSet();
+    final disk = allOnDisk.where((f) {
       final name = p.basename(f.path);
       final lower = name.toLowerCase();
       if (lower.startsWith('.')) return false;
       if (lower == _playlistFileName) return false;
       // Не показываем исходник, если он уже сконвертирован в mp4.
-      if (Transcoder.hasMp4Twin(_videoDir.path, name)) return false;
+      if (Transcoder.hasMp4TwinIn(allNames, name)) return false;
       return isVideoFile(lower);
     }).toList();
 
@@ -2289,7 +2865,19 @@ class _MediaScreenState extends State<MediaScreen> {
     final livePaths = ordered.map((f) => f.path).toSet();
     _selected.removeWhere((path) => !livePaths.contains(path));
 
-    if (mounted) setState(() => videos = ordered);
+    final sizes = <String, int>{};
+    for (final f in ordered) {
+      sizes[f.path] = await f.length();
+    }
+
+    if (mounted) {
+      setState(() {
+        videos = ordered;
+        _sizes
+          ..clear()
+          ..addAll(sizes);
+      });
+    }
     if (savedOrder.length != ordered.length) {
       await _saveOrderAndPlaylist();
     }
@@ -2308,8 +2896,8 @@ class _MediaScreenState extends State<MediaScreen> {
     if (norm.ffmpegMissing && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         content: const Text(
-            "ffmpeg не найден — .mov/.mkv/.avi не сконвертированы и могут не "
-            "играть на планшете. Установите: brew install ffmpeg"),
+            "ffmpeg не найден — видео не подготовлены для планшетов. "
+            "Установите: brew install ffmpeg"),
         backgroundColor: Colors.orange.shade800,
         duration: const Duration(seconds: 8),
       ));
@@ -2409,7 +2997,8 @@ class _MediaScreenState extends State<MediaScreen> {
   String _pluralRoliki(int n) {
     final mod10 = n % 10, mod100 = n % 100;
     if (mod10 == 1 && mod100 != 11) return "ролик";
-    if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return "ролика";
+    if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14))
+      return "ролика";
     return "роликов";
   }
 
@@ -2512,8 +3101,8 @@ class _MediaScreenState extends State<MediaScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final totalMb =
-        videos.fold<int>(0, (s, f) => s + f.lengthSync()) / (1024 * 1024);
+    final totalMb = videos.fold<int>(0, (s, f) => s + (_sizes[f.path] ?? 0)) /
+        (1024 * 1024);
 
     return DropTarget(
       onDragEntered: (_) => setState(() => _dragging = true),
@@ -2678,8 +3267,7 @@ class _MediaScreenState extends State<MediaScreen> {
 
   /// Панель массовых действий: появляется, когда отмечен хотя бы один ролик.
   Widget _selectionBar() {
-    final allSelected =
-        videos.isNotEmpty && _selected.length == videos.length;
+    final allSelected = videos.isNotEmpty && _selected.length == videos.length;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       decoration: BoxDecoration(
@@ -2690,9 +3278,7 @@ class _MediaScreenState extends State<MediaScreen> {
       child: Row(
         children: [
           Checkbox(
-            value: allSelected
-                ? true
-                : (_selected.isEmpty ? false : null),
+            value: allSelected ? true : (_selected.isEmpty ? false : null),
             tristate: true,
             activeColor: Colors.redAccent,
             onChanged: (_) => setState(() {
@@ -2706,8 +3292,8 @@ class _MediaScreenState extends State<MediaScreen> {
             }),
           ),
           Text("Выбрано: ${_selected.length}",
-              style: const TextStyle(
-                  fontSize: 13, fontWeight: FontWeight.w600)),
+              style:
+                  const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
           const Spacer(),
           TextButton.icon(
             onPressed: () => setState(_selected.clear),
@@ -2775,7 +3361,8 @@ class _MediaScreenState extends State<MediaScreen> {
   }
 
   Widget _videoItem(File file, int index, {required Key key}) {
-    final sizeMb = (file.lengthSync() / (1024 * 1024)).toStringAsFixed(1);
+    final sizeMb =
+        ((_sizes[file.path] ?? 0) / (1024 * 1024)).toStringAsFixed(1);
     final selected = _selected.contains(file.path);
     return Container(
       key: key,
@@ -2915,7 +3502,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   void _startPairing() {
     const seconds = 30;
-    BrandmenServer.instance?.startPairing(duration: const Duration(seconds: seconds));
+    BrandmenServer.instance
+        ?.startPairing(duration: const Duration(seconds: seconds));
     setState(() {
       _pairingActive = true;
       _pairingSecondsLeft = seconds;
@@ -3685,6 +4273,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 )),
           ]),
           const SizedBox(height: 20),
+          _sectionCard("Режим разработчика", [
+            _settingRow(
+                "Показать техническое управление",
+                ValueListenableBuilder<bool>(
+                  valueListenable: AppSettings.developerMode,
+                  builder: (_, value, __) => Switch(
+                      value: value,
+                      activeThumbColor: Colors.orange,
+                      onChanged: (v) => AppSettings.setDeveloperMode(v)),
+                )),
+            const SizedBox(height: 8),
+            const Text(
+              "Включает в карточках планшетов ребут, статусы (owner/онлайн/версия) "
+              "и диагностику. Для персонала держите выключенным — управление проще.",
+              style: TextStyle(color: Colors.white38, fontSize: 12),
+            ),
+          ]),
+          const SizedBox(height: 20),
           _sectionCard("Сервер логов (диагностика)", [
             const Text(
               "Адрес сервера, куда вкладка «Логи» отправляет лог по кнопке. "
@@ -3987,7 +4593,8 @@ class _LogsScreenState extends State<LogsScreen> {
       ..showSnackBar(SnackBar(
         content: Text(msg),
         behavior: SnackBarBehavior.floating,
-        backgroundColor: warn ? Colors.orange.shade800 : const Color(0xFF333335),
+        backgroundColor:
+            warn ? Colors.orange.shade800 : const Color(0xFF333335),
         duration: const Duration(seconds: 4),
       ));
   }
@@ -4008,7 +4615,8 @@ class _LogsScreenState extends State<LogsScreen> {
     final res = await LogUploader.send(baseUrl: url, token: token);
     if (!mounted) return;
     setState(() => _sending = false);
-    _snack(res.ok ? "Лог отправлен: ${res.message}" : "Не удалось: ${res.message}",
+    _snack(
+        res.ok ? "Лог отправлен: ${res.message}" : "Не удалось: ${res.message}",
         warn: !res.ok);
   }
 
@@ -4034,7 +4642,8 @@ class _LogsScreenState extends State<LogsScreen> {
         l.contains('exception')) {
       return Colors.redAccent.shade100;
     }
-    if (l.contains('[upd]') || l.contains('обновл')) return Colors.lightBlueAccent;
+    if (l.contains('[upd]') || l.contains('обновл'))
+      return Colors.lightBlueAccent;
     if (l.contains('push') ||
         l.contains('sync') ||
         l.contains('синхрон') ||
@@ -4183,19 +4792,25 @@ class _LogsScreenState extends State<LogsScreen> {
                               TextStyle(color: Colors.white24, fontSize: 13)),
                     );
                   }
+                  // SelectionArea + Text вместо SelectableText на каждую
+                  // строку: SelectableText — тяжёлый виджет, тысячи штук
+                  // заметно тормозили rebuild при потоке логов. Выделение
+                  // (в т.ч. через несколько строк) работает через область.
                   return Scrollbar(
                     controller: _scroll,
-                    child: ListView.builder(
-                      controller: _scroll,
-                      itemCount: lines.length,
-                      itemBuilder: (_, i) => Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 1),
-                        child: SelectableText(
-                          lines[i],
-                          style: TextStyle(
-                            fontFamily: 'monospace',
-                            fontSize: 12,
-                            color: _colorFor(lines[i]),
+                    child: SelectionArea(
+                      child: ListView.builder(
+                        controller: _scroll,
+                        itemCount: lines.length,
+                        itemBuilder: (_, i) => Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 1),
+                          child: Text(
+                            lines[i],
+                            style: TextStyle(
+                              fontFamily: 'monospace',
+                              fontSize: 12,
+                              color: _colorFor(lines[i]),
+                            ),
                           ),
                         ),
                       ),
