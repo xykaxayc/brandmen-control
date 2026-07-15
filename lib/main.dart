@@ -23,11 +23,13 @@ import 'backup_manager.dart';
 import 'autostart.dart';
 import 'updater.dart';
 import 'log_uploader.dart';
+import 'brand_pack.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await AppLogger.init();
   await AppSettings.load();
+  await BrandPacks.load();
   await _startServer();
   _startLogAutoUpload();
   runApp(const BrandmenApp());
@@ -143,32 +145,42 @@ class BrandmenApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Brandmen Pro',
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        brightness: Brightness.dark,
-        fontFamily: 'Segoe UI',
-        scaffoldBackgroundColor: Colors.transparent,
-        useMaterial3: true,
+    return ValueListenableBuilder<BrandPack>(
+      valueListenable: BrandPacks.current,
+      builder: (_, pack, __) => MaterialApp(
+        title: '${pack.name} Control',
+        debugShowCheckedModeBanner: false,
+        theme: ThemeData(
+          brightness: Brightness.dark,
+          fontFamily: 'Segoe UI',
+          colorScheme: ColorScheme.dark(primary: pack.accent),
+          scaffoldBackgroundColor: Colors.transparent,
+          useMaterial3: true,
+        ),
+        home: AppleBackgroundWrapper(child: MainScreen(), accent: pack.accent),
       ),
-      home: const AppleBackgroundWrapper(child: MainScreen()),
     );
   }
 }
 
 class AppleBackgroundWrapper extends StatelessWidget {
   final Widget child;
-  const AppleBackgroundWrapper({super.key, required this.child});
+  final Color accent;
+  const AppleBackgroundWrapper(
+      {super.key, required this.child, this.accent = Colors.blue});
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      decoration: const BoxDecoration(
+      decoration: BoxDecoration(
         gradient: LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
-          colors: [Color(0xFF2C2C2E), Color(0xFF1C1C1E)],
+          colors: [
+            Color.alphaBlend(
+                accent.withValues(alpha: .16), const Color(0xFF2C2C2E)),
+            const Color(0xFF121215)
+          ],
         ),
       ),
       child: child,
@@ -507,6 +519,8 @@ class _MainScreenState extends State<MainScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final pack = BrandPacks.current.value;
+    final accent = Theme.of(context).colorScheme.primary;
     final List<Widget> screens = [
       DashboardScreen(key: _dashboardKey),
       const MediaScreen(),
@@ -528,16 +542,16 @@ class _MainScreenState extends State<MainScreen> {
             child: Column(
               children: [
                 const SizedBox(height: 30),
-                const Text("Brandmen",
-                    style: TextStyle(
+                Text(pack.name,
+                    style: const TextStyle(
                         fontSize: 22,
                         fontWeight: FontWeight.w800,
                         color: Colors.white)),
-                const Text("CONTROL",
+                Text("${pack.kind.toUpperCase()} · CONTROL",
                     style: TextStyle(
                         fontSize: 10,
                         fontWeight: FontWeight.bold,
-                        color: Colors.blue,
+                        color: accent,
                         letterSpacing: 2)),
                 const SizedBox(height: 4),
                 const Text("v$kAppVersion",
@@ -546,6 +560,7 @@ class _MainScreenState extends State<MainScreen> {
                 const SizedBox(height: 46),
                 _navItem(0, Icons.grid_view_rounded, "Планшеты"),
                 _navItem(1, Icons.play_circle_fill_rounded, "Медиатека"),
+                _brandPackPicker(pack, accent),
                 const Spacer(),
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -669,6 +684,82 @@ class _MainScreenState extends State<MainScreen> {
       ),
     );
   }
+
+  Future<void> _selectBrandPack(BrandPack pack) async {
+    await BrandPacks.select(pack);
+    final devices = await DeviceStorage.load();
+    final applied = await Future.wait(
+        devices.map((device) => DeviceHttp(device.ip).applyBrandPack(pack)));
+    final count = applied.where((ok) => ok).length;
+    AppLogger.log(
+        'Бренд-пакет ${pack.name}: применён на $count/${devices.length} планшетах');
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(devices.isEmpty
+          ? 'Пакет ${pack.name} выбран. Добавьте планшеты, чтобы применить его.'
+          : 'Пакет ${pack.name} применён: $count из ${devices.length} планшетов.'),
+    ));
+  }
+
+  Widget _brandPackPicker(BrandPack active, Color accent) => Padding(
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+        child: InkWell(
+          onTap: () => showDialog(
+            context: context,
+            builder: (c) => AlertDialog(
+              backgroundColor: const Color(0xFF202024),
+              title: const Text('Бренд-пакет'),
+              content: SizedBox(
+                  width: 360,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: BrandPacks.available
+                        .map((p) => ListTile(
+                              leading: CircleAvatar(
+                                  backgroundColor: p.accent,
+                                  child: Text(p.mark,
+                                      style: const TextStyle(
+                                          color: Colors.black,
+                                          fontWeight: FontWeight.bold))),
+                              title: Text(p.name),
+                              subtitle: Text('${p.kind} · пакет ${p.version}'),
+                              trailing: p.id == active.id
+                                  ? Icon(Icons.check_circle, color: accent)
+                                  : null,
+                              onTap: () async {
+                                Navigator.pop(c);
+                                await _selectBrandPack(p);
+                              },
+                            ))
+                        .toList(),
+                  )),
+            ),
+          ),
+          borderRadius: BorderRadius.circular(10),
+          child: Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+                border: Border.all(color: Colors.white10),
+                borderRadius: BorderRadius.circular(10)),
+            child: Row(children: [
+              CircleAvatar(
+                  radius: 12,
+                  backgroundColor: active.accent,
+                  child: Text(active.mark,
+                      style: const TextStyle(
+                          color: Colors.black,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 12))),
+              const SizedBox(width: 8),
+              Expanded(
+                  child: Text('Пакет ${active.version}',
+                      style: const TextStyle(
+                          fontSize: 11, color: Colors.white54))),
+              Icon(Icons.tune, size: 15, color: accent)
+            ]),
+          ),
+        ),
+      );
 }
 
 /// Отслеживает наведение мыши и пересобирает потомка с флагом hovered.

@@ -64,6 +64,20 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
     private android.app.admin.DevicePolicyManager dpm;
     private android.content.ComponentName adminComponent;
 
+    /** Применяется сразу после получения бренд-пакета по Wi‑Fi. */
+    void applyBranding() {
+        if (recoveryView != null) {
+            recoveryView.setText(BrandConfig.name(this) + " Ads\n\n" + BrandConfig.tagline(this)
+                    + "\n\nОжидание контента от пульта.");
+        }
+        if (controlsLayout != null) {
+            android.graphics.drawable.GradientDrawable bg = new android.graphics.drawable.GradientDrawable();
+            bg.setColor(Color.parseColor("#D90A0A0C")); bg.setCornerRadius(44);
+            bg.setStroke(1, Color.parseColor(BrandConfig.accent(this)));
+            controlsLayout.setBackground(bg);
+        }
+    }
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -127,6 +141,7 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
 
         setupUI();
         setupPlaylistUI();
+        applyBranding();
         
         videoView.setOnCompletionListener(mp -> { currentIndex++; playNext(); });
         videoView.setOnErrorListener((mp, what, extra) -> { currentIndex++; playNext(); return true; });

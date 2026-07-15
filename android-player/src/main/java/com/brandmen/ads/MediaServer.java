@@ -28,6 +28,7 @@ import java.util.*;
  *   POST /api/control/reboot        — reboot device (device owner only)
  *   GET  /api/control/status        — {"volume":8,"volumeMax":15,"brightness":128}
  *   GET  /api/control/now           — {"index":0,"total":3,"name":"ad.mp4","playing":true}
+ *   POST /api/brand-pack             — сохраняет имя и акцент бренда для интерфейса плеера
  *   POST /api/update/install        — upload an APK (Content-Length required) and install it
  *                                     (silent if device owner, otherwise one-tap confirm)
  */
@@ -199,6 +200,8 @@ public class MediaServer {
                 handleDelete(out, sanitize(path.substring(6)));
             } else if (method.equals("POST") && path.equals("/api/update/install")) {
                 handleInstallUpload(in, out, contentLength);
+            } else if (method.equals("POST") && path.equals("/api/brand-pack")) {
+                handleBrandPack(body, out);
             } else if (path.startsWith("/api/control/")) {
                 handleControl(method, path.substring("/api/control/".length()), params, body, out);
             } else {
@@ -395,7 +398,24 @@ public class MediaServer {
                 + ",\"canInstall\":" + canRequestInstalls()
                 + ",\"batteryExempt\":" + isBatteryExempt()
                 + ",\"overlay\":" + canDrawOverlays()
+                + ",\"brand\":\"" + escJson(BrandConfig.name(appContext)) + "\""
+                + ",\"accent\":\"" + escJson(BrandConfig.accent(appContext)) + "\""
                 + ",\"current\":\"" + escJson(name == null ? "" : name) + "\"}");
+    }
+
+    /** Сохраняет бренд-пакет, переданный пультом. Данные переживают перезагрузку. */
+    private void handleBrandPack(String body, OutputStream out) throws IOException {
+        if (body == null || body.trim().isEmpty()) {
+            sendText(out, 400, "Bad Request");
+            return;
+        }
+        try {
+            BrandConfig.apply(appContext, body);
+            sendJson(out, 200, "{\"ok\":true}");
+        } catch (Exception e) {
+            android.util.Log.w("MediaServer", "brand pack: " + e.getMessage());
+            sendJson(out, 400, "{\"error\":\"invalid brand pack\"}");
+        }
     }
 
     private void handleLog(OutputStream out) throws IOException {

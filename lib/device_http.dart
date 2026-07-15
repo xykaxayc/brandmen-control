@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:http/http.dart' as http;
 import 'package:path/path.dart' as p;
 import 'logger.dart';
+import 'brand_pack.dart';
 
 const int kDeviceHttpPort = 5011;
 
@@ -184,6 +185,34 @@ class DeviceHttp {
       (ok) => ok,
       attempts: 2,
     );
+  }
+
+  /// Передаёт в плеер визуальную часть бренд-пакета. Контент при этом не
+  /// перезаливается: имя и акцент сохраняются на планшете до следующей смены.
+  Future<bool> applyBrandPack(BrandPack pack) async {
+    final rgb = (pack.accent.toARGB32() & 0x00FFFFFF)
+        .toRadixString(16)
+        .padLeft(6, '0')
+        .toUpperCase();
+    try {
+      final r = await http
+          .post(
+            Uri.parse('$_base/api/brand-pack'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'name': pack.name,
+              'mark': pack.mark,
+              'accent': '#$rgb',
+              'tagline': pack.kind,
+            }),
+          )
+          .timeout(const Duration(seconds: 4));
+      AppLogger.log('Бренд-пакет ${pack.name} → $ip: HTTP ${r.statusCode}');
+      return r.statusCode == 200;
+    } catch (e) {
+      AppLogger.log('Бренд-пакет ${pack.name} → $ip: $e');
+      return false;
+    }
   }
 
   /// Скачивает файл с планшета на Mac/Windows.

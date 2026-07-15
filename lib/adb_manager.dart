@@ -7,6 +7,7 @@ import 'logger.dart';
 import 'device_http.dart';
 import 'transcoder.dart';
 import 'media_config.dart';
+import 'brand_pack.dart';
 
 class DeviceStatus {
   final String ip;
@@ -557,6 +558,12 @@ class AdbManager {
     required bool forceUpload,
   }) async {
     final client = DeviceHttp(ip);
+    // Планшет, который был офлайн в момент смены бренда, получит актуальный
+    // пакет при первой же успешной Wi‑Fi синхронизации. На старом плеере
+    // endpoint отсутствует — это не мешает обычной передаче роликов.
+    if (!await client.applyBrandPack(BrandPacks.current.value)) {
+      AppLogger.log('HTTP sync $ip: бренд-пакет пока не применён');
+    }
     final localFolder = Directory(localDir);
     if (!await localFolder.exists()) {
       return const SyncResult(

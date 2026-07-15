@@ -75,6 +75,7 @@ jobs:
             src/main/java/com/brandmen/ads/WatchdogReceiver.java \
             src/main/java/com/brandmen/ads/NetworkWatchdog.java \
             src/main/java/com/brandmen/ads/CommandPoller.java \
+            src/main/java/com/brandmen/ads/BrandConfig.java \
             src/main/java/com/brandmen/ads/MainActivity.java
 
       - name: Convert to DEX
