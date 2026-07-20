@@ -1285,9 +1285,15 @@ class AdbManager {
   // Регистрация: получает IP USB-планшета, при необходимости назначает
   // Device Owner, включает TCP и возвращает IP. Device Owner делаем именно
   // по USB: после factory reset Wi-Fi ADB ещё не настроен.
-  Future<({String? ip, bool ownerReady, String message})> registerViaUsb(
-      String usbDeviceId,
-      {bool makeDeviceOwner = false}) async {
+  Future<
+          ({
+            String? ip,
+            bool ownerReady,
+            bool adbReady,
+            bool adbPersistent,
+            String message
+          })>
+      registerViaUsb(String usbDeviceId, {bool makeDeviceOwner = false}) async {
     final adb = await _getAdb();
     try {
       final ipResult =
@@ -1307,6 +1313,8 @@ class AdbManager {
         return (
           ip: null,
           ownerReady: false,
+          adbReady: false,
+          adbPersistent: false,
           message: 'не удалось определить IP'
         );
       }
@@ -1319,23 +1327,78 @@ class AdbManager {
         if (!owner.ok) {
           // Не включаем сетевое ADB как будто планшет подготовлен: оператор
           // сразу получает ясный результат и может сбросить устройство.
-          return (ip: ip, ownerReady: false, message: owner.output);
+          return (
+            ip: ip,
+            ownerReady: false,
+            adbReady: false,
+            adbPersistent: false,
+            message: owner.output
+          );
         }
         ownerReady = true;
         message = owner.output;
       }
 
-      AppLogger.log("USB ($usbDeviceId): IP=$ip, включаем TCP/IP...");
-      await _run(adb, ['-s', usbDeviceId, 'tcpip', '5555'],
+      AppLogger.log(
+          "USB ($usbDeviceId): IP=$ip, включаем постоянный TCP/IP...");
+      await _run(adb, [
+        '-s',
+        usbDeviceId,
+        'shell',
+        'settings',
+        'put',
+        'global',
+        'adb_enabled',
+        '1'
+      ]);
+      await _run(adb, [
+        '-s',
+        usbDeviceId,
+        'shell',
+        'setprop',
+        'persist.adb.tcp.port',
+        '5555'
+      ]);
+      final persistentResult = await _run(
+          adb, ['-s', usbDeviceId, 'shell', 'getprop', 'persist.adb.tcp.port']);
+      final adbPersistent = persistentResult.stdout.toString().trim() == '5555';
+
+      final tcpResult = await _run(adb, ['-s', usbDeviceId, 'tcpip', '5555'],
           timeout: const Duration(seconds: 6));
       await Future.delayed(const Duration(seconds: 2));
-      await _run(adb, ['connect', '$ip:5555'],
+      final connectResult = await _run(adb, ['connect', '$ip:5555'],
           timeout: const Duration(seconds: 5));
-      AppLogger.log("USB: подключено $ip:5555");
-      return (ip: ip, ownerReady: ownerReady, message: message);
+      final stateResult = await _run(adb, ['-s', '$ip:5555', 'get-state'],
+          timeout: const Duration(seconds: 4));
+      final adbReady = stateResult.exitCode == 0 &&
+          stateResult.stdout.toString().trim() == 'device';
+      final tcpOutput =
+          '${tcpResult.stdout}${tcpResult.stderr}${connectResult.stdout}${connectResult.stderr}'
+              .trim();
+      final persistenceNote = adbPersistent
+          ? 'ADB по Wi‑Fi сохранён после перезагрузки.'
+          : 'Прошивка не разрешила сохранить ADB после перезагрузки; '
+              'основное управление продолжит работать через Brandmen HTTP.';
+      message = [message, persistenceNote, if (!adbReady) tcpOutput]
+          .where((part) => part.trim().isNotEmpty)
+          .join(' ');
+      AppLogger.log("USB: $ip:5555 ready=$adbReady persistent=$adbPersistent");
+      return (
+        ip: ip,
+        ownerReady: ownerReady,
+        adbReady: adbReady,
+        adbPersistent: adbPersistent,
+        message: message
+      );
     } catch (e) {
       AppLogger.log("Ошибка USB регистрации ($usbDeviceId): $e");
-      return (ip: null, ownerReady: false, message: '$e');
+      return (
+        ip: null,
+        ownerReady: false,
+        adbReady: false,
+        adbPersistent: false,
+        message: '$e'
+      );
     }
   }
 

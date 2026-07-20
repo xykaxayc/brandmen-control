@@ -10,6 +10,7 @@ import 'package:crypto/crypto.dart';
 import 'package:nsd/nsd.dart';
 import 'media_config.dart';
 import 'transcoder.dart';
+import 'device_storage.dart';
 
 const int kServerPort = 5010;
 
@@ -48,11 +49,13 @@ class DeviceRegistration {
   final String name;
   final String? deviceId;
   final String? apiToken;
+  final bool isReconnect;
   DeviceRegistration({
     required this.ip,
     required this.name,
     this.deviceId,
     this.apiToken,
+    this.isReconnect = false,
   });
 }
 
@@ -145,10 +148,6 @@ class BrandmenServer {
       }
 
       if (request.method == 'POST' && path == 'api/register') {
-        if (!pairingActive) {
-          return Response.forbidden('{"error":"pairing_off"}',
-              headers: {'content-type': 'application/json'});
-        }
         final connInfo =
             request.context['shelf.io.connection_info'] as HttpConnectionInfo?;
         final clientIp = connInfo?.remoteAddress.address ?? '';
@@ -166,17 +165,25 @@ class BrandmenServer {
             apiToken = (json['api_token'] as String?)?.trim();
           }
         } catch (_) {}
+        final knownDevice =
+            await DeviceStorage.authenticate(deviceId, apiToken);
+        if (!pairingActive && !knownDevice) {
+          return Response.forbidden('{"error":"pairing_off"}',
+              headers: {'content-type': 'application/json'});
+        }
         if (clientIp.isNotEmpty) {
-          AppLogger.log(
-              'Устройство зарегистрировалось: $clientIp ($deviceName)');
+          AppLogger.log(knownDevice
+              ? 'Планшет восстановил связь: $clientIp ($deviceName)'
+              : 'Устройство зарегистрировалось: $clientIp ($deviceName)');
           _registrationController.add(DeviceRegistration(
             ip: clientIp,
             name: deviceName,
             deviceId: deviceId,
             apiToken: apiToken,
+            isReconnect: knownDevice,
           ));
         }
-        return Response.ok('{"ok":true}',
+        return Response.ok(jsonEncode({'ok': true, 'reconnected': knownDevice}),
             headers: {'content-type': 'application/json'});
       }
 

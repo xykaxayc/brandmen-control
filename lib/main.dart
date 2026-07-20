@@ -294,19 +294,22 @@ class _MainScreenState extends State<MainScreen> {
       apiToken: reg.apiToken,
     );
     DeviceHttp.registerToken(reg.ip, reg.apiToken);
-    BrandmenServer.instance?.stopPairing();
-
-    _settingsKey.currentState?._stopPairing();
-    // Устанавливаем ADB-соединение по WiFi сразу после сопряжения
-    adb.checkDevice(reg.ip);
+    if (!reg.isReconnect) {
+      BrandmenServer.instance?.stopPairing();
+      _settingsKey.currentState?._stopPairing();
+    }
+    // ADB вторичен: HTTP уже доступен, но при наличии 5555 подключаем и его.
+    unawaited(adb.checkDevice(reg.ip));
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text('Планшет добавлен: ${reg.name} (${reg.ip})'),
-      backgroundColor: Colors.green.shade700,
-      duration: const Duration(seconds: 5),
-    ));
-    // Переходим на вкладку Планшеты — там карточки с управлением
-    setState(() => _selectedIndex = 0);
+    if (!reg.isReconnect) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Планшет добавлен: ${reg.name} (${reg.ip})'),
+        backgroundColor: Colors.green.shade700,
+        duration: const Duration(seconds: 5),
+      ));
+      // Переходим на вкладку Планшеты — там карточки с управлением
+      setState(() => _selectedIndex = 0);
+    }
     _dashboardKey.currentState?._refresh();
   }
 
@@ -1151,11 +1154,18 @@ class _DashboardScreenState extends State<DashboardScreen> {
         await DeviceStorage.add(ip, name: "Планшет $nextIndex");
         if (!mounted) return;
         added++;
-        final ownerNote =
-            prepareFullWifiControl ? ' Полное управление по Wi‑Fi готово.' : '';
+        final ownerNote = prepareFullWifiControl
+            ? registration.adbPersistent
+                ? ' Полное управление и резервный ADB готовы.'
+                : ' Основное управление по Wi‑Fi готово. ${registration.message}'
+            : registration.adbReady
+                ? ' ADB по Wi‑Fi подключён.'
+                : ' ${registration.message}';
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
           content: Text("Планшет $ip зарегистрирован и сохранён.$ownerNote"),
-          backgroundColor: Colors.green.shade700,
+          backgroundColor: registration.adbReady
+              ? Colors.green.shade700
+              : Colors.orange.shade800,
         ));
       } else {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
