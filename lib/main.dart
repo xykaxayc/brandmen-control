@@ -25,6 +25,7 @@ import 'updater.dart';
 import 'log_uploader.dart';
 import 'brand_pack.dart';
 import 'brand_pack_screen.dart';
+import 'deployment.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -286,7 +287,13 @@ class _MainScreenState extends State<MainScreen> {
   }
 
   Future<void> _onDeviceRegistered(DeviceRegistration reg) async {
-    await DeviceStorage.add(reg.ip, name: reg.name);
+    await DeviceStorage.add(
+      reg.ip,
+      name: reg.name,
+      deviceId: reg.deviceId,
+      apiToken: reg.apiToken,
+    );
+    DeviceHttp.registerToken(reg.ip, reg.apiToken);
     BrandmenServer.instance?.stopPairing();
 
     _settingsKey.currentState?._stopPairing();
@@ -883,6 +890,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   List<SavedDevice> saved = [];
   Map<String, DeviceStatus> statuses = {};
   Timer? _screenshotTimer;
+  Timer? _statusTimer;
   final Map<String, String> _thumbnails = {};
   bool _isLoading = false;
   bool _isRegistering = false;
@@ -891,6 +899,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   // остаются отзывчивыми.
   bool _busy = false;
   bool _bulkCancel = false;
+  bool _reconcilingDesired = false;
   // Текущее положение общего (мастер) ползунка яркости — применяется ко всем
   // онлайн-планшетам сразу. По умолчанию максимум (255).
   int _masterBrightness = 255;
@@ -957,6 +966,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
     super.initState();
     _cleanupOldThumbs();
     _refresh();
+    _statusTimer = Timer.periodic(const Duration(minutes: 1), (_) {
+      if (!_isLoading && !_busy) _refresh();
+    });
     _screenshotTimer =
         Timer.periodic(const Duration(minutes: 5), (timer) => _captureAll());
   }
@@ -964,6 +976,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   @override
   void dispose() {
     _screenshotTimer?.cancel();
+    _statusTimer?.cancel();
     super.dispose();
   }
 
@@ -978,6 +991,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Future<void> _refresh() async {
     if (mounted) setState(() => _isLoading = true);
     final list = await DeviceStorage.load();
+    for (final device in list) {
+      DeviceHttp.registerToken(device.ip, device.apiToken);
+    }
     AppLogger.log('[UI] Обновление статусов: ${list.length} планшетов');
     // Карточки показываем сразу (со старым/пустым статусом), а статус каждого
     // планшета подставляем по мере готовности — не ждём, пока проверятся все.
@@ -1000,11 +1016,54 @@ class _DashboardScreenState extends State<DashboardScreen> {
       onResult: (status) {
         if (!mounted) return;
         setState(() => statuses[status.ip] = status);
+        unawaited(DeviceStorage.updateIdentity(
+          status.ip,
+          deviceId: status.deviceId,
+        ));
         // Снимаем превью сразу, как планшет оказался онлайн.
         if (status.online) _captureOne(status.ip);
       },
     );
     if (mounted) setState(() => _isLoading = false);
+    unawaited(_reconcileDesiredState());
+  }
+
+  /// Планшет, вернувшийся в сеть, сам догоняет последнюю запрошенную версию.
+  /// Legacy-устройства не затрагиваем: автоматический desired-state работает
+  /// только для проверяемого deployment protocol v2.
+  Future<void> _reconcileDesiredState() async {
+    if (_reconcilingDesired || _busy || !mounted) return;
+    _reconcilingDesired = true;
+    try {
+      final devices = await DeviceStorage.load();
+      ContentDeployment? available;
+      try {
+        final mediaDir = await MediaConfig.resolveDir();
+        available = await DeploymentBuilder.fromMediaDirectory(mediaDir);
+      } catch (e) {
+        AppLogger.log('[DESIRED] текущий набор нельзя проверить: $e');
+        return;
+      }
+      for (final device in devices) {
+        if (!mounted || _busy) return;
+        final desired = device.desiredDeploymentId;
+        final status = statuses[device.ip];
+        if (desired == null ||
+            desired.isEmpty ||
+            available.deploymentId != desired ||
+            status?.online != true ||
+            status?.protocolVersion != kDeploymentProtocolVersion ||
+            status?.activeDeploymentId == desired ||
+            (_ops[device.ip]?.isBusy ?? false)) {
+          continue;
+        }
+        AppLogger.log('[DESIRED] ${device.ip}: active='
+            '${status?.activeDeploymentId} desired=$desired — применяю');
+        await _runDeviceSync(device, launch: false);
+      }
+    } finally {
+      _reconcilingDesired = false;
+    }
   }
 
   /// Снимок экрана одного планшета (для мгновенного превью при обнаружении).
@@ -1573,12 +1632,24 @@ class _DashboardScreenState extends State<DashboardScreen> {
       return;
     }
 
+    ContentDeployment deployment;
+    try {
+      _setOp(ip, const DeviceOp.busy("Проверяю набор роликов…"));
+      deployment = await DeploymentBuilder.fromMediaDirectory(mediaDir);
+      await DeviceStorage.setDesired([ip], deployment.deploymentId);
+    } catch (e) {
+      _setOp(ip, DeviceOp.error(humanizeError('$e')));
+      _clearOpLater(ip, after: const Duration(seconds: 10));
+      return;
+    }
+
     final result = await adb.syncDeviceDirect(
       ip,
       mediaDir,
       tryHttpFirst: statuses[ip]?.httpAvailable ?? true,
       isCancelled: cancelled,
       forceUpload: norm.converted.isNotEmpty,
+      deployment: deployment,
       onProgress: (done, total, file) {
         if (file.isNotEmpty) {
           _setOp(
@@ -1608,9 +1679,23 @@ class _DashboardScreenState extends State<DashboardScreen> {
       _setOp(ip, DeviceOp.busy(launch ? "Запуск…" : "Применяю плейлист…"));
       await adb.wakeUp(ip, launchPlayer: true);
       _setOp(ip, const DeviceOp.busy("Проверяю воспроизведение…"));
-      final playing = await adb.verifyPlaying(ip);
+      final isV2 = result.transport == 'Deployment v2';
+      final playing = isV2
+          ? await adb.verifyDeploymentPlaying(
+              ip,
+              deploymentId: deployment.deploymentId,
+              playlistHash: deployment.playlistHash,
+            )
+          : await adb.verifyPlaying(ip);
       if (!playing) {
-        _setOp(ip, const DeviceOp.error("Плейлист передан, но не запустился"));
+        final rolledBack =
+            isV2 ? await DeviceHttp(ip).rollbackDeployment() : false;
+        if (rolledBack) await adb.wakeUp(ip, launchPlayer: true);
+        _setOp(
+            ip,
+            DeviceOp.error(rolledBack
+                ? "Новая версия не запустилась — вернул предыдущую"
+                : "Плейлист передан, но не запустился"));
         _clearOpLater(ip, after: const Duration(seconds: 10));
         return;
       }
@@ -1686,6 +1771,27 @@ class _DashboardScreenState extends State<DashboardScreen> {
       return;
     }
 
+    ContentDeployment? deployment;
+    if (sync) {
+      try {
+        for (final dev in online) {
+          _setOp(dev.ip, const DeviceOp.busy("Проверяю набор роликов…"));
+        }
+        deployment = await DeploymentBuilder.fromMediaDirectory(mediaDir);
+        await DeviceStorage.setDesired(
+          saved.map((device) => device.ip),
+          deployment.deploymentId,
+        );
+      } catch (e) {
+        final reason = humanizeError('$e');
+        for (final dev in online) {
+          _setOp(dev.ip, DeviceOp.error(reason));
+          _clearOpLater(dev.ip, after: const Duration(seconds: 10));
+        }
+        return;
+      }
+    }
+
     int failed = 0;
     // Фаза 1: файлы — последовательно (WiFi-канал общий, параллельная заливка
     // не ускоряет). Планшеты, которым нужен запуск, копим на фазу 2.
@@ -1708,6 +1814,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           tryHttpFirst: statuses[ip]?.httpAvailable ?? true,
           isCancelled: () => _bulkCancel,
           forceUpload: norm?.converted.isNotEmpty ?? false,
+          deployment: deployment,
           onProgress: (done, total, file) {
             if (file.isEmpty) return;
             _setOp(
@@ -1771,11 +1878,25 @@ class _DashboardScreenState extends State<DashboardScreen> {
         await adb.wakeUp(ip, launchPlayer: true);
         if (mute) await adb.setVolume(ip, 0);
         _setOp(ip, const DeviceOp.busy("Проверка запуска…"));
-        final launchOk = await adb.verifyPlaying(ip);
+        final isV2 = result.transport == 'Deployment v2' && deployment != null;
+        final launchOk = isV2
+            ? await adb.verifyDeploymentPlaying(
+                ip,
+                deploymentId: deployment.deploymentId,
+                playlistHash: deployment.playlistHash,
+              )
+            : await adb.verifyPlaying(ip);
         if (!launchOk) {
           failed++;
           AppLogger.log('Запуск: плеер не подтвердил запуск на ${dev.name}');
-          _setOp(ip, const DeviceOp.error("Не запустился"));
+          final rolledBack =
+              isV2 ? await DeviceHttp(ip).rollbackDeployment() : false;
+          if (rolledBack) await adb.wakeUp(ip, launchPlayer: true);
+          _setOp(
+              ip,
+              DeviceOp.error(rolledBack
+                  ? "Ошибка — восстановлена предыдущая версия"
+                  : "Не запустился"));
         } else {
           final base = !sync
               ? "Запущено"
@@ -2349,6 +2470,25 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         ),
                       ],
                     ),
+                    if ((status?.activeDeploymentId ?? '').isNotEmpty)
+                      Text(
+                        dev.desiredDeploymentId != null &&
+                                dev.desiredDeploymentId !=
+                                    status?.activeDeploymentId
+                            ? "Контент ${status!.activeDeploymentId!.substring(0, 8)}"
+                                " → ожидает ${dev.desiredDeploymentId!.substring(0, 8)}"
+                            : "Контент актуален · "
+                                "${status!.activeDeploymentId!.substring(0, 8)}",
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 9,
+                          color: dev.desiredDeploymentId != null &&
+                                  dev.desiredDeploymentId !=
+                                      status.activeDeploymentId
+                              ? Colors.orangeAccent
+                              : Colors.greenAccent.withValues(alpha: .8),
+                        ),
+                      ),
                   ] else if (!isOnline) ...[
                     const SizedBox(height: 4),
                     Text(

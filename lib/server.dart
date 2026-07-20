@@ -46,7 +46,14 @@ Future<String> _getFileHash(File file) async {
 class DeviceRegistration {
   final String ip;
   final String name;
-  DeviceRegistration({required this.ip, required this.name});
+  final String? deviceId;
+  final String? apiToken;
+  DeviceRegistration({
+    required this.ip,
+    required this.name,
+    this.deviceId,
+    this.apiToken,
+  });
 }
 
 class BrandmenServer {
@@ -146,6 +153,8 @@ class BrandmenServer {
             request.context['shelf.io.connection_info'] as HttpConnectionInfo?;
         final clientIp = connInfo?.remoteAddress.address ?? '';
         String deviceName = clientIp;
+        String? deviceId;
+        String? apiToken;
         try {
           final body = await request.readAsString();
           if (body.isNotEmpty) {
@@ -153,20 +162,26 @@ class BrandmenServer {
             deviceName = (json['name'] as String?)?.trim().isNotEmpty == true
                 ? json['name'] as String
                 : clientIp;
+            deviceId = (json['device_id'] as String?)?.trim();
+            apiToken = (json['api_token'] as String?)?.trim();
           }
         } catch (_) {}
         if (clientIp.isNotEmpty) {
-          AppLogger.log('Устройство зарегистрировалось: $clientIp ($deviceName)');
-          _registrationController
-              .add(DeviceRegistration(ip: clientIp, name: deviceName));
+          AppLogger.log(
+              'Устройство зарегистрировалось: $clientIp ($deviceName)');
+          _registrationController.add(DeviceRegistration(
+            ip: clientIp,
+            name: deviceName,
+            deviceId: deviceId,
+            apiToken: apiToken,
+          ));
         }
         return Response.ok('{"ok":true}',
             headers: {'content-type': 'application/json'});
       }
 
       if (path == 'api/pairing-status') {
-        return Response.ok(
-            jsonEncode({'active': pairingActive}),
+        return Response.ok(jsonEncode({'active': pairingActive}),
             headers: {'content-type': 'application/json'});
       }
 
@@ -184,7 +199,8 @@ class BrandmenServer {
 
     try {
       _registration = await register(
-        const Service(name: 'BrandmenServer', type: '_brandmen._tcp', port: kServerPort),
+        const Service(
+            name: 'BrandmenServer', type: '_brandmen._tcp', port: kServerPort),
       );
       AppLogger.log('mDNS сервис зарегистрирован: _brandmen._tcp');
     } catch (e) {

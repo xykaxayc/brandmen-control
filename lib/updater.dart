@@ -23,23 +23,10 @@ const String kReleasesPageUrl = 'https://github.com/$_kRepo/releases/latest';
 const String _kReleasesUrl =
     'https://api.github.com/repos/$_kRepo/releases?per_page=15';
 
-// На части машин (антивирус/корпоративный прокси перехватывает HTTPS, либо в
-// хранилище Dart нет нужного корня) проверка сертификата GitHub падает с
-// CERTIFICATE_VERIFY_FAILED, и обновления не работают. Доверяем сертификату
-// ТОЛЬКО для доменов GitHub — глобально проверку не отключаем.
-bool _trustGithub(X509Certificate cert, String host, int port) {
-  final ok = host == 'github.com' ||
-      host.endsWith('.github.com') ||
-      host.endsWith('.githubusercontent.com');
-  if (ok) {
-    AppLogger.log('[UPD] принят неподтверждённый TLS-сертификат для $host '
-        '(вероятно перехват антивирусом/прокси или корень не в Dart)');
-  }
-  return ok;
-}
-
-HttpClient _githubHttpClient() =>
-    HttpClient()..badCertificateCallback = _trustGithub;
+// Обновления исполняют скачанный код, поэтому неподтверждённые сертификаты
+// больше не принимаются даже для GitHub. Если TLS перехватывает антивирус или
+// прокси, нужно установить его корневой сертификат в доверенное хранилище.
+HttpClient _githubHttpClient() => HttpClient();
 
 http.Client _githubClient() => IOClient(_githubHttpClient());
 
@@ -103,7 +90,8 @@ class AppUpdater {
         return null;
       }
       if (kAppVersion == '0.0.0') {
-        AppLogger.log('[UPD] версия 0.0.0 (локальная сборка) — обновления отключены');
+        AppLogger.log(
+            '[UPD] версия 0.0.0 (локальная сборка) — обновления отключены');
         return null;
       }
       final keyword = Platform.isWindows ? 'windows' : 'macos';
@@ -112,7 +100,8 @@ class AppUpdater {
         matches: (name) => name.contains(keyword) && name.endsWith('.zip'),
       );
       if (r == null) {
-        AppLogger.log('[UPD] подходящего обновления не найдено → "последняя версия"');
+        AppLogger.log(
+            '[UPD] подходящего обновления не найдено → "последняя версия"');
         return null;
       }
       AppLogger.log('[UPD] НАЙДЕНО обновление: ${r['version']} (${r['url']})');
@@ -178,7 +167,8 @@ class AppUpdater {
     // заменить себя не может. Не качаем впустую — сразу понятное сообщение.
     if (Platform.isMacOS &&
         Platform.resolvedExecutable.contains('/AppTranslocation/')) {
-      AppLogger.log('[UPD] отмена: App Translocation — ${Platform.resolvedExecutable}');
+      AppLogger.log(
+          '[UPD] отмена: App Translocation — ${Platform.resolvedExecutable}');
       lastError = 'приложение запущено из «Загрузок» (защита macOS). '
           'Переместите его в «Программы» (из .dmg) и запустите оттуда — '
           'тогда обновление установится';
@@ -234,8 +224,7 @@ class AppUpdater {
     final http.Response response;
     try {
       response = await client.get(
-        Uri.parse(
-            '$_kReleasesUrl&_=${DateTime.now().millisecondsSinceEpoch}'),
+        Uri.parse('$_kReleasesUrl&_=${DateTime.now().millisecondsSinceEpoch}'),
         headers: {
           'Accept': 'application/vnd.github+json',
           'Cache-Control': 'no-cache',
@@ -259,16 +248,14 @@ class AppUpdater {
       AppLogger.log('[UPD] ответ не является списком релизов');
       return [];
     }
-    final tags = list
-        .map((r) => (r as Map?)?['tag_name'] ?? '?')
-        .toList()
-        .join(', ');
+    final tags =
+        list.map((r) => (r as Map?)?['tag_name'] ?? '?').toList().join(', ');
     AppLogger.log('[UPD] получено релизов: ${list.length} → $tags');
     list.sort((a, b) {
-      final av = ((a as Map?)?['tag_name'] as String? ?? '')
-          .replaceFirst('v', '');
-      final bv = ((b as Map?)?['tag_name'] as String? ?? '')
-          .replaceFirst('v', '');
+      final av =
+          ((a as Map?)?['tag_name'] as String? ?? '').replaceFirst('v', '');
+      final bv =
+          ((b as Map?)?['tag_name'] as String? ?? '').replaceFirst('v', '');
       return _compareVersions(bv, av);
     });
     return list;

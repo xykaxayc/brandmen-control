@@ -8,6 +8,8 @@ import 'device_http.dart';
 import 'transcoder.dart';
 import 'media_config.dart';
 import 'brand_pack.dart';
+import 'deployment.dart';
+import 'operation_event.dart';
 
 class DeviceStatus {
   final String ip;
@@ -31,6 +33,10 @@ class DeviceStatus {
   final bool? canInstall;
   final bool? batteryExempt;
   final bool? overlay;
+  final String? deviceId;
+  final int? protocolVersion;
+  final String? activeDeploymentId;
+  final String? playlistHash;
 
   DeviceStatus({
     required this.ip,
@@ -48,6 +54,10 @@ class DeviceStatus {
     this.canInstall,
     this.batteryExempt,
     this.overlay,
+    this.deviceId,
+    this.protocolVersion,
+    this.activeDeploymentId,
+    this.playlistHash,
   });
 
   /// Эталонная подпись CI-сборок APK (SHA-256 release.keystore из репо).
@@ -354,6 +364,10 @@ class AdbManager {
       canInstall: health?['canInstall'] as bool?,
       batteryExempt: health?['batteryExempt'] as bool?,
       overlay: health?['overlay'] as bool?,
+      deviceId: health?['deviceId'] as String?,
+      protocolVersion: health?['protocolVersion'] as int?,
+      activeDeploymentId: health?['activeDeploymentId'] as String?,
+      playlistHash: health?['playlistHash'] as String?,
     );
   }
 
@@ -497,6 +511,38 @@ class AdbManager {
     return false;
   }
 
+  /// Проверяет не просто воспроизведение, а применение конкретного deployment.
+  /// Две разные позиции защищают от зависшего первого кадра.
+  Future<bool> verifyDeploymentPlaying(
+    String ip, {
+    required String deploymentId,
+    required String playlistHash,
+    int attempts = 30,
+  }) async {
+    final client = DeviceHttp(ip);
+    int? lastPosition;
+    for (int i = 0; i < attempts; i++) {
+      await Future.delayed(const Duration(seconds: 1));
+      final health = await client.health();
+      if (health == null ||
+          health['activeDeploymentId'] != deploymentId ||
+          health['playlistHash'] != playlistHash ||
+          health['playing'] != true ||
+          (health['currentFileSha256'] as String? ?? '').isEmpty) {
+        continue;
+      }
+      final position = health['positionMs'] as int? ?? -1;
+      if (lastPosition != null && position >= 0 && position != lastPosition) {
+        AppLogger.log('verifyDeployment $ip: deployment=$deploymentId играет');
+        return true;
+      }
+      lastPosition = position;
+    }
+    AppLogger.log('verifyDeployment $ip: deployment=$deploymentId '
+        'не подтверждён');
+    return false;
+  }
+
   // Синхронизация: пробует HTTP (быстро, без ADB), иначе ADB.
   // Возвращает статус синхронизации и список имён отправленных файлов.
   Future<SyncResult> syncDeviceDirect(
@@ -509,9 +555,24 @@ class AdbManager {
     // H.264-файл теоретически может иметь тот же размер, но другое содержимое.
     // В этом режиме отправляем весь актуальный набор на каждый планшет.
     bool forceUpload = false,
+    ContentDeployment? deployment,
   }) async {
     final httpOk = tryHttpFirst && await DeviceHttp.isAvailable(ip);
     if (httpOk) {
+      final client = DeviceHttp(ip);
+      final capabilities = await client.deploymentCapabilities();
+      if ((capabilities?['protocol_version'] as num?)?.toInt() == 2) {
+        AppLogger.log('Sync $ip: использую deployment protocol v2');
+        final prepared =
+            deployment ?? await DeploymentBuilder.fromMediaDirectory(localDir);
+        return _syncViaDeployment(
+          ip,
+          localDir,
+          prepared,
+          onProgress: onProgress,
+          isCancelled: isCancelled,
+        );
+      }
       AppLogger.log('Sync $ip: используем HTTP (порт 5011)');
       final httpResult = await _syncViaHttp(ip, localDir,
           onProgress: onProgress,
@@ -548,6 +609,151 @@ class AdbManager {
         : 'Sync $ip: используем ADB без проверки HTTP');
     return _syncViaAdb(ip, localDir,
         onProgress: onProgress, forceUpload: forceUpload);
+  }
+
+  Future<SyncResult> _syncViaDeployment(
+    String ip,
+    String localDir,
+    ContentDeployment deployment, {
+    void Function(int done, int total, String filename)? onProgress,
+    bool Function()? isCancelled,
+  }) async {
+    final client = DeviceHttp(ip);
+    final operationId =
+        '${DateTime.now().microsecondsSinceEpoch}-${deployment.deploymentId.substring(0, 8)}';
+    final stopwatch = Stopwatch()..start();
+    OperationEvent.log(
+      event: 'deployment_prepare',
+      device: ip,
+      operationId: operationId,
+      deploymentId: deployment.deploymentId,
+      from: 'current',
+      to: 'preparing',
+    );
+    final prepared = await client.prepareDeployment(deployment);
+    if (prepared == null) {
+      OperationEvent.log(
+        event: 'deployment_failed',
+        device: ip,
+        operationId: operationId,
+        deploymentId: deployment.deploymentId,
+        from: 'preparing',
+        to: 'failed',
+        errorCode: 'prepare_failed',
+        durationMs: stopwatch.elapsedMilliseconds,
+      );
+      return const SyncResult(
+        success: false,
+        pushed: [],
+        transport: 'Deployment v2',
+        error: 'Планшет не подготовил новую версию контента',
+      );
+    }
+
+    final missing = ((prepared['missing'] as List?) ?? const [])
+        .map((e) => e.toString())
+        .toSet();
+    final partialRaw =
+        (prepared['partial'] as Map?)?.cast<String, dynamic>() ?? const {};
+    final byHash = {for (final file in deployment.files) file.sha256: file};
+    final pushed = <String>[];
+    var completed = deployment.files.length - missing.length;
+
+    for (final hash in missing) {
+      if (isCancelled?.call() ?? false) {
+        return SyncResult(
+          success: false,
+          pushed: pushed,
+          transport: 'Deployment v2',
+          error: 'Отменено',
+        );
+      }
+      final descriptor = byHash[hash];
+      if (descriptor == null) {
+        return SyncResult(
+          success: false,
+          pushed: pushed,
+          transport: 'Deployment v2',
+          error: 'Manifest содержит неизвестный SHA-256',
+        );
+      }
+      final source = File(p.join(localDir, descriptor.logicalName));
+      final offset = (partialRaw[hash] as num?)?.toInt() ?? 0;
+      onProgress?.call(
+          completed, deployment.files.length, descriptor.logicalName);
+      final result = await client.uploadDeploymentBlob(
+        descriptor,
+        source,
+        offset: offset,
+      );
+      if (result == null || result['complete'] != true) {
+        OperationEvent.log(
+          event: 'deployment_failed',
+          device: ip,
+          operationId: operationId,
+          deploymentId: deployment.deploymentId,
+          from: 'uploading',
+          to: 'failed',
+          errorCode: 'blob_verification_failed',
+          durationMs: stopwatch.elapsedMilliseconds,
+        );
+        return SyncResult(
+          success: false,
+          pushed: pushed,
+          transport: 'Deployment v2',
+          error: 'Не удалось проверить ${descriptor.logicalName}',
+        );
+      }
+      pushed.add(descriptor.logicalName);
+      OperationEvent.log(
+        event: 'blob_verified',
+        device: ip,
+        operationId: operationId,
+        deploymentId: deployment.deploymentId,
+        from: 'uploading',
+        to: 'verifying',
+        bytesTransferred: descriptor.size - offset,
+      );
+      completed++;
+      onProgress?.call(
+          completed, deployment.files.length, descriptor.logicalName);
+    }
+
+    final commit = await client.commitDeployment(deployment.deploymentId);
+    if (commit == null ||
+        commit['active_deployment_id'] != deployment.deploymentId) {
+      OperationEvent.log(
+        event: 'deployment_failed',
+        device: ip,
+        operationId: operationId,
+        deploymentId: deployment.deploymentId,
+        from: 'activating',
+        to: 'failed',
+        errorCode: 'commit_not_confirmed',
+        durationMs: stopwatch.elapsedMilliseconds,
+      );
+      return SyncResult(
+        success: false,
+        pushed: pushed,
+        transport: 'Deployment v2',
+        error: 'Планшет не активировал новую версию контента',
+      );
+    }
+    onProgress?.call(deployment.files.length, deployment.files.length, '');
+    OperationEvent.log(
+      event: 'deployment_committed',
+      device: ip,
+      operationId: operationId,
+      deploymentId: deployment.deploymentId,
+      from: 'activating',
+      to: 'validating',
+      durationMs: stopwatch.elapsedMilliseconds,
+    );
+    return SyncResult(
+      success: true,
+      pushed: pushed,
+      transport: 'Deployment v2',
+    );
   }
 
   Future<SyncResult> _syncViaHttp(
@@ -610,7 +816,9 @@ class AdbManager {
       final name = p.basename(f.path);
       final isPlaylist = name.toLowerCase() == 'playlist.m3u';
       final sz = await f.length();
-      if (isPlaylist || remoteFiles[name] != sz) needBytes += sz;
+      if (forceUpload || isPlaylist || remoteFiles[name] != sz) {
+        needBytes += sz;
+      }
     }
     if (needBytes > 0) {
       final health = await client.health();
@@ -782,24 +990,31 @@ class AdbManager {
     }
     onProgress?.call(allOrdered.length, allOrdered.length, '');
 
-    final localNames = localFiles.map((f) => p.basename(f.path)).toSet();
-    for (final remoteName in remoteSizes.keys) {
-      if (!localNames.contains(remoteName) && isVideoFile(remoteName)) {
-        AppLogger.log("Sync $ip: удаляю $remoteName");
-        final quoted = _shellQuote('$_remoteDir/$remoteName');
-        final res = await _retry(
-          'ADB delete $ip/$remoteName',
-          () => _run(adb, ['-s', id, 'shell', 'rm', '-f', '--', quoted],
-              timeout: const Duration(seconds: 5)),
-          _ok,
-          attempts: 2,
-        );
-        if (res.exitCode != 0) {
-          failed.add('удаление $remoteName');
-          AppLogger.log(
-              "Sync $ip: удаление $remoteName не удалось: ${res.stdout}${res.stderr}");
+    // Как и в HTTP-ветке, чистим старые файлы только после полностью успешной
+    // загрузки. Иначе можно удалить рабочий ролик, пока его замена не дошла.
+    if (failed.isEmpty) {
+      final localNames = localFiles.map((f) => p.basename(f.path)).toSet();
+      for (final remoteName in remoteSizes.keys) {
+        if (!localNames.contains(remoteName) && isVideoFile(remoteName)) {
+          AppLogger.log("Sync $ip: удаляю $remoteName");
+          final quoted = _shellQuote('$_remoteDir/$remoteName');
+          final res = await _retry(
+            'ADB delete $ip/$remoteName',
+            () => _run(adb, ['-s', id, 'shell', 'rm', '-f', '--', quoted],
+                timeout: const Duration(seconds: 5)),
+            _ok,
+            attempts: 2,
+          );
+          if (res.exitCode != 0) {
+            failed.add('удаление $remoteName');
+            AppLogger.log(
+                "Sync $ip: удаление $remoteName не удалось: ${res.stdout}${res.stderr}");
+          }
         }
       }
+    } else {
+      AppLogger.log("Sync $ip: были ошибки push — пропускаю удаление "
+          "старых файлов, чтобы сохранить рабочий контент");
     }
 
     if (failed.isNotEmpty) {

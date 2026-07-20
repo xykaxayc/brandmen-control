@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'package:crypto/crypto.dart';
 import 'package:http/io_client.dart';
 import 'logger.dart';
 import 'updater.dart' show kAppVersion;
@@ -11,6 +12,14 @@ import 'updater.dart' show kAppVersion;
 /// через badCertificateCallback ниже, т.к. host совпадает с адресом).
 const String kDefaultLogServerUrl = 'https://77.246.102.205:8443';
 const String kDefaultLogServerToken = '933897b46de4e38806e6d6669d768e9c';
+const String _kLogServerCertSha256 =
+    '3c7ab97b4fabb7e4ead59d0af8da6089c7a2f16c525b56914c455b4d412ed3c8';
+
+bool _trustedLogServerCertificate(
+    X509Certificate cert, String host, int port, String targetHost) {
+  return host == targetHost &&
+      sha256.convert(cert.der).toString() == _kLogServerCertSha256;
+}
 
 /// Отправка лога на свой сервер.
 ///
@@ -44,12 +53,12 @@ class LogUploader {
 
     final body = (onlyRecent ? AppLogger.lines : await _fullLog()).join('\n');
 
-    // На части ПК антивирус/прокси перехватывает TLS (CERTIFICATE_VERIFY_FAILED).
-    // Сервер — свой, поэтому принимаем перехваченный сертификат ТОЛЬКО для его
-    // хоста (как уже сделано для GitHub в updater).
+    // Сервер использует self-signed TLS, поэтому доверяем не любому
+    // сертификату для этого IP, а только заранее проверенному SHA-256 pin.
     final targetHost = uri.host;
     final httpClient = HttpClient()
-      ..badCertificateCallback = (cert, host, port) => host == targetHost;
+      ..badCertificateCallback = (cert, host, port) =>
+          _trustedLogServerCertificate(cert, host, port, targetHost);
     final client = IOClient(httpClient);
     try {
       final resp = await client
@@ -100,7 +109,8 @@ class LogUploader {
     }
     final targetHost = uri.host;
     final httpClient = HttpClient()
-      ..badCertificateCallback = (cert, host, port) => host == targetHost;
+      ..badCertificateCallback = (cert, host, port) =>
+          _trustedLogServerCertificate(cert, host, port, targetHost);
     final client = IOClient(httpClient);
     try {
       final resp = await client

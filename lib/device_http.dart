@@ -4,16 +4,28 @@ import 'package:http/http.dart' as http;
 import 'package:path/path.dart' as p;
 import 'logger.dart';
 import 'brand_pack.dart';
+import 'deployment.dart';
 
 const int kDeviceHttpPort = 5011;
 
 /// HTTP-клиент для прямой передачи файлов на планшет (порт 5011).
 /// Работает без ADB — только WiFi.
 class DeviceHttp {
+  static final Map<String, String> _apiTokens = {};
   final String ip;
   String get _base => 'http://$ip:$kDeviceHttpPort';
+  Map<String, String> get _v2Headers => {
+        'Content-Type': 'application/json',
+        if (_apiTokens[ip]?.isNotEmpty == true)
+          'Authorization': 'Bearer ${_apiTokens[ip]}',
+      };
 
   DeviceHttp(this.ip);
+
+  static void registerToken(String ip, String? token) {
+    if (token == null || token.isEmpty) return;
+    _apiTokens[ip] = token;
+  }
 
   static Future<T> _retry<T>(
     String label,
@@ -130,11 +142,162 @@ class DeviceHttp {
     );
   }
 
+  // ---- Deployment protocol v2 ----
+
+  Future<Map<String, dynamic>?> deploymentCapabilities() async {
+    try {
+      final r = await http
+          .get(Uri.parse('$_base/api/v2/capabilities'))
+          .timeout(const Duration(seconds: 4));
+      if (r.statusCode != 200) return null;
+      final result = jsonDecode(r.body) as Map<String, dynamic>;
+      if (result['auth_required'] == true && !_apiTokens.containsKey(ip)) {
+        return null;
+      }
+      return result;
+    } catch (_) {
+      // 404/timeout означает legacy-плеер; это нормальный режим миграции.
+      return null;
+    }
+  }
+
+  Future<Map<String, dynamic>?> prepareDeployment(
+      ContentDeployment deployment) async {
+    try {
+      final r = await http
+          .post(
+            Uri.parse('$_base/api/v2/prepare'),
+            headers: _v2Headers,
+            body: deployment.encode(),
+          )
+          .timeout(const Duration(seconds: 15));
+      if (r.statusCode != 200) {
+        AppLogger.log('Deployment prepare $ip: HTTP ${r.statusCode} ${r.body}');
+        return null;
+      }
+      return jsonDecode(r.body) as Map<String, dynamic>;
+    } catch (e) {
+      AppLogger.log('Deployment prepare $ip: $e');
+      return null;
+    }
+  }
+
+  Future<Map<String, dynamic>?> deploymentStatus(String deploymentId) async {
+    try {
+      final uri = Uri.parse('$_base/api/v2/status').replace(
+        queryParameters: {'deployment_id': deploymentId},
+      );
+      final r = await http
+          .get(uri, headers: _v2Headers)
+          .timeout(const Duration(seconds: 5));
+      if (r.statusCode != 200) return null;
+      return jsonDecode(r.body) as Map<String, dynamic>;
+    } catch (e) {
+      AppLogger.log('Deployment status $ip: $e');
+      return null;
+    }
+  }
+
+  /// Продолжает отправку blob с подтверждённого планшетом смещения.
+  Future<Map<String, dynamic>?> uploadDeploymentBlob(
+    DeploymentFile deploymentFile,
+    File file, {
+    required int offset,
+    void Function(int sent, int total)? onProgress,
+  }) async {
+    final total = await file.length();
+    if (total != deploymentFile.size || offset < 0 || offset > total) {
+      return null;
+    }
+    if (offset == total) {
+      return {
+        'sha256': deploymentFile.sha256,
+        'received': total,
+        'total': total,
+        'complete': true,
+      };
+    }
+    final remaining = total - offset;
+    final timeout = Duration(
+      seconds: (60 + remaining / (512 * 1024)).round().clamp(60, 3600),
+    );
+    final client = http.Client();
+    try {
+      final uri = Uri.parse(
+              '$_base/api/v2/blob/${Uri.encodeComponent(deploymentFile.sha256)}')
+          .replace(queryParameters: {
+        'offset': '$offset',
+        'total': '$total',
+      });
+      final request = http.StreamedRequest('POST', uri)
+        ..contentLength = remaining
+        ..headers['Content-Type'] = 'application/octet-stream';
+      final token = _apiTokens[ip];
+      if (token != null && token.isNotEmpty) {
+        request.headers['Authorization'] = 'Bearer $token';
+      }
+      final responseFuture = client.send(request);
+      var sent = offset;
+      await request.sink.addStream(file.openRead(offset).map((chunk) {
+        sent += chunk.length;
+        onProgress?.call(sent, total);
+        return chunk;
+      }));
+      await request.sink.close();
+      final response = await responseFuture.timeout(timeout);
+      final body = await response.stream.bytesToString();
+      if (response.statusCode != 200) {
+        AppLogger.log('Deployment blob ${deploymentFile.logicalName} → $ip: '
+            'HTTP ${response.statusCode} $body');
+        return null;
+      }
+      return jsonDecode(body) as Map<String, dynamic>;
+    } catch (e) {
+      AppLogger.log('Deployment blob ${deploymentFile.logicalName} → $ip: $e');
+      return null;
+    } finally {
+      client.close();
+    }
+  }
+
+  Future<Map<String, dynamic>?> commitDeployment(String deploymentId) async {
+    try {
+      final r = await http
+          .post(
+            Uri.parse('$_base/api/v2/commit'),
+            headers: _v2Headers,
+            body: jsonEncode({'deployment_id': deploymentId}),
+          )
+          .timeout(const Duration(seconds: 15));
+      if (r.statusCode != 200) {
+        AppLogger.log('Deployment commit $ip: HTTP ${r.statusCode} ${r.body}');
+        return null;
+      }
+      return jsonDecode(r.body) as Map<String, dynamic>;
+    } catch (e) {
+      AppLogger.log('Deployment commit $ip: $e');
+      return null;
+    }
+  }
+
+  Future<bool> rollbackDeployment() async {
+    try {
+      final r = await http
+          .post(Uri.parse('$_base/api/v2/rollback'), headers: _v2Headers)
+          .timeout(const Duration(seconds: 15));
+      return r.statusCode == 200;
+    } catch (e) {
+      AppLogger.log('Deployment rollback $ip: $e');
+      return false;
+    }
+  }
+
   /// Отправляет APK на планшет по HTTP (`POST /api/update/install`). Плеер
   /// сам сохранит файл и покажет системное окно установки поверх плеера —
   /// без ADB и без ручного поиска файла в проводнике. Возвращает true, если
   /// планшет принял файл (HTTP 200).
-  Future<bool> installApkHttp(File apk, {void Function(int sent, int total)? onProgress}) async {
+  Future<bool> installApkHttp(File apk,
+      {void Function(int sent, int total)? onProgress}) async {
     final size = await apk.length();
     if (size <= 0) return false;
     final uploadTimeout = Duration(
@@ -142,10 +305,11 @@ class DeviceHttp {
     );
     final c = http.Client();
     try {
-      final request = http.StreamedRequest(
-          'POST', Uri.parse('$_base/api/update/install'));
+      final request =
+          http.StreamedRequest('POST', Uri.parse('$_base/api/update/install'));
       request.contentLength = size;
-      request.headers['Content-Type'] = 'application/vnd.android.package-archive';
+      request.headers['Content-Type'] =
+          'application/vnd.android.package-archive';
       final responseFuture = c.send(request);
       int sent = 0;
       await request.sink.addStream(apk.openRead().map((chunk) {
@@ -256,7 +420,8 @@ class DeviceHttp {
     return null;
   }
 
-  Future<bool> controlAction(String action, [Map<String, dynamic>? body]) async {
+  Future<bool> controlAction(String action,
+      [Map<String, dynamic>? body]) async {
     final extra = (body != null && body.isNotEmpty) ? ' $body' : '';
     AppLogger.log('[КОМАНДА] $action → $ip$extra (POST /api/control/$action)');
     final sw = Stopwatch()..start();
@@ -274,7 +439,8 @@ class DeviceHttp {
           '(${sw.elapsedMilliseconds} мс)');
       return ok;
     } catch (e) {
-      AppLogger.log('[КОМАНДА] $action → $ip: СБОЙ $e (${sw.elapsedMilliseconds} мс)');
+      AppLogger.log(
+          '[КОМАНДА] $action → $ip: СБОЙ $e (${sw.elapsedMilliseconds} мс)');
       return false;
     }
   }
@@ -292,6 +458,7 @@ class DeviceHttp {
           'total': (j['total'] as num? ?? 0).toInt(),
           'name': (j['name'] as String? ?? ''),
           'playing': (j['playing'] as bool? ?? false),
+          'positionMs': (j['positionMs'] as num? ?? -1).toInt(),
         };
       }
     } catch (e) {
@@ -314,6 +481,7 @@ class DeviceHttp {
           'freeMb': (j['freeMb'] as num? ?? 0).toInt(),
           'totalMb': (j['totalMb'] as num? ?? 0).toInt(),
           'playing': (j['playing'] as bool? ?? false),
+          'positionMs': (j['positionMs'] as num? ?? -1).toInt(),
           'index': (j['index'] as num? ?? -1).toInt(),
           'total': (j['total'] as num? ?? 0).toInt(),
           'current': (j['current'] as String? ?? ''),
@@ -326,6 +494,11 @@ class DeviceHttp {
           'canInstall': j['canInstall'] as bool?,
           'batteryExempt': j['batteryExempt'] as bool?,
           'overlay': j['overlay'] as bool?,
+          'deviceId': j['deviceId'] as String?,
+          'protocolVersion': (j['protocolVersion'] as num?)?.toInt(),
+          'activeDeploymentId': j['activeDeploymentId'] as String?,
+          'playlistHash': j['playlistHash'] as String?,
+          'currentFileSha256': j['currentFileSha256'] as String?,
         };
       }
     } catch (e) {
@@ -353,8 +526,11 @@ class DeviceHttp {
   Future<bool> httpSleep() => controlAction('sleep');
   Future<bool> launch() => controlAction('launch');
   Future<bool> restart() => controlAction('restart');
+
   /// Перезагрузка планшета (сработает только если он device owner). Без ADB.
   Future<bool> reboot() => controlAction('reboot');
-  Future<bool> setVolumeHttp(int level) => controlAction('volume', {'level': level});
-  Future<bool> setBrightnessHttp(int level) => controlAction('brightness', {'level': level});
+  Future<bool> setVolumeHttp(int level) =>
+      controlAction('volume', {'level': level});
+  Future<bool> setBrightnessHttp(int level) =>
+      controlAction('brightness', {'level': level});
 }

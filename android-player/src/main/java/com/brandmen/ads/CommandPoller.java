@@ -14,6 +14,7 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLEncoder;
+import java.security.MessageDigest;
 import java.security.cert.X509Certificate;
 
 import javax.net.ssl.HttpsURLConnection;
@@ -39,6 +40,8 @@ final class CommandPoller {
     private static final String SERVER = "https://77.246.102.205:8443";
     private static final String TOKEN = "933897b46de4e38806e6d6669d768e9c";
     private static final long POLL_MS = 12_000L;
+    private static final String SERVER_CERT_SHA256 =
+            "3c7ab97b4fabb7e4ead59d0af8da6089c7a2f16c525b56914c455b4d412ed3c8";
 
     private final Context app;
     private final MediaServer.ControlCallback cb;
@@ -194,21 +197,53 @@ final class CommandPoller {
         HttpURLConnection c = (HttpURLConnection) url.openConnection();
         if (c instanceof HttpsURLConnection) {
             HttpsURLConnection https = (HttpsURLConnection) c;
-            https.setSSLSocketFactory(trustAll().getSocketFactory());
-            String host = url.getHost();
-            https.setHostnameVerifier((h, s) -> h.equals(host));
+            https.setSSLSocketFactory(pinnedTls().getSocketFactory());
+            // Сертификат выпущен на DNS-имя, а legacy URL использует IP.
+            // Проверку имени заменяет строгий pin конкретного сертификата.
+            https.setHostnameVerifier((h, s) -> true);
         }
         return c;
     }
 
-    private SSLContext trustAll() throws Exception {
+    private SSLContext pinnedTls() throws Exception {
         SSLContext ctx = SSLContext.getInstance("TLS");
-        ctx.init(null, new TrustManager[]{new X509TrustManager() {
-            public void checkClientTrusted(X509Certificate[] ch, String a) {}
-            public void checkServerTrusted(X509Certificate[] ch, String a) {}
-            public X509Certificate[] getAcceptedIssuers() { return new X509Certificate[0]; }
-        }}, new java.security.SecureRandom());
+        ctx.init(null, new TrustManager[]{new PinnedTrustManager()},
+                new java.security.SecureRandom());
         return ctx;
+    }
+
+    private static final class PinnedTrustManager implements X509TrustManager {
+        @Override public void checkClientTrusted(X509Certificate[] chain, String authType)
+                throws java.security.cert.CertificateException {
+            throw new java.security.cert.CertificateException(
+                    "client certificate not accepted");
+        }
+
+        @Override public void checkServerTrusted(X509Certificate[] chain, String authType)
+                throws java.security.cert.CertificateException {
+            if (chain == null || chain.length == 0) {
+                throw new java.security.cert.CertificateException(
+                        "empty server certificate");
+            }
+            try {
+                MessageDigest md = MessageDigest.getInstance("SHA-256");
+                byte[] digest = md.digest(chain[0].getEncoded());
+                StringBuilder hex = new StringBuilder();
+                for (byte b : digest) hex.append(String.format("%02x", b));
+                if (!SERVER_CERT_SHA256.equals(hex.toString())) {
+                    throw new java.security.cert.CertificateException(
+                            "server certificate pin mismatch");
+                }
+            } catch (java.security.cert.CertificateException e) {
+                throw e;
+            } catch (Exception e) {
+                throw new java.security.cert.CertificateException(e);
+            }
+        }
+
+        @Override public X509Certificate[] getAcceptedIssuers() {
+            return new X509Certificate[0];
+        }
     }
 
     private static String readAll(HttpURLConnection c) throws Exception {

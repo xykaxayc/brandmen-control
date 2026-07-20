@@ -3,6 +3,7 @@ package com.brandmen.ads;
 import android.content.Context;
 import android.os.Handler;
 import android.os.Looper;
+import org.json.JSONObject;
 import java.io.*;
 import java.net.*;
 import java.util.*;
@@ -50,6 +51,7 @@ public class MediaServer {
         int getPlaylistCount();
         String getCurrentName();
         boolean isPlaying();
+        default int getPlaybackPositionMs() { return -1; }
         void onInstallApk(File apkFile);
         /** Снять с приложения статус device owner (вернуть планшет в обычный режим). */
         default void onClearDeviceOwner() {}
@@ -62,6 +64,7 @@ public class MediaServer {
     private final Handler mainHandler;
     private final File apkStageDir;
     private final Context appContext;
+    private final DeploymentManager deployments;
     private final long startTime = System.currentTimeMillis();
     private ServerSocket serverSocket;
     private Thread acceptThread;
@@ -73,6 +76,7 @@ public class MediaServer {
         this.mainHandler = new Handler(Looper.getMainLooper());
         this.apkStageDir = context.getCacheDir();
         this.appContext = context.getApplicationContext();
+        this.deployments = new DeploymentManager(context);
     }
 
     /** Является ли приложение device owner — тогда обновления ставятся молча. */
@@ -151,6 +155,7 @@ public class MediaServer {
 
             // Read headers
             int contentLength = -1;
+            String authorization = null;
             String line;
             while (!(line = readAsciiLine(in)).isEmpty()) {
                 int colon = line.indexOf(':');
@@ -159,6 +164,8 @@ public class MediaServer {
                     String value = line.substring(colon + 1).trim();
                     if (key.equals("content-length")) {
                         try { contentLength = Integer.parseInt(value); } catch (NumberFormatException ignored) {}
+                    } else if (key.equals("authorization")) {
+                        authorization = value;
                     }
                 }
             }
@@ -168,9 +175,11 @@ public class MediaServer {
             // размером <4096 байт) будет съедено здесь, и handleUpload получит
             // пустой поток → зависание до таймаута сокета.
             boolean isUpload = method.equals("POST")
-                    && (path.startsWith("/upload/") || path.equals("/api/update/install"));
+                    && (path.startsWith("/upload/")
+                        || path.startsWith("/api/v2/blob/")
+                        || path.equals("/api/update/install"));
             String body = "";
-            if (!isUpload && contentLength > 0 && contentLength <= 4096) {
+            if (!isUpload && contentLength > 0 && contentLength <= 1024 * 1024) {
                 byte[] bodyBytes = new byte[contentLength];
                 int total = 0;
                 while (total < contentLength) {
@@ -182,7 +191,11 @@ public class MediaServer {
             }
 
             // Route
-            if (method.equals("GET") && path.equals("/ping")) {
+            if (path.startsWith("/api/v2/")
+                    && !path.equals("/api/v2/capabilities")
+                    && !deployments.authorized(authorization)) {
+                sendJson(out, 401, "{\"error\":\"unauthorized\"}");
+            } else if (method.equals("GET") && path.equals("/ping")) {
                 sendJson(out, 200, "{\"ok\":true}");
             } else if (method.equals("GET") && path.equals("/version")) {
                 sendJson(out, 200, "{\"version\":\"" + VERSION + "\"}");
@@ -198,8 +211,26 @@ public class MediaServer {
                 handleUpload(in, out, sanitize(path.substring(8)), contentLength);
             } else if (method.equals("DELETE") && path.startsWith("/file/")) {
                 handleDelete(out, sanitize(path.substring(6)));
+            } else if (method.equals("GET") && path.equals("/api/v2/capabilities")) {
+                handleV2Capabilities(out);
+            } else if (method.equals("GET") && path.equals("/api/v2/status")) {
+                handleV2Status(params.get("deployment_id"), out);
+            } else if (method.equals("POST") && path.equals("/api/v2/prepare")) {
+                handleV2Prepare(body, out);
+            } else if (method.equals("POST") && path.startsWith("/api/v2/blob/")) {
+                handleV2Blob(
+                        sanitize(path.substring("/api/v2/blob/".length())),
+                        params, contentLength, in, out);
+            } else if (method.equals("POST") && path.equals("/api/v2/commit")) {
+                handleV2Commit(body, out);
+            } else if (method.equals("POST") && path.equals("/api/v2/rollback")) {
+                handleV2Rollback(out);
             } else if (method.equals("POST") && path.equals("/api/update/install")) {
-                handleInstallUpload(in, out, contentLength);
+                if (deployments.isOperationActive()) {
+                    sendJson(out, 409, "{\"error\":\"deployment_in_progress\"}");
+                } else {
+                    handleInstallUpload(in, out, contentLength);
+                }
             } else if (method.equals("POST") && path.equals("/api/brand-pack")) {
                 handleBrandPack(body, out);
             } else if (path.startsWith("/api/control/")) {
@@ -264,6 +295,10 @@ public class MediaServer {
             case "reboot":
                 // Перезагрузка по команде оператора (без ADB). Сработает только на
                 // device owner; ответ отправляем ДО ребута.
+                if (deployments.isOperationActive()) {
+                    sendJson(out, 409, "{\"error\":\"deployment_in_progress\"}");
+                    break;
+                }
                 sendJson(out, 200, "{\"ok\":true}");
                 mainHandler.post(callback::onReboot);
                 break;
@@ -378,17 +413,20 @@ public class MediaServer {
         int idx = -1, total = 0;
         String name = "";
         boolean playing = false;
+        int positionMs = -1;
         if (callback != null) {
             idx = callback.getCurrentIndex();
             total = callback.getPlaylistCount();
             name = callback.getCurrentName();
             playing = callback.isPlaying();
+            positionMs = callback.getPlaybackPositionMs();
         }
         sendJson(out, 200, "{\"version\":\"" + VERSION + "\""
                 + ",\"uptimeMs\":" + uptime
                 + ",\"freeMb\":" + freeMb
                 + ",\"totalMb\":" + totalMb
                 + ",\"playing\":" + playing
+                + ",\"positionMs\":" + positionMs
                 + ",\"index\":" + idx
                 + ",\"total\":" + total
                 + ",\"deviceOwner\":" + isDeviceOwner()
@@ -398,9 +436,91 @@ public class MediaServer {
                 + ",\"canInstall\":" + canRequestInstalls()
                 + ",\"batteryExempt\":" + isBatteryExempt()
                 + ",\"overlay\":" + canDrawOverlays()
+                + ",\"deviceId\":\"" + escJson(deployments.deviceId()) + "\""
+                + ",\"protocolVersion\":" + DeploymentManager.PROTOCOL_VERSION
+                + ",\"activeDeploymentId\":\""
+                    + escJson(deployments.activeDeploymentId()) + "\""
+                + ",\"playlistHash\":\""
+                    + escJson(deployments.activePlaylistHash()) + "\""
+                + ",\"currentFileSha256\":\""
+                    + escJson(deployments.hashForActiveLogicalName(name == null ? "" : name)) + "\""
                 + ",\"brand\":\"" + escJson(BrandConfig.name(appContext)) + "\""
                 + ",\"accent\":\"" + escJson(BrandConfig.accent(appContext)) + "\""
                 + ",\"current\":\"" + escJson(name == null ? "" : name) + "\"}");
+    }
+
+    // ---- Deployment protocol v2 ----
+
+    private void handleV2Capabilities(OutputStream out) throws IOException {
+        try {
+            sendJson(out, 200, deployments.capabilities().toString());
+        } catch (Exception e) {
+            sendV2Error(out, e);
+        }
+    }
+
+    private void handleV2Status(String deploymentId, OutputStream out) throws IOException {
+        try {
+            sendJson(out, 200, deployments.status(deploymentId).toString());
+        } catch (Exception e) {
+            sendV2Error(out, e);
+        }
+    }
+
+    private void handleV2Prepare(String body, OutputStream out) throws IOException {
+        try {
+            sendJson(out, 200, deployments.prepare(body).toString());
+        } catch (Exception e) {
+            sendV2Error(out, e);
+        }
+    }
+
+    private void handleV2Blob(String hash, Map<String, String> params,
+                              int contentLength, InputStream in, OutputStream out)
+            throws IOException {
+        try {
+            long offset = Long.parseLong(params.getOrDefault("offset", "0"));
+            long total = Long.parseLong(params.getOrDefault("total", "-1"));
+            JSONObject result =
+                    deployments.uploadBlob(hash, offset, total, contentLength, in);
+            int code = result.has("error") ? 409 : 200;
+            sendJson(out, code, result.toString());
+        } catch (Exception e) {
+            sendV2Error(out, e);
+        }
+    }
+
+    private void handleV2Commit(String body, OutputStream out) throws IOException {
+        try {
+            JSONObject request = new JSONObject(body);
+            JSONObject result =
+                    deployments.commit(request.getString("deployment_id"));
+            sendJson(out, 200, result.toString());
+            // Перечитать активный manifest и начать воспроизведение.
+            if (callback != null) mainHandler.post(callback::onLaunch);
+        } catch (Exception e) {
+            sendV2Error(out, e);
+        }
+    }
+
+    private void handleV2Rollback(OutputStream out) throws IOException {
+        try {
+            JSONObject result = deployments.rollback();
+            sendJson(out, 200, result.toString());
+            if (callback != null) mainHandler.post(callback::onLaunch);
+        } catch (Exception e) {
+            sendV2Error(out, e);
+        }
+    }
+
+    private void sendV2Error(OutputStream out, Exception e) throws IOException {
+        String code = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+        int status = (e instanceof IllegalArgumentException) ? 400
+                : (e instanceof SecurityException) ? 422
+                : (e instanceof FileNotFoundException) ? 404
+                : (e instanceof IllegalStateException) ? 409 : 500;
+        android.util.Log.w("Deployment", code, e);
+        sendJson(out, status, "{\"error\":\"" + escJson(code) + "\"}");
     }
 
     /** Сохраняет бренд-пакет, переданный пультом. Данные переживают перезагрузку. */
@@ -483,9 +603,9 @@ public class MediaServer {
         }
         File dest = new File(mediaDir, filename + ".part");
         new File(mediaDir).mkdirs();
+        int remaining = contentLength;
         try (FileOutputStream fos = new FileOutputStream(dest)) {
             byte[] buf = new byte[65536];
-            int remaining = contentLength;
             while (remaining > 0) {
                 int toRead = Math.min(buf.length, remaining);
                 int n = in.read(buf, 0, toRead);
@@ -493,10 +613,36 @@ public class MediaServer {
                 fos.write(buf, 0, n);
                 remaining -= n;
             }
+            fos.flush();
+            fos.getFD().sync();
+        }
+        // Никогда не публикуем оборванную загрузку. Раньше сервер отвечал 200
+        // и заменял рабочий ролик даже при EOF до заявленного Content-Length.
+        if (remaining != 0 || dest.length() != contentLength) {
+            long received = dest.length();
+            if (!dest.delete()) dest.deleteOnExit();
+            android.util.Log.w("MediaServer", "upload incomplete " + filename
+                    + ": expected=" + contentLength + " received=" + received);
+            sendJson(out, 400, "{\"error\":\"incomplete_upload\",\"expected\":"
+                    + contentLength + ",\"received\":" + received + "}");
+            return;
         }
         File final_ = new File(mediaDir, filename);
-        if (final_.exists()) final_.delete();
-        dest.renameTo(final_);
+        File backup = new File(mediaDir, filename + ".previous");
+        if (backup.exists()) backup.delete();
+        boolean hadFinal = final_.exists();
+        if (hadFinal && !final_.renameTo(backup)) {
+            dest.delete();
+            sendJson(out, 500, "{\"error\":\"cannot_stage_previous\"}");
+            return;
+        }
+        if (!dest.renameTo(final_)) {
+            if (hadFinal) backup.renameTo(final_);
+            dest.delete();
+            sendJson(out, 500, "{\"error\":\"cannot_publish_upload\"}");
+            return;
+        }
+        if (backup.exists()) backup.delete();
         sendJson(out, 200, "{\"ok\":true,\"name\":\"" + escJson(filename) + "\"}");
     }
 
@@ -506,18 +652,30 @@ public class MediaServer {
         apkStageDir.mkdirs();
         File apk = new File(apkStageDir, "remote-update.apk");
         File part = new File(apkStageDir, "remote-update.apk.part");
+        int remaining = contentLength;
         try (FileOutputStream fos = new FileOutputStream(part)) {
             byte[] buf = new byte[65536];
-            int remaining = contentLength;
             while (remaining > 0) {
                 int n = in.read(buf, 0, Math.min(buf.length, remaining));
                 if (n < 0) break;
                 fos.write(buf, 0, n);
                 remaining -= n;
             }
+            fos.flush();
+            fos.getFD().sync();
+        }
+        if (remaining != 0 || part.length() != contentLength) {
+            long received = part.length();
+            if (!part.delete()) part.deleteOnExit();
+            sendJson(out, 400, "{\"error\":\"incomplete_upload\",\"expected\":"
+                    + contentLength + ",\"received\":" + received + "}");
+            return;
         }
         if (apk.exists()) apk.delete();
-        part.renameTo(apk);
+        if (!part.renameTo(apk)) {
+            sendJson(out, 500, "{\"error\":\"cannot_publish_apk\"}");
+            return;
+        }
         if (callback != null) {
             final File f = apk;
             mainHandler.post(() -> callback.onInstallApk(f));
@@ -570,8 +728,12 @@ public class MediaServer {
         switch (code) {
             case 200: return "OK";
             case 400: return "Bad Request";
+            case 401: return "Unauthorized";
             case 404: return "Not Found";
             case 405: return "Method Not Allowed";
+            case 409: return "Conflict";
+            case 422: return "Unprocessable Entity";
+            case 500: return "Internal Server Error";
             case 503: return "Service Unavailable";
             default: return "Error";
         }

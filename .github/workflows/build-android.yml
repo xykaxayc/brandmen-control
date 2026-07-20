@@ -66,6 +66,7 @@ jobs:
           javac --release 11 -classpath "$ANDROID_SDK_ROOT/platforms/android-33/android.jar" \
             -Xlint:-options -d classes \
             src/main/java/com/brandmen/ads/MediaServer.java \
+            src/main/java/com/brandmen/ads/DeploymentManager.java \
             src/main/java/com/brandmen/ads/BootReceiver.java \
             src/main/java/com/brandmen/ads/DeviceAdminReceiver.java \
             src/main/java/com/brandmen/ads/DiscoveryListener.java \
@@ -90,6 +91,8 @@ jobs:
       - name: Pack APK
         working-directory: android-player
         run: |
+          # versionCode должен только расти, даже если релизный tag восстановлен
+          # из бэкапа или создан повторно. Пользователь видит versionName ниже.
           COUNT=$(git rev-list --count HEAD)
           # aapt2 link компилирует манифест в бинарный формат и создаёт базовый APK
           $ANDROID_SDK_ROOT/build-tools/34.0.0/aapt2 link \
@@ -100,7 +103,7 @@ jobs:
             --min-sdk-version 21 \
             --target-sdk-version 33 \
             --version-code "$COUNT" \
-            --version-name "0.$COUNT.0"
+            --version-name "${{ steps.ver.outputs.version }}"
           # Добавляем DEX в APK
           zip -j brandmen-base.apk classes.dex
           $ANDROID_SDK_ROOT/build-tools/34.0.0/zipalign -f 4 \
