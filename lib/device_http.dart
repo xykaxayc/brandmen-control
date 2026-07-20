@@ -203,7 +203,7 @@ class DeviceHttp {
               'name': pack.name,
               'mark': pack.mark,
               'accent': '#$rgb',
-              'tagline': pack.kind,
+              'tagline': pack.tagline,
             }),
           )
           .timeout(const Duration(seconds: 4));

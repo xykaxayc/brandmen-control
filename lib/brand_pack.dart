@@ -8,8 +8,16 @@ class BrandPack {
   final String kind;
   final Color accent;
   final String version;
+  final String tagline;
   const BrandPack(
-      this.id, this.name, this.mark, this.kind, this.accent, this.version);
+    this.id,
+    this.name,
+    this.mark,
+    this.kind,
+    this.accent,
+    this.version, {
+    required this.tagline,
+  });
 }
 
 /// Бренд-пакет — единый источник названия и акцентного цвета пульта.
@@ -17,10 +25,13 @@ class BrandPack {
 class BrandPacks {
   static const available = <BrandPack>[
     BrandPack(
-        'brandmen', 'BRANDMEN', 'B', 'Барбершоп', Color(0xFFE0B85C), 'v1.3'),
-    BrandPack('mokko', 'MOKKO', 'M', 'Кофейня', Color(0xFF65C997), 'v2.1'),
+        'brandmen', 'BRANDMEN', 'B', 'Барбершоп', Color(0xFFE0B85C), 'v1.3',
+        tagline: 'Стиль начинается здесь'),
+    BrandPack('mokko', 'MOKKO', 'M', 'Кофейня', Color(0xFF65C997), 'v2.1',
+        tagline: 'Кофе. Тепло. Каждый день.'),
     BrandPack(
-        'fitline', 'FITLINE', 'F', 'Фитнес-студия', Color(0xFF7FA7FF), 'v1.0'),
+        'fitline', 'FITLINE', 'F', 'Фитнес-студия', Color(0xFF7FA7FF), 'v1.0',
+        tagline: 'Движение — это жизнь'),
   ];
   static const _key = 'brand_pack_id';
   static final current = ValueNotifier<BrandPack>(available.first);

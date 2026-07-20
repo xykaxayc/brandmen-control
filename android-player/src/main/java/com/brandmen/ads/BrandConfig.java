@@ -25,6 +25,7 @@ final class BrandConfig {
     }
 
     static String name(Context c) { return c.getSharedPreferences(PREF, 0).getString("name", DEFAULT_NAME); }
+    static String mark(Context c) { return c.getSharedPreferences(PREF, 0).getString("mark", "B"); }
     static String accent(Context c) { return c.getSharedPreferences(PREF, 0).getString("accent", DEFAULT_ACCENT); }
     static String tagline(Context c) { return c.getSharedPreferences(PREF, 0).getString("tagline", "Реклама на экране"); }
 }

@@ -40,6 +40,13 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
     private TextView timeText;
     private TextView syncStatusView;
     private TextView recoveryView;
+    private LinearLayout recoveryLayout;
+    private TextView recoveryMarkView;
+    private TextView recoveryNameView;
+    private TextView controlBrandBadge;
+    private TextView syncBtn;
+    private TextView listBtn;
+    private TextView playlistTitle;
     private boolean userPaused = false;
     private ProgressBar progressBar;
     private SeekBar volumeBar;
@@ -66,16 +73,53 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
 
     /** Применяется сразу после получения бренд-пакета по Wi‑Fi. */
     void applyBranding() {
+        int accent = Color.parseColor(BrandConfig.accent(this));
         if (recoveryView != null) {
-            recoveryView.setText(BrandConfig.name(this) + " Ads\n\n" + BrandConfig.tagline(this)
-                    + "\n\nОжидание контента от пульта.");
+            recoveryView.setText(BrandConfig.tagline(this)
+                    + "\n\nОжидание контента · синхронизация с пультом");
+        }
+        if (recoveryNameView != null) recoveryNameView.setText(BrandConfig.name(this));
+        if (controlBrandBadge != null) {
+            controlBrandBadge.setText(BrandConfig.mark(this));
+            controlBrandBadge.setBackground(rounded(accent, 9, 0, 0));
+        }
+        if (recoveryMarkView != null) {
+            recoveryMarkView.setText(BrandConfig.mark(this));
+            recoveryMarkView.setBackground(rounded(accent, 22, 0, 0));
         }
         if (controlsLayout != null) {
-            android.graphics.drawable.GradientDrawable bg = new android.graphics.drawable.GradientDrawable();
-            bg.setColor(Color.parseColor("#D90A0A0C")); bg.setCornerRadius(44);
-            bg.setStroke(1, Color.parseColor(BrandConfig.accent(this)));
-            controlsLayout.setBackground(bg);
+            controlsLayout.setBackground(rounded(Color.parseColor("#E60A0A0C"), 44, accent, 1));
         }
+        if (syncBtn != null) syncBtn.setTextColor(accent);
+        if (listBtn != null) listBtn.setTextColor(Color.parseColor("#CCFFFFFF"));
+        if (playPauseBtn != null) playPauseBtn.setTextColor(accent);
+        if (playlistTitle != null) {
+            playlistTitle.setText("Плейлист · " + BrandConfig.name(this));
+            playlistTitle.setTextColor(accent);
+        }
+        if (progressBar != null && progressBar.getProgressDrawable() != null) {
+            progressBar.getProgressDrawable().setColorFilter(
+                    accent, android.graphics.PorterDuff.Mode.SRC_IN);
+        }
+        if (volumeBar != null && Build.VERSION.SDK_INT >= 21) {
+            android.content.res.ColorStateList colors =
+                    android.content.res.ColorStateList.valueOf(accent);
+            volumeBar.setProgressTintList(colors);
+            volumeBar.setThumbTintList(colors);
+        }
+        if (playlistLayout != null) {
+            playlistLayout.setBackgroundColor(Color.parseColor("#F708080A"));
+        }
+    }
+
+    private android.graphics.drawable.GradientDrawable rounded(
+            int color, float radius, int strokeColor, int strokeWidth) {
+        android.graphics.drawable.GradientDrawable d =
+                new android.graphics.drawable.GradientDrawable();
+        d.setColor(color);
+        d.setCornerRadius(radius);
+        if (strokeWidth > 0) d.setStroke(strokeWidth, strokeColor);
+        return d;
     }
 
     @Override
@@ -129,15 +173,44 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
         rootLayout.addView(syncStatusView,
                 new FrameLayout.LayoutParams(-2, -2, Gravity.CENTER));
 
-        // Заглушка вместо чёрного экрана, когда нет контента/сети.
+        // Брендированная заставка вместо чёрного экрана, когда нет контента.
+        recoveryLayout = new LinearLayout(this);
+        recoveryLayout.setOrientation(LinearLayout.VERTICAL);
+        recoveryLayout.setGravity(Gravity.CENTER);
+        recoveryLayout.setBackgroundColor(Color.parseColor("#08080A"));
+
+        recoveryMarkView = new TextView(this);
+        recoveryMarkView.setText("B");
+        recoveryMarkView.setTextColor(Color.parseColor("#101012"));
+        recoveryMarkView.setTextSize(38);
+        recoveryMarkView.setTypeface(null, android.graphics.Typeface.BOLD);
+        recoveryMarkView.setGravity(Gravity.CENTER);
+        recoveryLayout.addView(recoveryMarkView,
+                new LinearLayout.LayoutParams(112, 112));
+
+        recoveryNameView = new TextView(this);
+        recoveryNameView.setText("BRANDMEN");
+        recoveryNameView.setTextColor(Color.WHITE);
+        recoveryNameView.setTextSize(30);
+        recoveryNameView.setTypeface(null, android.graphics.Typeface.BOLD);
+        recoveryNameView.setLetterSpacing(.12f);
+        recoveryNameView.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams nameLp = new LinearLayout.LayoutParams(-2, -2);
+        nameLp.topMargin = 24;
+        recoveryLayout.addView(recoveryNameView, nameLp);
+
         recoveryView = new TextView(this);
-        recoveryView.setTextColor(Color.parseColor("#66FFFFFF"));
-        recoveryView.setTextSize(22);
+        recoveryView.setTextColor(Color.parseColor("#88FFFFFF"));
+        recoveryView.setTextSize(15);
         recoveryView.setGravity(Gravity.CENTER);
-        recoveryView.setText("Brandmen Ads\n\nНет роликов для показа.\nДобавьте контент в приложении.");
-        recoveryView.setVisibility(View.GONE);
-        rootLayout.addView(recoveryView,
-                new FrameLayout.LayoutParams(-1, -1, Gravity.CENTER));
+        recoveryView.setText("Ожидание контента · синхронизация с пультом");
+        LinearLayout.LayoutParams recoveryTextLp = new LinearLayout.LayoutParams(-2, -2);
+        recoveryTextLp.topMargin = 14;
+        recoveryLayout.addView(recoveryView, recoveryTextLp);
+
+        recoveryLayout.setVisibility(View.GONE);
+        rootLayout.addView(recoveryLayout,
+                new FrameLayout.LayoutParams(-1, -1));
 
         setupUI();
         setupPlaylistUI();
@@ -366,13 +439,25 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
         topRow.setGravity(Gravity.CENTER_VERTICAL);
         controlsLayout.addView(topRow);
 
+        controlBrandBadge = new TextView(this);
+        controlBrandBadge.setText(BrandConfig.mark(this));
+        controlBrandBadge.setTextColor(Color.parseColor("#101012"));
+        controlBrandBadge.setTextSize(12);
+        controlBrandBadge.setTypeface(null, android.graphics.Typeface.BOLD);
+        controlBrandBadge.setGravity(Gravity.CENTER);
+        controlBrandBadge.setBackground(rounded(
+                Color.parseColor(BrandConfig.accent(this)), 9, 0, 0));
+        LinearLayout.LayoutParams badgeLp = new LinearLayout.LayoutParams(38, 38);
+        badgeLp.rightMargin = 15;
+        topRow.addView(controlBrandBadge, badgeLp);
+
         timeText = new TextView(this);
         timeText.setText("00:00 / 00:00");
         timeText.setTextColor(Color.WHITE);
         timeText.setTextSize(13);
         topRow.addView(timeText, new LinearLayout.LayoutParams(0, -2, 1));
 
-        TextView syncBtn = new TextView(this);
+        syncBtn = new TextView(this);
         syncBtn.setText("🔄 Обновить");
         syncBtn.setTextColor(Color.parseColor("#34C759"));
         syncBtn.setTextSize(15);
@@ -380,7 +465,7 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
         syncBtn.setOnClickListener(v -> startSync());
         topRow.addView(syncBtn);
 
-        TextView listBtn = new TextView(this);
+        listBtn = new TextView(this);
         listBtn.setText("☰ Список");
         listBtn.setTextColor(Color.parseColor("#007AFF"));
         listBtn.setTextSize(15);
@@ -859,13 +944,14 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
         playlistLayout.setVisibility(View.GONE);
         playlistLayout.setPadding(50, 80, 50, 50);
 
-        TextView title = new TextView(this);
-        title.setText("Список роликов");
-        title.setTextColor(Color.WHITE);
-        title.setTextSize(24);
-        title.setGravity(Gravity.CENTER);
-        title.setPadding(0, 0, 0, 40);
-        playlistLayout.addView(title);
+        playlistTitle = new TextView(this);
+        playlistTitle.setText("Плейлист · " + BrandConfig.name(this));
+        playlistTitle.setTextColor(Color.parseColor(BrandConfig.accent(this)));
+        playlistTitle.setTextSize(24);
+        playlistTitle.setTypeface(null, android.graphics.Typeface.BOLD);
+        playlistTitle.setGravity(Gravity.CENTER);
+        playlistTitle.setPadding(0, 0, 0, 40);
+        playlistLayout.addView(playlistTitle);
 
         ScrollView scroll = new ScrollView(this);
         playlistLayout.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
@@ -895,11 +981,17 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
             File file = videoFiles.get(i);
             TextView item = new TextView(this);
             item.setText((i + 1) + ". " + file.getName());
-            item.setTextColor(i == currentIndex ? Color.parseColor("#007AFF") : Color.WHITE);
+            int accent = Color.parseColor(BrandConfig.accent(this));
+            item.setTextColor(i == currentIndex ? accent : Color.WHITE);
             item.setTextSize(18);
             item.setPadding(30, 30, 30, 30);
             android.graphics.drawable.GradientDrawable border = new android.graphics.drawable.GradientDrawable();
-            border.setStroke(1, Color.parseColor("#33FFFFFF"));
+            border.setColor(i == currentIndex
+                    ? Color.argb(24, Color.red(accent), Color.green(accent), Color.blue(accent))
+                    : Color.parseColor("#0AFFFFFF"));
+            border.setCornerRadius(10);
+            border.setStroke(i == currentIndex ? 2 : 1,
+                    i == currentIndex ? accent : Color.parseColor("#22FFFFFF"));
             item.setBackground(border);
             item.setOnClickListener(v -> { currentIndex = index; playNext(); hidePlaylist(); });
             container.addView(item);
@@ -1254,12 +1346,12 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
             if (videoFiles.isEmpty()) {
                 // Нет роликов — показываем заглушку вместо чёрного экрана и
                 // продолжаем периодически проверять.
-                if (recoveryView != null) recoveryView.setVisibility(View.VISIBLE);
+                if (recoveryLayout != null) recoveryLayout.setVisibility(View.VISIBLE);
                 videoView.postDelayed(this::playNext, 5000);
                 return;
             }
         }
-        if (recoveryView != null) recoveryView.setVisibility(View.GONE);
+        if (recoveryLayout != null) recoveryLayout.setVisibility(View.GONE);
         if (currentIndex >= videoFiles.size()) currentIndex = 0;
         if (currentIndex < 0) currentIndex = 0;
         videoView.setVideoPath(videoFiles.get(currentIndex).getAbsolutePath());

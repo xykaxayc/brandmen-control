@@ -24,6 +24,7 @@ import 'autostart.dart';
 import 'updater.dart';
 import 'log_uploader.dart';
 import 'brand_pack.dart';
+import 'brand_pack_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -153,8 +154,40 @@ class BrandmenApp extends StatelessWidget {
         theme: ThemeData(
           brightness: Brightness.dark,
           fontFamily: 'Segoe UI',
-          colorScheme: ColorScheme.dark(primary: pack.accent),
+          colorScheme: ColorScheme.dark(
+            primary: pack.accent,
+            surface: const Color(0xFF17171A),
+          ),
           scaffoldBackgroundColor: Colors.transparent,
+          dividerColor: Colors.white10,
+          snackBarTheme: const SnackBarThemeData(
+            backgroundColor: Color(0xFF26262A),
+            contentTextStyle: TextStyle(color: Colors.white),
+            behavior: SnackBarBehavior.floating,
+          ),
+          dialogTheme: DialogThemeData(
+            backgroundColor: const Color(0xFF202024),
+            shape:
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          ),
+          filledButtonTheme: FilledButtonThemeData(
+            style: FilledButton.styleFrom(
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10)),
+              textStyle:
+                  const TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
+            ),
+          ),
+          outlinedButtonTheme: OutlinedButtonThemeData(
+            style: OutlinedButton.styleFrom(
+              foregroundColor: Colors.white70,
+              side: const BorderSide(color: Colors.white24),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10)),
+              textStyle:
+                  const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+            ),
+          ),
           useMaterial3: true,
         ),
         home: AppleBackgroundWrapper(child: MainScreen(), accent: pack.accent),
@@ -524,99 +557,122 @@ class _MainScreenState extends State<MainScreen> {
     final List<Widget> screens = [
       DashboardScreen(key: _dashboardKey),
       const MediaScreen(),
+      BrandPackScreen(onSelect: _selectBrandPack),
       SettingsScreen(key: _settingsKey),
       const LogsScreen(),
     ];
 
     return Scaffold(
-      backgroundColor: Colors.transparent,
+      backgroundColor: const Color(0xFF111114),
       body: Row(
         children: [
           Container(
-            width: 220,
-            padding: const EdgeInsets.symmetric(vertical: 20),
+            width: 224,
+            padding: const EdgeInsets.fromLTRB(14, 24, 14, 16),
             decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.03),
-              border: const Border(right: BorderSide(color: Colors.white10)),
+              color: const Color(0xFF151518),
+              border: Border(
+                right: BorderSide(color: Colors.white.withValues(alpha: 0.065)),
+              ),
             ),
             child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                const SizedBox(height: 30),
-                Text(pack.name,
-                    style: const TextStyle(
-                        fontSize: 22,
-                        fontWeight: FontWeight.w800,
-                        color: Colors.white)),
-                Text("${pack.kind.toUpperCase()} · CONTROL",
-                    style: TextStyle(
-                        fontSize: 10,
-                        fontWeight: FontWeight.bold,
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 6),
+                  child: Row(children: [
+                    Container(
+                      width: 40,
+                      height: 40,
+                      decoration: BoxDecoration(
                         color: accent,
-                        letterSpacing: 2)),
-                const SizedBox(height: 4),
-                const Text("v$kAppVersion",
-                    style: TextStyle(
-                        fontSize: 10, color: Colors.white54, letterSpacing: 1)),
-                const SizedBox(height: 46),
-                _navItem(0, Icons.grid_view_rounded, "Планшеты"),
-                _navItem(1, Icons.play_circle_fill_rounded, "Медиатека"),
-                _brandPackPicker(pack, accent),
+                        borderRadius: BorderRadius.circular(11),
+                      ),
+                      alignment: Alignment.center,
+                      child: Text(
+                        pack.mark,
+                        style: const TextStyle(
+                          color: Color(0xFF101012),
+                          fontSize: 19,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 11),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(pack.name,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                  fontSize: 15,
+                                  fontWeight: FontWeight.w800,
+                                  letterSpacing: .5)),
+                          const SizedBox(height: 2),
+                          const Text("CONTROL · v$kAppVersion",
+                              style: TextStyle(
+                                  fontSize: 9.5,
+                                  color: Colors.white38,
+                                  letterSpacing: 1)),
+                        ],
+                      ),
+                    ),
+                  ]),
+                ),
+                const SizedBox(height: 25),
+                _navItem(0, Icons.grid_view_rounded, "Устройства"),
+                _navItem(1, Icons.video_library_outlined, "Медиатека"),
+                _navItem(2, Icons.diamond_outlined, "Бренд-пакет"),
                 const Spacer(),
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  child: OutlinedButton(
-                    onPressed: () {
-                      AppLogger.log("Сворачивание в трей");
-                      tray.hideToTray();
-                    },
-                    style: OutlinedButton.styleFrom(
-                      side: const BorderSide(color: Colors.white10),
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(10)),
-                      padding: const EdgeInsets.symmetric(vertical: 12),
-                    ),
-                    child: const Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(Icons.unfold_less_rounded,
-                            size: 16, color: Colors.white38),
-                        SizedBox(width: 8),
-                        Text("В трей",
-                            style:
-                                TextStyle(color: Colors.white38, fontSize: 12)),
-                      ],
-                    ),
+                Container(
+                  margin: const EdgeInsets.fromLTRB(6, 0, 6, 12),
+                  padding: const EdgeInsets.all(11),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: .035),
+                    borderRadius: BorderRadius.circular(11),
+                    border: Border.all(color: Colors.white10),
                   ),
-                ),
-                const SizedBox(height: 8),
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  child: OutlinedButton(
-                    onPressed: _openLog,
-                    style: OutlinedButton.styleFrom(
-                      side: const BorderSide(color: Colors.white10),
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(10)),
-                      padding: const EdgeInsets.symmetric(vertical: 12),
+                  child: Row(children: [
+                    Container(
+                      width: 8,
+                      height: 8,
+                      decoration:
+                          BoxDecoration(color: accent, shape: BoxShape.circle),
                     ),
-                    child: const Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(Icons.article_outlined,
-                            size: 16, color: Colors.white38),
-                        SizedBox(width: 8),
-                        Text("Открыть лог",
-                            style:
-                                TextStyle(color: Colors.white38, fontSize: 12)),
-                      ],
+                    const SizedBox(width: 9),
+                    Expanded(
+                      child: Text(
+                        'Пакет ${pack.version}\nактуален',
+                        style: const TextStyle(
+                            color: Colors.white54, fontSize: 10.5, height: 1.4),
+                      ),
                     ),
-                  ),
+                    Icon(Icons.verified_rounded, size: 16, color: accent),
+                  ]),
                 ),
-                const SizedBox(height: 8),
-                _navItem(2, Icons.tune_rounded, "Настройки"),
-                const SizedBox(height: 8),
-                _navItem(3, Icons.terminal_rounded, "Логи"),
-                const SizedBox(height: 10),
+                _navItem(3, Icons.tune_rounded, "Настройки"),
+                _navItem(4, Icons.terminal_rounded, "Логи"),
+                const SizedBox(height: 7),
+                Row(
+                  children: [
+                    Expanded(
+                      child: _sideAction(
+                        Icons.unfold_less_rounded,
+                        'В трей',
+                        () {
+                          AppLogger.log("Сворачивание в трей");
+                          tray.hideToTray();
+                        },
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: _sideAction(
+                          Icons.article_outlined, 'Файл лога', _openLog),
+                    ),
+                  ],
+                ),
               ],
             ),
           ),
@@ -637,8 +693,9 @@ class _MainScreenState extends State<MainScreen> {
 
   Widget _navItem(int index, IconData icon, String label) {
     bool active = _selectedIndex == index;
+    final accent = Theme.of(context).colorScheme.primary;
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+      padding: const EdgeInsets.symmetric(vertical: 3),
       child: _HoverBuilder(
         builder: (hovered) => InkWell(
           onTap: () => setState(() => _selectedIndex = index),
@@ -649,7 +706,7 @@ class _MainScreenState extends State<MainScreen> {
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
             decoration: BoxDecoration(
               color: active
-                  ? Colors.blue.withValues(alpha: 0.15)
+                  ? accent.withValues(alpha: 0.14)
                   : hovered
                       ? Colors.white.withValues(alpha: 0.05)
                       : Colors.transparent,
@@ -662,7 +719,7 @@ class _MainScreenState extends State<MainScreen> {
                   duration: const Duration(milliseconds: 180),
                   curve: Curves.easeOut,
                   child: Icon(icon,
-                      color: active ? Colors.blue : Colors.white60, size: 20),
+                      color: active ? accent : Colors.white54, size: 19),
                 ),
                 const SizedBox(width: 12),
                 AnimatedDefaultTextStyle(
@@ -685,6 +742,27 @@ class _MainScreenState extends State<MainScreen> {
     );
   }
 
+  Widget _sideAction(
+      IconData icon, String label, FutureOr<void> Function() action) {
+    return InkWell(
+      onTap: action,
+      borderRadius: BorderRadius.circular(9),
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 9),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(9),
+          border: Border.all(color: Colors.white10),
+        ),
+        child: Column(children: [
+          Icon(icon, size: 15, color: Colors.white38),
+          const SizedBox(height: 4),
+          Text(label,
+              style: const TextStyle(color: Colors.white38, fontSize: 9.5)),
+        ]),
+      ),
+    );
+  }
+
   Future<void> _selectBrandPack(BrandPack pack) async {
     await BrandPacks.select(pack);
     final devices = await DeviceStorage.load();
@@ -700,66 +778,6 @@ class _MainScreenState extends State<MainScreen> {
           : 'Пакет ${pack.name} применён: $count из ${devices.length} планшетов.'),
     ));
   }
-
-  Widget _brandPackPicker(BrandPack active, Color accent) => Padding(
-        padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-        child: InkWell(
-          onTap: () => showDialog(
-            context: context,
-            builder: (c) => AlertDialog(
-              backgroundColor: const Color(0xFF202024),
-              title: const Text('Бренд-пакет'),
-              content: SizedBox(
-                  width: 360,
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: BrandPacks.available
-                        .map((p) => ListTile(
-                              leading: CircleAvatar(
-                                  backgroundColor: p.accent,
-                                  child: Text(p.mark,
-                                      style: const TextStyle(
-                                          color: Colors.black,
-                                          fontWeight: FontWeight.bold))),
-                              title: Text(p.name),
-                              subtitle: Text('${p.kind} · пакет ${p.version}'),
-                              trailing: p.id == active.id
-                                  ? Icon(Icons.check_circle, color: accent)
-                                  : null,
-                              onTap: () async {
-                                Navigator.pop(c);
-                                await _selectBrandPack(p);
-                              },
-                            ))
-                        .toList(),
-                  )),
-            ),
-          ),
-          borderRadius: BorderRadius.circular(10),
-          child: Container(
-            padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(
-                border: Border.all(color: Colors.white10),
-                borderRadius: BorderRadius.circular(10)),
-            child: Row(children: [
-              CircleAvatar(
-                  radius: 12,
-                  backgroundColor: active.accent,
-                  child: Text(active.mark,
-                      style: const TextStyle(
-                          color: Colors.black,
-                          fontWeight: FontWeight.bold,
-                          fontSize: 12))),
-              const SizedBox(width: 8),
-              Expanded(
-                  child: Text('Пакет ${active.version}',
-                      style: const TextStyle(
-                          fontSize: 11, color: Colors.white54))),
-              Icon(Icons.tune, size: 15, color: accent)
-            ]),
-          ),
-        ),
-      );
 }
 
 /// Отслеживает наведение мыши и пересобирает потомка с флагом hovered.
@@ -1832,9 +1850,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final onlineCount = statuses.values.where((s) => s.online).length;
     final readyForWifiControl =
         statuses.values.where((s) => s.fullWifiControlReady).length;
+    final accent = Theme.of(context).colorScheme.primary;
 
     return Padding(
-      padding: const EdgeInsets.all(40.0),
+      padding: const EdgeInsets.fromLTRB(36, 32, 36, 28),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -1850,14 +1869,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 children: [
                   const Text("Устройства",
                       style: TextStyle(
-                          fontSize: 34,
-                          fontWeight: FontWeight.w700,
-                          letterSpacing: -1)),
+                          fontSize: 28,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: -.6)),
+                  const SizedBox(height: 4),
                   Text(
                       "$onlineCount из ${saved.length} в сети · "
                       "$readyForWifiControl готовы к полному управлению",
                       style:
-                          const TextStyle(color: Colors.white38, fontSize: 14)),
+                          const TextStyle(color: Colors.white38, fontSize: 13)),
                 ],
               ),
               Wrap(
@@ -1884,19 +1904,19 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           borderRadius: BorderRadius.circular(12)),
                     ),
                   ),
-                  OutlinedButton.icon(
+                  FilledButton.icon(
                     onPressed: (saved.isEmpty || _busy)
                         ? null
                         : () => _guard(_syncOnlyAll),
                     icon: const Icon(Icons.sync_rounded),
-                    label: const Text("Синхронизировать"),
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: Colors.white70,
-                      side: const BorderSide(color: Colors.white24),
+                    label: const Text("Синхронизировать всё"),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: accent,
+                      foregroundColor: const Color(0xFF101012),
                       padding: const EdgeInsets.symmetric(
-                          horizontal: 18, vertical: 16),
+                          horizontal: 18, vertical: 15),
                       shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12)),
+                          borderRadius: BorderRadius.circular(10)),
                     ),
                   ),
                   OutlinedButton.icon(
@@ -1906,8 +1926,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     icon: const Icon(Icons.cast_connected_rounded),
                     label: const Text("Запустить все"),
                     style: OutlinedButton.styleFrom(
-                      foregroundColor: Colors.blue,
-                      side: const BorderSide(color: Colors.blue),
+                      foregroundColor: Colors.white70,
+                      side: const BorderSide(color: Colors.white24),
                       padding: const EdgeInsets.symmetric(
                           horizontal: 18, vertical: 16),
                       shape: RoundedRectangleBorder(
@@ -2005,8 +2025,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         : const Icon(Icons.refresh_rounded),
                     label: const Text("Обновить"),
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.blue,
-                      foregroundColor: Colors.white,
+                      backgroundColor: Colors.white.withValues(alpha: .08),
+                      foregroundColor: Colors.white70,
                       padding: const EdgeInsets.symmetric(
                           horizontal: 18, vertical: 16),
                       shape: RoundedRectangleBorder(
@@ -2017,7 +2037,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               )
             ],
           ),
-          const SizedBox(height: 40),
+          const SizedBox(height: 28),
           Expanded(
             child: saved.isEmpty
                 ? _emptyState()
@@ -2047,6 +2067,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Widget _emptyState() {
+    final accent = Theme.of(context).colorScheme.primary;
     return Center(
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
@@ -2065,8 +2086,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
             icon: const Icon(Icons.add_rounded, size: 18),
             label: const Text("Добавить планшет"),
             style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.blue,
-              foregroundColor: Colors.white,
+              backgroundColor: accent,
+              foregroundColor: const Color(0xFF101012),
               padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 16),
               shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(12)),
@@ -2098,7 +2119,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   : Matrix4.identity(),
               decoration: BoxDecoration(
                 color: Colors.white.withValues(alpha: hovered ? 0.07 : 0.05),
-                borderRadius: BorderRadius.circular(24),
+                borderRadius: BorderRadius.circular(16),
                 border: Border.all(
                     color: isOnline
                         ? Colors.green.withValues(alpha: hovered ? 0.4 : 0.2)
@@ -2113,7 +2134,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       ]
                     : null,
               ),
-              padding: const EdgeInsets.all(20),
+              padding: const EdgeInsets.all(14),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -3194,6 +3215,8 @@ class _MediaScreenState extends State<MediaScreen> {
   Widget build(BuildContext context) {
     final totalMb = videos.fold<int>(0, (s, f) => s + (_sizes[f.path] ?? 0)) /
         (1024 * 1024);
+    final accent = Theme.of(context).colorScheme.primary;
+    final pack = BrandPacks.current.value;
 
     return DropTarget(
       onDragEntered: (_) => setState(() => _dragging = true),
@@ -3205,7 +3228,7 @@ class _MediaScreenState extends State<MediaScreen> {
       child: Stack(
         children: [
           Padding(
-            padding: const EdgeInsets.all(40.0),
+            padding: const EdgeInsets.fromLTRB(36, 32, 36, 28),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -3219,15 +3242,16 @@ class _MediaScreenState extends State<MediaScreen> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        const Text("Плейлист",
+                        const Text("Медиатека",
                             style: TextStyle(
-                                fontSize: 34,
-                                fontWeight: FontWeight.w700,
-                                letterSpacing: -1)),
+                                fontSize: 28,
+                                fontWeight: FontWeight.w800,
+                                letterSpacing: -.6)),
+                        const SizedBox(height: 4),
                         Text(
-                            "${videos.length} роликов • ${totalMb.toStringAsFixed(1)} MB",
+                            "${videos.length} роликов · ${totalMb.toStringAsFixed(1)} МБ · пакет ${pack.version}",
                             style: const TextStyle(
-                                color: Colors.white38, fontSize: 14)),
+                                color: Colors.white38, fontSize: 13)),
                       ],
                     ),
                     Wrap(
@@ -3251,8 +3275,8 @@ class _MediaScreenState extends State<MediaScreen> {
                           icon: const Icon(Icons.add_to_photos_rounded),
                           label: const Text("Добавить"),
                           style: ElevatedButton.styleFrom(
-                              backgroundColor: Colors.blue,
-                              foregroundColor: Colors.white,
+                              backgroundColor: accent,
+                              foregroundColor: const Color(0xFF101012),
                               padding: const EdgeInsets.symmetric(
                                   horizontal: 18, vertical: 16),
                               shape: RoundedRectangleBorder(
@@ -3266,6 +3290,16 @@ class _MediaScreenState extends State<MediaScreen> {
                 _sourceFolderBanner(),
                 const SizedBox(height: 12),
                 _selected.isEmpty ? _tipBanner() : _selectionBar(),
+                const SizedBox(height: 20),
+                const Text(
+                  'КОНТЕНТ ТОЧКИ · ПОРЯДОК ПОКАЗА',
+                  style: TextStyle(
+                    color: Colors.white38,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 1.2,
+                  ),
+                ),
                 const SizedBox(height: 20),
                 Expanded(
                   child: videos.isEmpty
@@ -3306,21 +3340,21 @@ class _MediaScreenState extends State<MediaScreen> {
               child: Container(
                 margin: const EdgeInsets.all(20),
                 decoration: BoxDecoration(
-                  color: Colors.blue.withValues(alpha: 0.15),
+                  color: accent.withValues(alpha: 0.15),
                   border: Border.all(
-                      color: Colors.blue, width: 3, style: BorderStyle.solid),
+                      color: accent, width: 3, style: BorderStyle.solid),
                   borderRadius: BorderRadius.circular(24),
                 ),
-                child: const Center(
+                child: Center(
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       Icon(Icons.file_download_rounded,
-                          size: 100, color: Colors.blue),
-                      SizedBox(height: 20),
+                          size: 100, color: accent),
+                      const SizedBox(height: 20),
                       Text("Отпусти чтобы добавить видео",
                           style: TextStyle(
-                              color: Colors.blue,
+                              color: accent,
                               fontSize: 24,
                               fontWeight: FontWeight.bold)),
                     ],
@@ -3334,21 +3368,22 @@ class _MediaScreenState extends State<MediaScreen> {
   }
 
   Widget _tipBanner() {
+    final accent = Theme.of(context).colorScheme.primary;
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: Colors.blue.withValues(alpha: 0.08),
+        color: accent.withValues(alpha: 0.08),
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Colors.blue.withValues(alpha: 0.2)),
+        border: Border.all(color: accent.withValues(alpha: 0.2)),
       ),
       child: Row(
         children: [
-          Icon(Icons.lightbulb_outline, color: Colors.blue.shade200, size: 18),
+          Icon(Icons.lightbulb_outline, color: accent, size: 18),
           const SizedBox(width: 8),
           Expanded(
             child: Text(
               "Перетащи видео из Finder сюда • Меняй порядок drag&drop • Галочка = выбрать для удаления",
-              style: TextStyle(color: Colors.blue.shade200, fontSize: 12),
+              style: TextStyle(color: accent, fontSize: 12),
             ),
           ),
         ],
