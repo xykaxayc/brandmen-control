@@ -31,7 +31,6 @@ jobs:
           git fetch --tags --force
           MAX=$(git tag -l 'v0.*.0' | sed -E 's/^v0\.([0-9]+)\.0$/\1/' | sort -n | tail -1)
           NEXT=$(( ${MAX:-0} + 1 ))
-          echo "code=$NEXT" >> $GITHUB_OUTPUT
           echo "version=0.$NEXT.0" >> $GITHUB_OUTPUT
           echo "tag=v0.$NEXT.0" >> $GITHUB_OUTPUT
 
@@ -92,6 +91,9 @@ jobs:
       - name: Pack APK
         working-directory: android-player
         run: |
+          # versionCode должен только расти, даже если релизный tag восстановлен
+          # из бэкапа или создан повторно. Пользователь видит versionName ниже.
+          COUNT=$(git rev-list --count HEAD)
           # aapt2 link компилирует манифест в бинарный формат и создаёт базовый APK
           $ANDROID_SDK_ROOT/build-tools/34.0.0/aapt2 link \
             -o brandmen-base.apk \
@@ -100,7 +102,7 @@ jobs:
             -R compiled_res/*.flat \
             --min-sdk-version 21 \
             --target-sdk-version 33 \
-            --version-code "${{ steps.ver.outputs.code }}" \
+            --version-code "$COUNT" \
             --version-name "${{ steps.ver.outputs.version }}"
           # Добавляем DEX в APK
           zip -j brandmen-base.apk classes.dex
