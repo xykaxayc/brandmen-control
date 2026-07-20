@@ -274,8 +274,11 @@ public class PlayerService extends Service implements MediaServer.ControlCallbac
         // 1) Быстрый путь.
         try { startActivity(i); }
         catch (Exception e) { android.util.Log.w("PlayerService", "sendCmd " + cmd + ": " + e.getMessage()); }
-        // 2) Надёжный путь из фона — FSI-уведомление.
-        fsiForeground(i, 100);
+        // На Device Owner приложение назначено постоянным HOME, поэтому прямой
+        // запуск штатен и FSI не нужен. На обычном планшете оставляем fallback.
+        if (!Kiosk.isDeviceOwner(this)) {
+            fsiForeground(i, 100);
+        }
     }
 
     /**

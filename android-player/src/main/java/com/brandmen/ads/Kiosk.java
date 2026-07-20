@@ -6,9 +6,12 @@ import android.app.admin.DevicePolicyManager;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
+import android.content.SharedPreferences;
 import android.os.Build;
 import android.os.PowerManager;
 import android.os.SystemClock;
+import android.os.UserManager;
 import android.provider.Settings;
 
 /**
@@ -38,13 +41,43 @@ final class Kiosk {
 
     private Kiosk() {}
 
+    /**
+     * Желаемое состояние рекламы хранится в device-protected storage, чтобы
+     * BootReceiver мог прочитать его до первого разблокирования после перезагрузки.
+     */
+    private static SharedPreferences playbackPrefs(Context ctx) {
+        Context app = ctx.getApplicationContext();
+        if (Build.VERSION.SDK_INT >= 24) {
+            Context directBoot = app.createDeviceProtectedStorageContext();
+            SharedPreferences prefs =
+                    directBoot.getSharedPreferences(PLAYER_PREFS, Context.MODE_PRIVATE);
+            if (!prefs.contains(PLAYBACK_ENABLED)) {
+                try {
+                    UserManager users =
+                            (UserManager) app.getSystemService(Context.USER_SERVICE);
+                    if (users == null || users.isUserUnlocked()) {
+                        SharedPreferences legacy =
+                                app.getSharedPreferences(PLAYER_PREFS, Context.MODE_PRIVATE);
+                        if (legacy.contains(PLAYBACK_ENABLED)) {
+                            prefs.edit().putBoolean(PLAYBACK_ENABLED,
+                                    legacy.getBoolean(PLAYBACK_ENABLED, true)).commit();
+                        }
+                    }
+                } catch (Exception ignored) {}
+            }
+            return prefs;
+        }
+        return app.getSharedPreferences(PLAYER_PREFS, Context.MODE_PRIVATE);
+    }
+
     static boolean isPlaybackEnabled(Context ctx) {
-        return ctx.getSharedPreferences(PLAYER_PREFS, Context.MODE_PRIVATE)
-                .getBoolean(PLAYBACK_ENABLED, true);
+        return playbackPrefs(ctx).getBoolean(PLAYBACK_ENABLED, true);
     }
 
     static void setPlaybackEnabled(Context ctx, boolean enabled) {
-        ctx.getSharedPreferences(PLAYER_PREFS, Context.MODE_PRIVATE)
+        playbackPrefs(ctx).edit().putBoolean(PLAYBACK_ENABLED, enabled).commit();
+        // Оставляем совместимую копию для старых версий при откате APK.
+        ctx.getApplicationContext().getSharedPreferences(PLAYER_PREFS, Context.MODE_PRIVATE)
                 .edit().putBoolean(PLAYBACK_ENABLED, enabled).apply();
     }
 
@@ -126,10 +159,23 @@ final class Kiosk {
             }
         } catch (Exception ignored) {}
 
-        // Миграция: снимаем жёсткий киоск, если его включала прошлая версия,
-        // чтобы планшет снова можно было свернуть/закрыть/удалить вручную.
+        // Brandmen становится постоянным HOME только на выделенном Device Owner.
+        // Это штатный Android-механизм для корпоративного устройства: после
+        // загрузки и при нажатии Home система сама открывает плеер, без хрупких
+        // full-screen уведомлений MIUI.
+        try {
+            IntentFilter home = new IntentFilter(Intent.ACTION_MAIN);
+            home.addCategory(Intent.CATEGORY_HOME);
+            home.addCategory(Intent.CATEGORY_DEFAULT);
+            dpm.addPersistentPreferredActivity(
+                    admin, home, new ComponentName(app, MainActivity.class));
+        } catch (Exception e) {
+            android.util.Log.w(TAG, "persistent HOME: " + e.getMessage());
+        }
+
+        // Жёсткий LockTask не нужен: управление и системные настройки остаются
+        // доступны, но Home всегда возвращает на рекламный плеер.
         try { dpm.setLockTaskPackages(admin, new String[0]); } catch (Exception ignored) {}
-        try { dpm.clearPackagePersistentPreferredActivities(admin, pkg); } catch (Exception ignored) {}
         try { dpm.setUninstallBlocked(admin, pkg, false); } catch (Exception ignored) {}
         try {
             if (Build.VERSION.SDK_INT >= 21) {
