@@ -34,6 +34,8 @@ import java.io.OutputStream;
  * файлы/синк/установка/громкость/блокировка экрана — сервис делает сам.
  */
 public class PlayerService extends Service implements MediaServer.ControlCallback {
+    private static final String ACTION_AUTO_LAUNCH =
+            "com.brandmen.ads.AUTO_LAUNCH";
     static final String CHANNEL_ID = "brandmen_player";
     static final int NOTI_ID = 1;
     // Отдельный HIGH-канал для full-screen-intent — им поднимаем плеер на экран
@@ -102,6 +104,17 @@ public class PlayerService extends Service implements MediaServer.ControlCallbac
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        if (intent != null && ACTION_AUTO_LAUNCH.equals(intent.getAction())) {
+            // Повторы нужны для MIUI: первая попытка часто приходится на ещё
+            // заблокированный launcher сразу после boot.
+            long[] delays = {500L, 3_000L, 10_000L};
+            for (long delay : delays) {
+                mainHandler.postDelayed(() -> {
+                    Kiosk.wakeScreen(PlayerService.this);
+                    sendCmd("launch");
+                }, delay);
+            }
+        }
         // Перезапуск системой (после kill) — сервис должен подняться сам.
         return START_STICKY;
     }
@@ -163,6 +176,16 @@ public class PlayerService extends Service implements MediaServer.ControlCallbac
     /** Запускает foreground-сервис. Безопасно вызывать многократно. */
     static void start(Context ctx) {
         Intent i = new Intent(ctx, PlayerService.class);
+        startIntent(ctx, i);
+    }
+
+    static void startAndLaunch(Context ctx) {
+        Intent i = new Intent(ctx, PlayerService.class)
+                .setAction(ACTION_AUTO_LAUNCH);
+        startIntent(ctx, i);
+    }
+
+    private static void startIntent(Context ctx, Intent i) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             ctx.startForegroundService(i);
         } else {
