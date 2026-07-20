@@ -123,20 +123,34 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
         return d;
     }
 
-    @Override
-    protected void onCreate(Bundle savedInstanceState) {
-        super.onCreate(savedInstanceState);
-        if (Kiosk.isPlaybackEnabled(this)) {
+    /** Приводит окно к желаемому состоянию рекламы, а не к состоянию Activity. */
+    private void applyPlaybackWindowState(boolean enabled) {
+        if (enabled) {
             getWindow().addFlags(
                     WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
                             | WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED
                             | WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD
                             | WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON);
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
-                setShowWhenLocked(true);
-                setTurnScreenOn(true);
+        } else {
+            getWindow().clearFlags(
+                    WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+                            | WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED
+                            | WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD
+                            | WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON);
+            if (wakeLock != null && wakeLock.isHeld()) {
+                try { wakeLock.release(); } catch (Exception ignored) {}
             }
         }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(enabled);
+            setTurnScreenOn(enabled);
+        }
+    }
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        applyPlaybackWindowState(Kiosk.isPlaybackEnabled(this));
         audioManager = (android.media.AudioManager) getSystemService(AUDIO_SERVICE);
         prefs = getSharedPreferences("BrandmenPrefs", MODE_PRIVATE);
         deploymentManager = new DeploymentManager(this);
@@ -1308,6 +1322,8 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
 
     @Override public void onLaunch() {
         Kiosk.setPlaybackEnabled(this, true);
+        applyPlaybackWindowState(true);
+        onWake();
         loadVideos();
         currentIndex = 0;
         playNext();
@@ -1315,9 +1331,16 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
 
     @Override public void onStopPlayback() {
         Kiosk.setPlaybackEnabled(this, false);
+        applyPlaybackWindowState(false);
         userPaused = true;
         try { videoView.stopPlayback(); } catch (Exception ignored) {}
         if (playPauseBtn != null) playPauseBtn.setText("▶");
+        // Persistent HOME может быть открыт системой после boot, даже когда
+        // реклама намеренно выключена. Гасим дисплей, но не останавливаем
+        // PlayerService: HTTP и outbound-команды продолжают работать.
+        if (dpm != null && dpm.isAdminActive(adminComponent)) {
+            new Handler().postDelayed(this::onSleep, 250L);
+        }
     }
 
     @Override public void onRestart() {
