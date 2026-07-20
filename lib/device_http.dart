@@ -481,6 +481,7 @@ class DeviceHttp {
           'freeMb': (j['freeMb'] as num? ?? 0).toInt(),
           'totalMb': (j['totalMb'] as num? ?? 0).toInt(),
           'playing': (j['playing'] as bool? ?? false),
+          'positionMs': (j['positionMs'] as num? ?? -1).toInt(),
           'index': (j['index'] as num? ?? -1).toInt(),
           'total': (j['total'] as num? ?? 0).toInt(),
           'current': (j['current'] as String? ?? ''),
