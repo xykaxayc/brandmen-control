@@ -38,17 +38,21 @@ public class BootReceiver extends BroadcastReceiver {
         try { Kiosk.applyPolicies(context); } catch (Exception ignored) {}
         if (lockedBoot) {
             // Credential-encrypted storage и ролики до первого unlock ещё
-            // недоступны. Здесь только включаем экран; USER_UNLOCKED /
-            // BOOT_COMPLETED затем безопасно поднимут сервис и Activity.
-            try { Kiosk.wakeScreen(context); } catch (Exception ignored) {}
+            // недоступны. Желаемое состояние лежит в device-protected storage:
+            // выключенную владельцем рекламу после reboot самовольно не будим.
+            if (Kiosk.isPlaybackEnabled(context)) {
+                try { Kiosk.wakeScreen(context); } catch (Exception ignored) {}
+            }
             return;
         }
         if (bootOrRecovery) {
-            // MIUI часто принимает BOOT_COMPLETED, но оставляет экран выключенным
-            // и блокирует обычный startActivity. Сначала будим дисплей, затем
-            // foreground-сервис сам несколько раз поднимает Activity.
-            try { Kiosk.wakeScreen(context); } catch (Exception ignored) {}
-            try { PlayerService.startAndLaunch(context); } catch (Exception ignored) {}
+            if (Kiosk.isPlaybackEnabled(context)) {
+                try { Kiosk.wakeScreen(context); } catch (Exception ignored) {}
+                try { PlayerService.startAndLaunch(context); } catch (Exception ignored) {}
+            } else {
+                // Сервер управления должен быть доступен даже при выключенной рекламе.
+                try { PlayerService.start(context); } catch (Exception ignored) {}
+            }
         } else {
             try { PlayerService.start(context); } catch (Exception ignored) {}
         }
@@ -59,7 +63,7 @@ public class BootReceiver extends BroadcastReceiver {
                 || "android.intent.action.QUICKBOOT_POWERON".equals(action)
                 || "com.htc.intent.action.QUICKBOOT_POWERON".equals(action)
                 || Intent.ACTION_MY_PACKAGE_REPLACED.equals(action);
-        if (initialRecovery) {
+        if (initialRecovery && Kiosk.isPlaybackEnabled(context)) {
             Kiosk.scheduleBootRecovery(context);
         }
     }

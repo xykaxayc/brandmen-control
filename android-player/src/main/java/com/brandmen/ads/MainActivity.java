@@ -126,14 +126,16 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        getWindow().addFlags(
-                WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
-                        | WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED
-                        | WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD
-                        | WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
-            setShowWhenLocked(true);
-            setTurnScreenOn(true);
+        if (Kiosk.isPlaybackEnabled(this)) {
+            getWindow().addFlags(
+                    WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+                            | WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED
+                            | WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD
+                            | WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                setShowWhenLocked(true);
+                setTurnScreenOn(true);
+            }
         }
         audioManager = (android.media.AudioManager) getSystemService(AUDIO_SERVICE);
         prefs = getSharedPreferences("BrandmenPrefs", MODE_PRIVATE);
@@ -506,7 +508,12 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
         controlsLayout.addView(buttonsRow);
 
         TextView prevBtn = createStyledButton("⏮");
-        prevBtn.setOnClickListener(v -> { currentIndex--; if (currentIndex < 0) currentIndex = Math.max(0, videoFiles.size() - 1); playNext(); });
+        prevBtn.setOnClickListener(v -> {
+            Kiosk.setPlaybackEnabled(this, true);
+            currentIndex--;
+            if (currentIndex < 0) currentIndex = Math.max(0, videoFiles.size() - 1);
+            playNext();
+        });
         buttonsRow.addView(prevBtn);
 
         playPauseBtn = createStyledButton("⏸");
@@ -529,7 +536,11 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
         buttonsRow.addView(playPauseBtn);
 
         TextView nextBtn = createStyledButton("⏭");
-        nextBtn.setOnClickListener(v -> { currentIndex++; playNext(); });
+        nextBtn.setOnClickListener(v -> {
+            Kiosk.setPlaybackEnabled(this, true);
+            currentIndex++;
+            playNext();
+        });
         buttonsRow.addView(nextBtn);
 
         progressBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
@@ -1425,7 +1436,9 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
     }
 
     private void playNext() {
-        Kiosk.setPlaybackEnabled(this, true);
+        // Ошибка ролика, completion, watchdog и отложенный callback не имеют
+        // права отменять явную команду владельца «Выключить рекламу».
+        if (!Kiosk.isPlaybackEnabled(this)) return;
         if (videoFiles.isEmpty()) {
             loadVideos();
             if (videoFiles.isEmpty()) {
