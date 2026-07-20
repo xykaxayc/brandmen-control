@@ -32,6 +32,7 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
     private int currentIndex = 0;
     private static final String ADS_DIR = "/sdcard/Movies/ads";
     private static final String PLAYLIST_FILE = ADS_DIR + "/playlist.m3u";
+    private DeploymentManager deploymentManager;
     
     private FrameLayout rootLayout;
     private LinearLayout controlsLayout;
@@ -128,6 +129,7 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         audioManager = (android.media.AudioManager) getSystemService(AUDIO_SERVICE);
         prefs = getSharedPreferences("BrandmenPrefs", MODE_PRIVATE);
+        deploymentManager = new DeploymentManager(this);
         
         sRef = new java.lang.ref.WeakReference<>(this);
 
@@ -797,7 +799,11 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
 
             // Отправляем регистрацию
             String deviceName = android.os.Build.MANUFACTURER + " " + android.os.Build.MODEL;
-            String body2 = "{\"name\":\"" + deviceName.replace("\"", "") + "\"}";
+            org.json.JSONObject registration = new org.json.JSONObject();
+            registration.put("name", deviceName);
+            registration.put("device_id", deploymentManager.deviceId());
+            registration.put("api_token", deploymentManager.apiToken());
+            String body2 = registration.toString();
             java.net.URL regUrl = new java.net.URL("http://" + serverIp + ":5010/api/register");
             java.net.HttpURLConnection rc = (java.net.HttpURLConnection) regUrl.openConnection();
             rc.setRequestMethod("POST");
@@ -844,7 +850,17 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
 
     private void registerWithServer(String serverIp) {
         String deviceName = android.os.Build.MANUFACTURER + " " + android.os.Build.MODEL;
-        String body = "{\"name\":\"" + deviceName.replace("\"", "") + "\"}";
+        String body;
+        try {
+            org.json.JSONObject registration = new org.json.JSONObject();
+            registration.put("name", deviceName);
+            registration.put("device_id", deploymentManager.deviceId());
+            registration.put("api_token", deploymentManager.apiToken());
+            body = registration.toString();
+        } catch (Exception e) {
+            body = "{\"name\":\"" + deviceName.replace("\"", "") + "\"}";
+        }
+        final String registrationBody = body;
         new Thread(() -> {
             try {
                 java.net.URL url = new java.net.URL("http://" + serverIp + ":5010/api/register");
@@ -854,7 +870,7 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
                 conn.setConnectTimeout(3000);
                 conn.setReadTimeout(3000);
                 conn.setRequestProperty("Content-Type", "application/json");
-                byte[] data = body.getBytes("UTF-8");
+                byte[] data = registrationBody.getBytes("UTF-8");
                 conn.setRequestProperty("Content-Length", String.valueOf(data.length));
                 conn.getOutputStream().write(data);
                 conn.getResponseCode();
@@ -1279,11 +1295,20 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
 
     @Override public String getCurrentName() {
         if (currentIndex < 0 || currentIndex >= videoFiles.size()) return "";
-        return videoFiles.get(currentIndex).getName();
+        File current = videoFiles.get(currentIndex);
+        if (deploymentManager != null
+                && !deploymentManager.activeDeploymentId().isEmpty()) {
+            return deploymentManager.logicalNameForBlob(current);
+        }
+        return current.getName();
     }
 
     @Override public boolean isPlaying() {
         try { return videoView.isPlaying(); } catch (Exception e) { return false; }
+    }
+
+    @Override public int getPlaybackPositionMs() {
+        try { return videoView.getCurrentPosition(); } catch (Exception e) { return -1; }
     }
 
     @Override public int getVolume() {
@@ -1309,6 +1334,14 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
 
     private void loadVideos() {
         videoFiles.clear();
+        // Deployment v2 имеет приоритет над legacy-каталогом. Если active
+        // pointer существует, но manifest/файлы повреждены, НЕ маскируем это
+        // алфавитным fallback: показываем recovery и отдаём ошибку в health.
+        if (deploymentManager == null) deploymentManager = new DeploymentManager(this);
+        if (!deploymentManager.activeDeploymentId().isEmpty()) {
+            videoFiles.addAll(deploymentManager.activeFiles());
+            return;
+        }
         File playlist = new File(PLAYLIST_FILE);
         if (playlist.exists()) {
             try (BufferedReader br = new BufferedReader(new FileReader(playlist))) {

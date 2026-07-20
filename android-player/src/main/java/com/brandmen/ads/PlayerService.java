@@ -269,8 +269,14 @@ public class PlayerService extends Service implements MediaServer.ControlCallbac
     @Override public int getPlaylistCount() { MainActivity a = MainActivity.peek(); return a != null ? a.getPlaylistCount() : 0; }
     @Override public String getCurrentName() { MainActivity a = MainActivity.peek(); return a != null ? a.getCurrentName() : ""; }
     @Override public boolean isPlaying() { MainActivity a = MainActivity.peek(); return a != null && a.isPlaying(); }
+    @Override public int getPlaybackPositionMs() { MainActivity a = MainActivity.peek(); return a != null ? a.getPlaybackPositionMs() : -1; }
 
     @Override public void onInstallApk(File apkFile) {
+        if (new DeploymentManager(this).isOperationActive()) {
+            android.util.Log.w("PlayerService",
+                    "installApk отложен: идёт операция с контентом");
+            return;
+        }
         // Выводим плеер на передний план (FSI), чтобы системное окно установки
         // показалось поверх экрана даже без разрешения «поверх других приложений».
         Intent open = new Intent(this, MainActivity.class)

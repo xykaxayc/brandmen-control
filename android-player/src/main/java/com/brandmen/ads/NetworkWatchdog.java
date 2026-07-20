@@ -159,6 +159,10 @@ final class NetworkWatchdog {
     static void rebootIfOwner(Context ctx, SharedPreferences sp, String reason) {
         try {
             Context app = ctx.getApplicationContext();
+            if (new DeploymentManager(app).isOperationActive()) {
+                android.util.Log.w(TAG, "ребут отложен: идёт операция с контентом");
+                return;
+            }
             if (Build.VERSION.SDK_INT < 24 || !Kiosk.isDeviceOwner(app)) {
                 android.util.Log.w(TAG, "нужен ребут (" + reason + "), но недоступно (не owner / старый API)");
                 return;

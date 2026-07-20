@@ -126,6 +126,10 @@ final class Kiosk {
     static boolean reboot(Context ctx) {
         try {
             Context app = ctx.getApplicationContext();
+            if (new DeploymentManager(app).isOperationActive()) {
+                android.util.Log.w(TAG, "reboot отложен: идёт операция с контентом");
+                return false;
+            }
             if (Build.VERSION.SDK_INT < 24 || !isDeviceOwner(app)) return false;
             DevicePolicyManager dpm = dpm(app);
             if (dpm == null) return false;
