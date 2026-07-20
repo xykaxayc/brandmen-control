@@ -30,6 +30,7 @@ import android.provider.Settings;
 final class Kiosk {
     private static final String TAG = "Kiosk";
     private static final int WATCHDOG_REQUEST = 0xB12D;
+    private static final int BOOT_RECOVERY_REQUEST = 0xB130;
     /** Период watchdog: неточный (не требует SCHEDULE_EXACT_ALARM), но пробивает Doze. */
     private static final long WATCHDOG_INTERVAL_MS = 15 * 60 * 1000L;
 
@@ -97,6 +98,15 @@ final class Kiosk {
                     String.valueOf(plugged));
         } catch (Exception ignored) {}
 
+        // На выделенном рекламном планшете системный keyguard не должен
+        // задерживать автозапуск после перезагрузки. Метод безопасно вернёт
+        // false, если пользователь настроил защищённый PIN/пароль.
+        try {
+            if (Build.VERSION.SDK_INT >= 23) {
+                dpm.setKeyguardDisabled(admin, true);
+            }
+        } catch (Exception ignored) {}
+
         // Авто-выдача runtime-разрешений (хранилище и т.д.) — без диалогов клиенту.
         try {
             if (Build.VERSION.SDK_INT >= 23) {
@@ -160,6 +170,48 @@ final class Kiosk {
                 am.setAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, at, pi);
             } else {
                 am.set(AlarmManager.ELAPSED_REALTIME_WAKEUP, at, pi);
+            }
+        } catch (Exception ignored) {}
+    }
+
+    /** Немедленно включает дисплей; не зависит от живой Activity или ADB. */
+    static void wakeScreen(Context ctx) {
+        try {
+            PowerManager pm = (PowerManager) ctx.getApplicationContext()
+                    .getSystemService(Context.POWER_SERVICE);
+            if (pm == null) return;
+            PowerManager.WakeLock lock = pm.newWakeLock(
+                    PowerManager.SCREEN_BRIGHT_WAKE_LOCK
+                            | PowerManager.ACQUIRE_CAUSES_WAKEUP
+                            | PowerManager.ON_AFTER_RELEASE,
+                    "Brandmen::BootWake");
+            lock.acquire(30_000L);
+        } catch (Exception ignored) {}
+    }
+
+    /**
+     * Три независимые попытки после boot. Даже если MIUI сразу убил процесс,
+     * явный AlarmManager снова поднимет receiver, foreground-service и экран.
+     */
+    static void scheduleBootRecovery(Context ctx) {
+        try {
+            Context app = ctx.getApplicationContext();
+            AlarmManager am = (AlarmManager) app.getSystemService(Context.ALARM_SERVICE);
+            if (am == null) return;
+            long[] delays = {10_000L, 30_000L, 90_000L};
+            for (int index = 0; index < delays.length; index++) {
+                Intent i = new Intent(app, BootReceiver.class)
+                        .setAction(BootReceiver.ACTION_BOOT_RECOVERY);
+                int flags = PendingIntent.FLAG_UPDATE_CURRENT;
+                if (Build.VERSION.SDK_INT >= 31) flags |= PendingIntent.FLAG_IMMUTABLE;
+                PendingIntent pi = PendingIntent.getBroadcast(
+                        app, BOOT_RECOVERY_REQUEST + index, i, flags);
+                long at = SystemClock.elapsedRealtime() + delays[index];
+                if (Build.VERSION.SDK_INT >= 23 && index == delays.length - 1) {
+                    am.setAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, at, pi);
+                } else {
+                    am.set(AlarmManager.ELAPSED_REALTIME_WAKEUP, at, pi);
+                }
             }
         } catch (Exception ignored) {}
     }
