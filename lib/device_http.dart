@@ -458,6 +458,7 @@ class DeviceHttp {
           'total': (j['total'] as num? ?? 0).toInt(),
           'name': (j['name'] as String? ?? ''),
           'playing': (j['playing'] as bool? ?? false),
+          'playbackEnabled': j['playbackEnabled'] as bool?,
           'positionMs': (j['positionMs'] as num? ?? -1).toInt(),
         };
       }
@@ -481,6 +482,7 @@ class DeviceHttp {
           'freeMb': (j['freeMb'] as num? ?? 0).toInt(),
           'totalMb': (j['totalMb'] as num? ?? 0).toInt(),
           'playing': (j['playing'] as bool? ?? false),
+          'playbackEnabled': j['playbackEnabled'] as bool?,
           'positionMs': (j['positionMs'] as num? ?? -1).toInt(),
           'index': (j['index'] as num? ?? -1).toInt(),
           'total': (j['total'] as num? ?? 0).toInt(),
@@ -525,6 +527,7 @@ class DeviceHttp {
   Future<bool> wake() => controlAction('wake');
   Future<bool> httpSleep() => controlAction('sleep');
   Future<bool> launch() => controlAction('launch');
+  Future<bool> stopPlayback() => controlAction('stop');
   Future<bool> restart() => controlAction('restart');
 
   /// Перезагрузка планшета (сработает только если он device owner). Без ADB.

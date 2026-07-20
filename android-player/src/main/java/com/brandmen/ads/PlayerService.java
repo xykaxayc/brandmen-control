@@ -105,18 +105,25 @@ public class PlayerService extends Service implements MediaServer.ControlCallbac
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent != null && ACTION_AUTO_LAUNCH.equals(intent.getAction())) {
-            // Повторы нужны для MIUI: первая попытка часто приходится на ещё
-            // заблокированный launcher сразу после boot.
-            long[] delays = {500L, 3_000L, 10_000L};
-            for (long delay : delays) {
-                mainHandler.postDelayed(() -> {
-                    Kiosk.wakeScreen(PlayerService.this);
-                    sendCmd("launch");
-                }, delay);
-            }
+            // Одна попытка на каждый независимый boot/recovery-сигнал. Несколько
+            // быстрых sendCmd подряд на MIUI пересоздавали Activity и могли
+            // уронить весь процесс вместе с HTTP-сервисом.
+            mainHandler.postDelayed(this::ensurePlayerRunning, 2_000L);
         }
         // Перезапуск системой (после kill) — сервис должен подняться сам.
         return START_STICKY;
+    }
+
+    private void ensurePlayerRunning() {
+        if (!Kiosk.isPlaybackEnabled(this)) {
+            return;
+        }
+        MainActivity activity = MainActivity.peek();
+        if (activity != null && activity.isPlaying()) {
+            return;
+        }
+        Kiosk.wakeScreen(this);
+        sendCmd("launch");
     }
 
     @Override
@@ -304,8 +311,25 @@ public class PlayerService extends Service implements MediaServer.ControlCallbac
     }
 
     @Override public void onWake() { sendCmd("wake"); }
-    @Override public void onLaunch() { sendCmd("launch"); }
+    @Override public void onLaunch() {
+        Kiosk.setPlaybackEnabled(this, true);
+        sendCmd("launch");
+    }
+    @Override public void onStopPlayback() {
+        Kiosk.setPlaybackEnabled(this, false);
+        MainActivity activity = MainActivity.peek();
+        if (activity != null) activity.onStopPlayback();
+        onSleep();
+    }
     @Override public void onRestart() { sendCmd("restart"); }
+    @Override public void onContentChanged() {
+        MainActivity activity = MainActivity.peek();
+        if (activity != null) {
+            activity.onContentChanged();
+        } else if (Kiosk.isPlaybackEnabled(this)) {
+            sendCmd("content");
+        }
+    }
 
     @Override public void onClearDeviceOwner() {
         boolean ok = Kiosk.clearDeviceOwner(this);

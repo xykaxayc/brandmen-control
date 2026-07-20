@@ -345,6 +345,8 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
         switch (cmd) {
             case "wake": onWake(); break;
             case "launch": onLaunch(); break;
+            case "stop": onStopPlayback(); break;
+            case "content": onContentChanged(); break;
             case "restart": onRestart(); break;
         }
     }
@@ -511,8 +513,17 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
         playPauseBtn.setTextSize(50);
         playPauseBtn.setPadding(50, 5, 50, 5);
         playPauseBtn.setOnClickListener(v -> {
-            if (videoView.isPlaying()) { videoView.pause(); playPauseBtn.setText("▶"); userPaused = true; }
-            else { videoView.start(); playPauseBtn.setText("⏸"); userPaused = false; }
+            if (videoView.isPlaying()) {
+                videoView.pause();
+                playPauseBtn.setText("▶");
+                userPaused = true;
+                Kiosk.setPlaybackEnabled(this, false);
+            } else {
+                Kiosk.setPlaybackEnabled(this, true);
+                videoView.start();
+                playPauseBtn.setText("⏸");
+                userPaused = false;
+            }
             resetHideTimer();
         });
         buttonsRow.addView(playPauseBtn);
@@ -1285,14 +1296,32 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
     }
 
     @Override public void onLaunch() {
+        Kiosk.setPlaybackEnabled(this, true);
         loadVideos();
         currentIndex = 0;
         playNext();
     }
 
+    @Override public void onStopPlayback() {
+        Kiosk.setPlaybackEnabled(this, false);
+        userPaused = true;
+        try { videoView.stopPlayback(); } catch (Exception ignored) {}
+        if (playPauseBtn != null) playPauseBtn.setText("▶");
+    }
+
     @Override public void onRestart() {
         currentIndex = 0;
-        playNext();
+        if (Kiosk.isPlaybackEnabled(this)) playNext();
+    }
+
+    @Override public void onContentChanged() {
+        loadVideos();
+        currentIndex = 0;
+        if (Kiosk.isPlaybackEnabled(this)) {
+            playNext();
+        } else {
+            onStopPlayback();
+        }
     }
 
     @Override public void onInstallApk(File apkFile) {
@@ -1344,7 +1373,15 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
         return (int) (b * 255);
     }
 
-    private void startPlayback() { loadVideos(); playNext(); resetHideTimer(); }
+    private void startPlayback() {
+        loadVideos();
+        if (Kiosk.isPlaybackEnabled(this)) {
+            playNext();
+        } else {
+            onStopPlayback();
+        }
+        resetHideTimer();
+    }
 
     private void loadVideos() {
         videoFiles.clear();
@@ -1388,6 +1425,7 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
     }
 
     private void playNext() {
+        Kiosk.setPlaybackEnabled(this, true);
         if (videoFiles.isEmpty()) {
             loadVideos();
             if (videoFiles.isEmpty()) {

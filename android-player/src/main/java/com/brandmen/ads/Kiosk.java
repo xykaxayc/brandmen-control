@@ -29,12 +29,24 @@ import android.provider.Settings;
  */
 final class Kiosk {
     private static final String TAG = "Kiosk";
+    private static final String PLAYER_PREFS = "BrandmenPrefs";
+    private static final String PLAYBACK_ENABLED = "playback_enabled";
     private static final int WATCHDOG_REQUEST = 0xB12D;
     private static final int BOOT_RECOVERY_REQUEST = 0xB130;
     /** Период watchdog: неточный (не требует SCHEDULE_EXACT_ALARM), но пробивает Doze. */
     private static final long WATCHDOG_INTERVAL_MS = 15 * 60 * 1000L;
 
     private Kiosk() {}
+
+    static boolean isPlaybackEnabled(Context ctx) {
+        return ctx.getSharedPreferences(PLAYER_PREFS, Context.MODE_PRIVATE)
+                .getBoolean(PLAYBACK_ENABLED, true);
+    }
+
+    static void setPlaybackEnabled(Context ctx, boolean enabled) {
+        ctx.getSharedPreferences(PLAYER_PREFS, Context.MODE_PRIVATE)
+                .edit().putBoolean(PLAYBACK_ENABLED, enabled).apply();
+    }
 
     static ComponentName admin(Context ctx) {
         return new ComponentName(ctx.getApplicationContext(), DeviceAdminReceiver.class);
@@ -198,7 +210,10 @@ final class Kiosk {
             Context app = ctx.getApplicationContext();
             AlarmManager am = (AlarmManager) app.getSystemService(Context.ALARM_SERVICE);
             if (am == null) return;
-            long[] delays = {10_000L, 30_000L, 90_000L};
+            // Не создаём частую очередь запусков: MIUI плохо переносит несколько
+            // full-screen intents подряд. Каждая попытка внутри сервиса сначала
+            // проверит, не играет ли Activity уже сейчас.
+            long[] delays = {30_000L, 120_000L};
             for (int index = 0; index < delays.length; index++) {
                 Intent i = new Intent(app, BootReceiver.class)
                         .setAction(BootReceiver.ACTION_BOOT_RECOVERY);
