@@ -996,7 +996,13 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
             final int index = i;
             File file = videoFiles.get(i);
             TextView item = new TextView(this);
-            item.setText((i + 1) + ". " + file.getName());
+            // В deployment v2 физический файл назван по SHA-256. Это
+            // внутренняя деталь хранилища: в интерфейсе всегда показываем
+            // исходное имя ролика из manifest.
+            String displayName = deploymentManager == null
+                    ? file.getName()
+                    : deploymentManager.logicalNameForBlob(file);
+            item.setText((i + 1) + ". " + displayName);
             int accent = Color.parseColor(BrandConfig.accent(this));
             item.setTextColor(i == currentIndex ? accent : Color.WHITE);
             item.setTextSize(18);
