@@ -1326,6 +1326,11 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
     }
 
     @Override public void onContentChanged() {
+        // Activity.onContentChanged() вызывается самой Android из setContentView,
+        // ещё до создания VideoView. Этот метод одновременно является callback
+        // MediaServer, поэтому ранний системный вызов нельзя трактовать как
+        // команду перечитать и запустить плейлист.
+        if (videoView == null) return;
         loadVideos();
         currentIndex = 0;
         if (Kiosk.isPlaybackEnabled(this)) {
