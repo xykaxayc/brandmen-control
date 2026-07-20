@@ -198,7 +198,10 @@ final class Kiosk {
             Context app = ctx.getApplicationContext();
             AlarmManager am = (AlarmManager) app.getSystemService(Context.ALARM_SERVICE);
             if (am == null) return;
-            long[] delays = {10_000L, 30_000L, 90_000L};
+            // Не создаём частую очередь запусков: MIUI плохо переносит несколько
+            // full-screen intents подряд. Каждая попытка внутри сервиса сначала
+            // проверит, не играет ли Activity уже сейчас.
+            long[] delays = {30_000L, 120_000L};
             for (int index = 0; index < delays.length; index++) {
                 Intent i = new Intent(app, BootReceiver.class)
                         .setAction(BootReceiver.ACTION_BOOT_RECOVERY);
