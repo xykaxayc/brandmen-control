@@ -1379,26 +1379,59 @@ class _DashboardScreenState extends State<DashboardScreen> {
     await _refresh();
   }
 
-  Future<void> _wakeScreen(SavedDevice dev) async {
-    AppLogger.log("Включение экрана на ${dev.ip}");
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text("${dev.name}: включаю экран..."),
-        duration: const Duration(seconds: 2),
-      ));
+  Future<void> _setPlayback(SavedDevice dev, bool enabled) async {
+    final ip = dev.ip;
+    if (_ops[ip]?.isBusy ?? false) return;
+    _setOp(
+        ip, DeviceOp.busy(enabled ? "Включаю рекламу…" : "Выключаю рекламу…"));
+    final accepted =
+        enabled ? await adb.enablePlayback(ip) : await adb.disablePlayback(ip);
+    if (enabled) {
+      final playing = accepted && await adb.verifyPlaying(ip);
+      _setOp(
+          ip,
+          playing
+              ? const DeviceOp.success("Реклама включена ▶")
+              : const DeviceOp.error(
+                  "Команда принята, но ролик не запустился"));
+    } else {
+      _setOp(
+          ip,
+          accepted
+              ? const DeviceOp.success("Реклама выключена")
+              : const DeviceOp.error(
+                  "Старый плеер: экран погашен без подтверждения"));
     }
-    await adb.wakeUp(dev.ip);
+    _clearOpLater(ip, after: const Duration(seconds: 6));
+    await _refresh();
   }
 
-  Future<void> _sleepScreen(SavedDevice dev) async {
-    AppLogger.log("Выключение экрана на ${dev.ip}");
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text("${dev.name}: выключаю экран..."),
-        duration: const Duration(seconds: 2),
-      ));
+  Future<void> _setPlaybackAll(bool enabled) async {
+    final online = saved.where((d) => statuses[d.ip]?.online == true).toList();
+    if (online.isEmpty) {
+      _toast("Нет онлайн-планшетов", warn: true);
+      return;
     }
-    await adb.sleep(dev.ip);
+    for (final dev in online) {
+      _setOp(dev.ip,
+          DeviceOp.busy(enabled ? "Включаю рекламу…" : "Выключаю рекламу…"));
+    }
+    await Future.wait(online.map((dev) async {
+      final accepted = enabled
+          ? await adb.enablePlayback(dev.ip)
+          : await adb.disablePlayback(dev.ip);
+      final ok =
+          enabled ? accepted && await adb.verifyPlaying(dev.ip) : accepted;
+      _setOp(
+          dev.ip,
+          ok
+              ? DeviceOp.success(
+                  enabled ? "Реклама включена ▶" : "Реклама выключена")
+              : DeviceOp.error(
+                  enabled ? "Не запустился" : "Не подтвердил выключение"));
+      _clearOpLater(dev.ip, after: const Duration(seconds: 6));
+    }));
+    await _refresh();
   }
 
   Future<void> _showDeviceControls(SavedDevice dev) async {
@@ -1599,8 +1632,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
         warn: !done);
   }
 
-  Future<void> _syncAndPlay(SavedDevice dev) =>
-      _runDeviceSync(dev, launch: true);
   Future<void> _syncOnly(SavedDevice dev) => _runDeviceSync(dev, launch: false);
 
   /// Синхронизация (и опц. запуск) одного планшета — БЕЗ модалки: весь прогресс
@@ -1681,13 +1712,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
       return;
     }
 
-    // Передача playlist.m3u сама по себе не заставляет уже работающий плеер
-    // перечитать список. После ЛЮБОЙ успешной синхронизации применяем новый
-    // плейлист автоматически — это эквивалент кнопки «Обновить» на планшете.
-    final shouldApply = statuses[ip]?.online ?? false;
-    if (shouldApply) {
-      _setOp(ip, DeviceOp.busy(launch ? "Запуск…" : "Применяю плейлист…"));
-      await adb.wakeUp(ip, launchPlayer: true);
+    // Синхронизация не меняет операторское состояние «реклама включена».
+    // Новый Android сам перечитывает manifest и продолжает играть только если
+    // до синка был включён. Явный launch — отдельная команда пользователя.
+    final shouldLaunch = launch && (statuses[ip]?.online ?? false);
+    if (shouldLaunch) {
+      _setOp(ip, const DeviceOp.busy("Включаю рекламу…"));
+      await adb.enablePlayback(ip);
       _setOp(ip, const DeviceOp.busy("Проверяю воспроизведение…"));
       final isV2 = result.transport == 'Deployment v2';
       final playing = isV2
@@ -1700,7 +1731,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       if (!playing) {
         final rolledBack =
             isV2 ? await DeviceHttp(ip).rollbackDeployment() : false;
-        if (rolledBack) await adb.wakeUp(ip, launchPlayer: true);
+        if (rolledBack) await adb.enablePlayback(ip);
         _setOp(
             ip,
             DeviceOp.error(rolledBack
@@ -1714,18 +1745,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final base = result.pushed.isEmpty
         ? "Актуально"
         : "Загружено ${result.pushed.length}";
-    _setOp(ip, DeviceOp.success(shouldApply ? "$base ▶" : base));
+    _setOp(ip, DeviceOp.success(shouldLaunch ? "$base ▶" : base));
     _clearOpLater(ip);
-    if (shouldApply) _captureOne(ip);
+    if (shouldLaunch) _captureOne(ip);
     if (norm.ffmpegMissing) await _showFfmpegMissingDialog();
   }
-
-  Future<void> _syncAndPlayAll() => _syncAll(launch: true);
-
-  /// Запуск на всех с приглушённым звуком БЕЗ синхронизации файлов:
-  /// просто будит и перезапускает плеер, затем ставит громкость 0.
-  Future<void> _syncAndPlayAllMuted() =>
-      _syncAll(launch: true, mute: true, sync: false);
 
   /// Синхронизация всех онлайн-устройств. После передачи новый плейлист
   /// автоматически применяется, иначе плеер продолжает показывать старый.
@@ -1850,9 +1874,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
         continue;
       }
 
-      if ((sync || launch) && deviceOnline) {
-        _setOp(ip,
-            DeviceOp.busy(launch ? "Ожидает запуска…" : "Ожидает применения…"));
+      if (launch && deviceOnline) {
+        _setOp(ip, const DeviceOp.busy("Ожидает включения…"));
         toLaunch.add((dev, result));
       } else {
         final base = !sync
@@ -1885,7 +1908,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             DeviceOp.busy(mute
                 ? "Запуск без звука…"
                 : (launch ? "Запуск…" : "Применяю плейлист…")));
-        await adb.wakeUp(ip, launchPlayer: true);
+        await adb.enablePlayback(ip);
         if (mute) await adb.setVolume(ip, 0);
         _setOp(ip, const DeviceOp.busy("Проверка запуска…"));
         final isV2 = result.transport == 'Deployment v2' && deployment != null;
@@ -1901,7 +1924,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           AppLogger.log('Запуск: плеер не подтвердил запуск на ${dev.name}');
           final rolledBack =
               isV2 ? await DeviceHttp(ip).rollbackDeployment() : false;
-          if (rolledBack) await adb.wakeUp(ip, launchPlayer: true);
+          if (rolledBack) await adb.enablePlayback(ip);
           _setOp(
               ip,
               DeviceOp.error(rolledBack
@@ -1949,29 +1972,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  /// Запуск плеера на одном планшете БЕЗ синхронизации файлов, со звуком 0.
-  /// Инлайн-статус на карточке, без модалки и без SnackBar.
-  Future<void> _launchMuted(SavedDevice dev) async {
-    final ip = dev.ip;
-    if (_ops[ip]?.isBusy ?? false) return;
-    if (!(statuses[ip]?.online ?? false)) {
-      _setOp(ip, const DeviceOp.error("Офлайн"));
-      _clearOpLater(ip);
-      return;
-    }
-    _setOp(ip, const DeviceOp.busy("Запуск без звука…"));
-    await adb.wakeUp(ip, launchPlayer: true);
-    await adb.setVolume(ip, 0);
-    final playing = await adb.verifyPlaying(ip);
-    if (playing) {
-      _setOp(ip, const DeviceOp.success("Без звука ▶"));
-      _captureOne(ip);
-    } else {
-      _setOp(ip, const DeviceOp.error("Не подтвердил запуск"));
-    }
-    _clearOpLater(ip);
-  }
-
   /// Применяет яркость ко всем онлайн-планшетам сразу (общий ползунок).
   Future<void> _setBrightnessAll(int level) async {
     final online = saved.where((d) => statuses[d.ip]?.online == true).toList();
@@ -2004,7 +2004,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
     if (confirmed == true) {
       AppLogger.log("МАССОВОЕ ВЫКЛЮЧЕНИЕ: Завершение смены");
-      await adb.bulkSleep(saved.map((d) => d.ip).toList());
+      await adb.bulkDisablePlayback(saved.map((d) => d.ip));
       _refresh();
     }
   }
@@ -2086,9 +2086,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   OutlinedButton.icon(
                     onPressed: (saved.isEmpty || _busy)
                         ? null
-                        : () => _guard(_syncAndPlayAll),
-                    icon: const Icon(Icons.cast_connected_rounded),
-                    label: const Text("Запустить все"),
+                        : () => _guard(() => _setPlaybackAll(true)),
+                    icon: const Icon(Icons.play_circle_fill_rounded),
+                    label: const Text("Включить рекламу"),
                     style: OutlinedButton.styleFrom(
                       foregroundColor: Colors.white70,
                       side: const BorderSide(color: Colors.white24),
@@ -2101,12 +2101,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   OutlinedButton.icon(
                     onPressed: (saved.isEmpty || _busy)
                         ? null
-                        : () => _guard(_syncAndPlayAllMuted),
-                    icon: const Icon(Icons.volume_off_rounded),
-                    label: const Text("Без звука"),
+                        : () => _guard(() => _setPlaybackAll(false)),
+                    icon: const Icon(Icons.power_settings_new_rounded),
+                    label: const Text("Выключить рекламу"),
                     style: OutlinedButton.styleFrom(
-                      foregroundColor: Colors.lightBlueAccent,
-                      side: const BorderSide(color: Colors.lightBlueAccent),
+                      foregroundColor: Colors.redAccent,
+                      side: const BorderSide(color: Colors.redAccent),
                       padding: const EdgeInsets.symmetric(
                           horizontal: 18, vertical: 16),
                       shape: RoundedRectangleBorder(
@@ -2461,17 +2461,22 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
                         Icon(
-                            status?.playerPlaying == true
-                                ? Icons.play_circle_outline_rounded
-                                : Icons.pause_circle_outline_rounded,
+                            status?.playbackEnabled == false
+                                ? Icons.power_settings_new_rounded
+                                : status?.playerPlaying == true
+                                    ? Icons.play_circle_outline_rounded
+                                    : Icons.warning_amber_rounded,
                             size: 12,
-                            color: status?.playerPlaying == true
-                                ? Colors.greenAccent
-                                : Colors.orangeAccent),
+                            color: status?.playbackEnabled == false
+                                ? Colors.white38
+                                : status?.playerPlaying == true
+                                    ? Colors.greenAccent
+                                    : Colors.redAccent),
                         const SizedBox(width: 4),
                         Flexible(
                           child: Text(
-                            "v${status?.playerVersion}"
+                            "${status?.playbackEnabled == false ? "Реклама выключена" : status?.playerPlaying == true ? "Реклама играет" : "Должен играть · ошибка"}"
+                            " · v${status?.playerVersion}"
                             "${status?.freeMb != null ? " · ${status!.freeMb} МБ своб." : ""}",
                             overflow: TextOverflow.ellipsis,
                             style: const TextStyle(
@@ -2520,28 +2525,23 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   Row(
                     children: [
                       _smallAppleBtn(Icons.play_arrow_rounded,
-                          canAct ? () => _syncAndPlay(dev) : null,
-                          tooltip: "Синхронизировать плейлист и запустить"),
+                          canControl ? () => _setPlayback(dev, true) : null,
+                          tooltip: "Включить рекламу",
+                          color: Colors.greenAccent),
                       const SizedBox(width: 8),
                       _smallAppleBtn(Icons.sync_rounded,
                           canAct ? () => _syncOnly(dev) : null,
-                          tooltip: "Только синхронизация (без перезапуска)"),
+                          tooltip: "Обновить ролики, не меняя состояние",
+                          color: Theme.of(context).colorScheme.primary),
                       const SizedBox(width: 8),
-                      _smallAppleBtn(Icons.volume_off_rounded,
-                          canAct ? () => _launchMuted(dev) : null,
-                          tooltip: "Запустить без звука (без синхронизации)"),
+                      _smallAppleBtn(Icons.power_settings_new_rounded,
+                          canControl ? () => _setPlayback(dev, false) : null,
+                          tooltip: "Выключить рекламу",
+                          color: Colors.redAccent),
                       const SizedBox(width: 8),
                       _smallAppleBtn(Icons.tune_rounded,
                           canControl ? () => _showDeviceControls(dev) : null,
                           tooltip: "Громкость и яркость"),
-                      const SizedBox(width: 8),
-                      _smallAppleBtn(Icons.wb_sunny_rounded,
-                          canControl ? () => _wakeScreen(dev) : null,
-                          tooltip: "Включить экран"),
-                      const SizedBox(width: 8),
-                      _smallAppleBtn(Icons.power_settings_new_rounded,
-                          canControl ? () => _sleepScreen(dev) : null,
-                          tooltip: "Выключить экран"),
                     ],
                   )
                 ],
@@ -3002,8 +3002,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  Widget _smallAppleBtn(IconData icon, VoidCallback? onTap, {String? tooltip}) {
+  Widget _smallAppleBtn(IconData icon, VoidCallback? onTap,
+      {String? tooltip, Color? color}) {
     final enabled = onTap != null;
+    final activeColor = color ?? Colors.white70;
     final btn = _HoverBuilder(
       builder: (hovered) => InkWell(
         onTap: onTap,
@@ -3024,7 +3026,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   ? Colors.white12
                   : hovered
                       ? Colors.white
-                      : Colors.white70),
+                      : activeColor),
         ),
       ),
     );

@@ -43,7 +43,9 @@ public class MediaServer {
         void onVolume(int level);
         void onBrightness(int level);
         void onLaunch();
+        void onStopPlayback();
         void onRestart();
+        void onContentChanged();
         int getVolume();
         int getVolumeMax();
         int getBrightness();
@@ -263,7 +265,9 @@ public class MediaServer {
             String name = callback.getCurrentName();
             boolean playing = callback.isPlaying();
             sendJson(out, 200, "{\"index\":" + index + ",\"total\":" + total
-                + ",\"name\":\"" + escJson(name == null ? "" : name) + "\",\"playing\":" + playing + "}");
+                + ",\"name\":\"" + escJson(name == null ? "" : name)
+                + "\",\"playing\":" + playing
+                + ",\"playbackEnabled\":" + Kiosk.isPlaybackEnabled(appContext) + "}");
             return;
         }
         if (!method.equals("POST")) { sendText(out, 405, "Method Not Allowed"); return; }
@@ -280,6 +284,10 @@ public class MediaServer {
                 break;
             case "launch":
                 mainHandler.post(callback::onLaunch);
+                sendJson(out, 200, "{\"ok\":true}");
+                break;
+            case "stop":
+                mainHandler.post(callback::onStopPlayback);
                 sendJson(out, 200, "{\"ok\":true}");
                 break;
             case "restart":
@@ -426,6 +434,7 @@ public class MediaServer {
                 + ",\"freeMb\":" + freeMb
                 + ",\"totalMb\":" + totalMb
                 + ",\"playing\":" + playing
+                + ",\"playbackEnabled\":" + Kiosk.isPlaybackEnabled(appContext)
                 + ",\"positionMs\":" + positionMs
                 + ",\"index\":" + idx
                 + ",\"total\":" + total
@@ -496,8 +505,9 @@ public class MediaServer {
             JSONObject result =
                     deployments.commit(request.getString("deployment_id"));
             sendJson(out, 200, result.toString());
-            // Перечитать активный manifest и начать воспроизведение.
-            if (callback != null) mainHandler.post(callback::onLaunch);
+            // Перечитать manifest, не меняя операторское состояние
+            // «реклама включена/выключена».
+            if (callback != null) mainHandler.post(callback::onContentChanged);
         } catch (Exception e) {
             sendV2Error(out, e);
         }
@@ -507,7 +517,7 @@ public class MediaServer {
         try {
             JSONObject result = deployments.rollback();
             sendJson(out, 200, result.toString());
-            if (callback != null) mainHandler.post(callback::onLaunch);
+            if (callback != null) mainHandler.post(callback::onContentChanged);
         } catch (Exception e) {
             sendV2Error(out, e);
         }

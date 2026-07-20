@@ -29,12 +29,24 @@ import android.provider.Settings;
  */
 final class Kiosk {
     private static final String TAG = "Kiosk";
+    private static final String PLAYER_PREFS = "BrandmenPrefs";
+    private static final String PLAYBACK_ENABLED = "playback_enabled";
     private static final int WATCHDOG_REQUEST = 0xB12D;
     private static final int BOOT_RECOVERY_REQUEST = 0xB130;
     /** Период watchdog: неточный (не требует SCHEDULE_EXACT_ALARM), но пробивает Doze. */
     private static final long WATCHDOG_INTERVAL_MS = 15 * 60 * 1000L;
 
     private Kiosk() {}
+
+    static boolean isPlaybackEnabled(Context ctx) {
+        return ctx.getSharedPreferences(PLAYER_PREFS, Context.MODE_PRIVATE)
+                .getBoolean(PLAYBACK_ENABLED, true);
+    }
+
+    static void setPlaybackEnabled(Context ctx, boolean enabled) {
+        ctx.getSharedPreferences(PLAYER_PREFS, Context.MODE_PRIVATE)
+                .edit().putBoolean(PLAYBACK_ENABLED, enabled).apply();
+    }
 
     static ComponentName admin(Context ctx) {
         return new ComponentName(ctx.getApplicationContext(), DeviceAdminReceiver.class);

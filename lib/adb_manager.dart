@@ -22,6 +22,7 @@ class DeviceStatus {
   final String? playerVersion;
   final int? freeMb;
   final bool? playerPlaying;
+  final bool? playbackEnabled;
   final String? currentClip;
   // true — плеер device owner, обновления ставятся молча; false — нужен ручной
   // тап «Установить»; null — статус неизвестен (старый плеер / нет HTTP).
@@ -48,6 +49,7 @@ class DeviceStatus {
     this.playerVersion,
     this.freeMb,
     this.playerPlaying,
+    this.playbackEnabled,
     this.currentClip,
     this.deviceOwner,
     this.signature,
@@ -341,7 +343,8 @@ class AdbManager {
     // и не понять, почему «не играет» (пустой плейлист / нет файла / завис).
     if (health != null) {
       AppLogger.log('[СТАТУС] $ip: online http=$httpAvailable adb=$adbOnline '
-          'v${health['version']} играет=${health['playing']} '
+          'v${health['version']} долженИграть=${health['playbackEnabled']} '
+          'играет=${health['playing']} '
           'ролик="${health['current']}" плейлист=${health['index']}/${health['total']} '
           'место=${health['freeMb']}МБ');
     } else {
@@ -358,6 +361,7 @@ class AdbManager {
       playerVersion: health?['version'] as String?,
       freeMb: health?['freeMb'] as int?,
       playerPlaying: health?['playing'] as bool?,
+      playbackEnabled: health?['playbackEnabled'] as bool?,
       currentClip: health?['current'] as String?,
       deviceOwner: health?['deviceOwner'] as bool?,
       signature: health?['signature'] as String?,
@@ -429,6 +433,28 @@ class AdbManager {
 
   Future<void> bulkSleep(List<String> ips) async {
     await Future.wait(ips.map(sleep));
+  }
+
+  Future<bool> enablePlayback(String ip) async {
+    final client = DeviceHttp(ip);
+    await client.wake();
+    return client.launch();
+  }
+
+  Future<bool> disablePlayback(String ip) async {
+    final client = DeviceHttp(ip);
+    if (await client.stopPlayback()) return true;
+    // Legacy fallback: старый APK не знает desired-state, хотя бы гасим экран.
+    await sleep(ip);
+    return false;
+  }
+
+  Future<void> bulkEnablePlayback(Iterable<String> ips) async {
+    await Future.wait(ips.map(enablePlayback));
+  }
+
+  Future<void> bulkDisablePlayback(Iterable<String> ips) async {
+    await Future.wait(ips.map(disablePlayback));
   }
 
   static const _remoteDir = '/sdcard/Movies/ads';
