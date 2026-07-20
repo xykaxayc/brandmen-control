@@ -15,6 +15,10 @@ import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.provider.Settings;
+import android.content.SharedPreferences;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import org.json.JSONObject;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.OutputStream;
@@ -46,6 +50,13 @@ public class PlayerService extends Service implements MediaServer.ControlCallbac
     private android.app.admin.DevicePolicyManager dpm;
     private ComponentName adminComponent;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private static final long REGISTER_INTERVAL_MS = 60_000L;
+    private final Runnable registerWithControl = new Runnable() {
+        @Override public void run() {
+            registerWithKnownControl();
+            mainHandler.postDelayed(this, REGISTER_INTERVAL_MS);
+        }
+    };
 
     /** Быстрый цикл само-восстановления сети, пока сервис жив (backstop — watchdog-будильник). */
     private static final long NET_HEAL_INTERVAL_MS = 60_000L;
@@ -84,6 +95,9 @@ public class PlayerService extends Service implements MediaServer.ControlCallbac
         } catch (Exception e) {
             android.util.Log.e("PlayerService", "CommandPoller start failed: " + e.getMessage());
         }
+        // Сообщаем пульту актуальный IP не только из Activity. Это работает
+        // после загрузки и при смене DHCP-адреса, даже если UI выгружен.
+        mainHandler.postDelayed(registerWithControl, 3_000L);
     }
 
     @Override
@@ -98,10 +112,52 @@ public class PlayerService extends Service implements MediaServer.ControlCallbac
     @Override
     public void onDestroy() {
         mainHandler.removeCallbacks(netHeal);
+        mainHandler.removeCallbacks(registerWithControl);
         if (commandPoller != null) commandPoller.stop();
         if (mediaServer != null) mediaServer.stop();
         releaseLocks();
         super.onDestroy();
+    }
+
+    private void registerWithKnownControl() {
+        new Thread(() -> {
+            HttpURLConnection conn = null;
+            try {
+                SharedPreferences prefs =
+                        getSharedPreferences("BrandmenPrefs", MODE_PRIVATE);
+                String serverIp = prefs.getString("server_ip", "");
+                if (serverIp == null || serverIp.trim().isEmpty()) return;
+
+                DeploymentManager identity = new DeploymentManager(this);
+                JSONObject registration = new JSONObject();
+                registration.put("name",
+                        android.os.Build.MANUFACTURER + " " + android.os.Build.MODEL);
+                registration.put("device_id", identity.deviceId());
+                registration.put("api_token", identity.apiToken());
+
+                byte[] data = registration.toString().getBytes("UTF-8");
+                URL url = new URL("http://" + serverIp + ":5010/api/register");
+                conn = (HttpURLConnection) url.openConnection();
+                conn.setRequestMethod("POST");
+                conn.setDoOutput(true);
+                conn.setConnectTimeout(3_000);
+                conn.setReadTimeout(3_000);
+                conn.setRequestProperty("Content-Type", "application/json");
+                conn.setFixedLengthStreamingMode(data.length);
+                conn.getOutputStream().write(data);
+                int code = conn.getResponseCode();
+                if (code != 200 && code != 403) {
+                    android.util.Log.w("PlayerService",
+                            "Control registration failed: HTTP " + code);
+                }
+            } catch (Exception e) {
+                // Пульт может быть выключен — это штатно; повторим через минуту.
+                android.util.Log.d("PlayerService",
+                        "Control registration deferred: " + e.getMessage());
+            } finally {
+                if (conn != null) conn.disconnect();
+            }
+        }, "ControlRegistration").start();
     }
 
     /** Запускает foreground-сервис. Безопасно вызывать многократно. */

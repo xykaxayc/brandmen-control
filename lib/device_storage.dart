@@ -37,6 +37,15 @@ class SavedDevice {
 class DeviceStorage {
   static const _key = 'saved_devices_v1';
 
+  static bool _constantTimeEquals(String left, String right) {
+    if (left.length != right.length) return false;
+    var difference = 0;
+    for (var i = 0; i < left.length; i++) {
+      difference |= left.codeUnitAt(i) ^ right.codeUnitAt(i);
+    }
+    return difference == 0;
+  }
+
   static Future<List<SavedDevice>> load() async {
     final prefs = await SharedPreferences.getInstance();
     final raw = prefs.getString(_key);
@@ -55,6 +64,30 @@ class DeviceStorage {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(
         _key, jsonEncode(devices.map((d) => d.toJson()).toList()));
+  }
+
+  /// Разрешает фоновую перерегистрацию только уже известному планшету.
+  ///
+  /// Один deviceId не является секретом, поэтому для смены IP обязательно
+  /// должен совпасть и случайный apiToken, полученный при первом сопряжении.
+  static Future<bool> authenticate(String? deviceId, String? apiToken) async {
+    if (deviceId == null ||
+        deviceId.isEmpty ||
+        apiToken == null ||
+        apiToken.isEmpty) {
+      return false;
+    }
+    final devices = await load();
+    for (final device in devices) {
+      final savedToken = device.apiToken;
+      if (device.deviceId == deviceId &&
+          savedToken != null &&
+          savedToken.isNotEmpty &&
+          _constantTimeEquals(savedToken, apiToken)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   static Future<void> add(
@@ -76,7 +109,9 @@ class DeviceStorage {
     if (existing != null) {
       existing.ip = ip;
       existing.deviceId ??= deviceId;
-      existing.apiToken ??= apiToken;
+      if (apiToken != null && apiToken.isNotEmpty) {
+        existing.apiToken = apiToken;
+      }
       if (name != null && name.trim().isNotEmpty) existing.name = name;
       await save(list);
       return;
