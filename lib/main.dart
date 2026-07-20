@@ -230,6 +230,9 @@ class MainScreen extends StatefulWidget {
 class _MainScreenState extends State<MainScreen> {
   int _selectedIndex = 0;
   Timer? _schedulerTimer;
+  Timer? _updateTimer;
+  bool _checkingForUpdate = false;
+  bool _updateDialogVisible = false;
   String? _lastTriggerMinute;
   final adb = AdbManager();
   final tray = TrayManager();
@@ -273,7 +276,11 @@ class _MainScreenState extends State<MainScreen> {
     tray.init(() {
       if (mounted) setState(() {});
     });
-    _checkForUpdate();
+    _checkForUpdate(delay: const Duration(seconds: 5));
+    _updateTimer = Timer.periodic(
+      const Duration(minutes: 30),
+      (_) => _checkForUpdate(),
+    );
     _regSub =
         BrandmenServer.instance?.onDeviceRegistered.listen(_onDeviceRegistered);
   }
@@ -296,15 +303,24 @@ class _MainScreenState extends State<MainScreen> {
     _dashboardKey.currentState?._refresh();
   }
 
-  Future<void> _checkForUpdate() async {
-    await Future.delayed(const Duration(seconds: 5));
-    final info = await AppUpdater.checkForUpdate();
-    if (info == null || !mounted) return;
-    _showUpdateDialog(info);
+  Future<void> _checkForUpdate({Duration delay = Duration.zero}) async {
+    if (_checkingForUpdate || _updateDialogVisible) return;
+    if (delay > Duration.zero) await Future.delayed(delay);
+    if (!mounted || _checkingForUpdate || _updateDialogVisible) return;
+    _checkingForUpdate = true;
+    try {
+      final info = await AppUpdater.checkForUpdate();
+      if (info == null || !mounted) return;
+      _showUpdateDialog(info);
+    } finally {
+      _checkingForUpdate = false;
+    }
   }
 
   void _showUpdateDialog(UpdateInfo info) {
-    showDialog(
+    if (_updateDialogVisible || !mounted) return;
+    _updateDialogVisible = true;
+    showDialog<void>(
       context: context,
       builder: (c) => AlertDialog(
         backgroundColor: const Color(0xFF2C2C2E),
@@ -361,7 +377,7 @@ class _MainScreenState extends State<MainScreen> {
           ),
         ],
       ),
-    );
+    ).whenComplete(() => _updateDialogVisible = false);
   }
 
   void _runUpdate(UpdateInfo info) {
@@ -525,6 +541,7 @@ class _MainScreenState extends State<MainScreen> {
   @override
   void dispose() {
     _schedulerTimer?.cancel();
+    _updateTimer?.cancel();
     _regSub?.cancel();
     super.dispose();
   }
