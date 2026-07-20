@@ -9,6 +9,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:brandmen_windows/main.dart';
+import 'package:brandmen_windows/brand_pack.dart';
+import 'package:brandmen_windows/brand_pack_screen.dart';
 
 void main() {
   testWidgets('Apple background wrapper renders child',
@@ -19,5 +21,36 @@ void main() {
     await tester.pump();
 
     expect(find.text('Brandmen smoke'), findsOneWidget);
+  });
+
+  testWidgets('Brand pack screen fits desktop and applies selection',
+      (WidgetTester tester) async {
+    tester.view.physicalSize = const Size(1100, 760);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+      BrandPacks.current.value = BrandPacks.available.first;
+    });
+
+    BrandPack? selected;
+    await tester.pumpWidget(MaterialApp(
+      theme: ThemeData.dark(useMaterial3: true),
+      home: Scaffold(
+        body: BrandPackScreen(onSelect: (pack) async {
+          selected = pack;
+          BrandPacks.current.value = pack;
+        }),
+      ),
+    ));
+    await tester.pump();
+
+    expect(find.text('Бренд-пакет'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    await tester.tap(find.text('MOKKO'));
+    await tester.pump();
+    expect(selected?.id, 'mokko');
+    expect(tester.takeException(), isNull);
   });
 }
