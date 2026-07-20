@@ -1600,18 +1600,28 @@ class _DashboardScreenState extends State<DashboardScreen> {
       return;
     }
 
-    final canLaunch = launch && (statuses[ip]?.online ?? false);
-    if (canLaunch) {
-      _setOp(ip, const DeviceOp.busy("Запуск…"));
+    // Передача playlist.m3u сама по себе не заставляет уже работающий плеер
+    // перечитать список. После ЛЮБОЙ успешной синхронизации применяем новый
+    // плейлист автоматически — это эквивалент кнопки «Обновить» на планшете.
+    final shouldApply = statuses[ip]?.online ?? false;
+    if (shouldApply) {
+      _setOp(ip, DeviceOp.busy(launch ? "Запуск…" : "Применяю плейлист…"));
       await adb.wakeUp(ip, launchPlayer: true);
+      _setOp(ip, const DeviceOp.busy("Проверяю воспроизведение…"));
+      final playing = await adb.verifyPlaying(ip);
+      if (!playing) {
+        _setOp(ip, const DeviceOp.error("Плейлист передан, но не запустился"));
+        _clearOpLater(ip, after: const Duration(seconds: 10));
+        return;
+      }
     }
 
     final base = result.pushed.isEmpty
         ? "Актуально"
         : "Загружено ${result.pushed.length}";
-    _setOp(ip, DeviceOp.success(canLaunch ? "$base ▶" : base));
+    _setOp(ip, DeviceOp.success(shouldApply ? "$base ▶" : base));
     _clearOpLater(ip);
-    if (canLaunch) _captureOne(ip);
+    if (shouldApply) _captureOne(ip);
     if (norm.ffmpegMissing) await _showFfmpegMissingDialog();
   }
 
@@ -1622,7 +1632,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Future<void> _syncAndPlayAllMuted() =>
       _syncAll(launch: true, mute: true, sync: false);
 
-  /// Тихая синхронизация всех онлайн-устройств БЕЗ запуска/перезапуска плеера.
+  /// Синхронизация всех онлайн-устройств. После передачи новый плейлист
+  /// автоматически применяется, иначе плеер продолжает показывать старый.
   Future<void> _syncOnlyAll() => _syncAll(launch: false);
 
   /// Прогон по всем онлайн-устройствам последовательно с прогрессом и отменой.
@@ -1722,8 +1733,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
         continue;
       }
 
-      if (launch && deviceOnline) {
-        _setOp(ip, const DeviceOp.busy("Ожидает запуска…"));
+      if ((sync || launch) && deviceOnline) {
+        _setOp(ip,
+            DeviceOp.busy(launch ? "Ожидает запуска…" : "Ожидает применения…"));
         toLaunch.add((dev, result));
       } else {
         final base = !sync
@@ -1751,7 +1763,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
           _setOp(ip, null);
           return;
         }
-        _setOp(ip, DeviceOp.busy(mute ? "Запуск без звука…" : "Запуск…"));
+        _setOp(
+            ip,
+            DeviceOp.busy(mute
+                ? "Запуск без звука…"
+                : (launch ? "Запуск…" : "Применяю плейлист…")));
         await adb.wakeUp(ip, launchPlayer: true);
         if (mute) await adb.setVolume(ip, 0);
         _setOp(ip, const DeviceOp.busy("Проверка запуска…"));
