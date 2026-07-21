@@ -229,7 +229,10 @@ class MainScreen extends StatefulWidget {
 }
 
 class _MainScreenState extends State<MainScreen> {
+  static const _adminPin = '2468';
   int _selectedIndex = 0;
+  bool _adminMode = false;
+  Timer? _adminModeTimer;
   Timer? _schedulerTimer;
   Timer? _updateTimer;
   bool _checkingForUpdate = false;
@@ -552,8 +555,79 @@ class _MainScreenState extends State<MainScreen> {
   void dispose() {
     _schedulerTimer?.cancel();
     _updateTimer?.cancel();
+    _adminModeTimer?.cancel();
     _regSub?.cancel();
     super.dispose();
+  }
+
+  void _refreshAdminTimeout() {
+    if (!_adminMode) return;
+    _adminModeTimer?.cancel();
+    _adminModeTimer = Timer(const Duration(minutes: 10), () {
+      if (!mounted) return;
+      setState(() {
+        _adminMode = false;
+        if (_selectedIndex > 1) _selectedIndex = 0;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Режим администратора завершён'),
+      ));
+    });
+  }
+
+  Future<void> _showAdminLogin() async {
+    final controller = TextEditingController();
+    final accepted = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        backgroundColor: const Color(0xFF242428),
+        title: const Text('Вход администратора'),
+        content: SizedBox(
+          width: 340,
+          child: TextField(
+            controller: controller,
+            autofocus: true,
+            obscureText: true,
+            keyboardType: TextInputType.number,
+            onSubmitted: (_) => Navigator.pop(c, controller.text == _adminPin),
+            decoration: const InputDecoration(
+              labelText: 'PIN-код',
+              helperText: 'Технические разделы будут открыты на 10 минут',
+              border: OutlineInputBorder(),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(c, false),
+            child: const Text('Отмена'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(c, controller.text == _adminPin),
+            child: const Text('Войти'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (!mounted) return;
+    if (accepted == true) {
+      setState(() => _adminMode = true);
+      _refreshAdminTimeout();
+    } else if (accepted == false) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Неверный PIN-код'),
+        backgroundColor: Colors.redAccent,
+      ));
+    }
+  }
+
+  void _leaveAdminMode() {
+    _adminModeTimer?.cancel();
+    setState(() {
+      _adminMode = false;
+      if (_selectedIndex > 1) _selectedIndex = 0;
+    });
   }
 
   void _startScheduler() {
@@ -582,8 +656,8 @@ class _MainScreenState extends State<MainScreen> {
     final pack = BrandPacks.current.value;
     final accent = Theme.of(context).colorScheme.primary;
     final List<Widget> screens = [
-      DashboardScreen(key: _dashboardKey),
-      const MediaScreen(),
+      DashboardScreen(key: _dashboardKey, employeeMode: !_adminMode),
+      MediaScreen(employeeMode: !_adminMode),
       BrandPackScreen(onSelect: _selectBrandPack),
       SettingsScreen(key: _settingsKey),
       const LogsScreen(),
@@ -637,49 +711,77 @@ class _MainScreenState extends State<MainScreen> {
                                   fontWeight: FontWeight.w800,
                                   letterSpacing: .5)),
                           const SizedBox(height: 2),
-                          const Text("CONTROL · v$kAppVersion",
-                              style: TextStyle(
+                          Text(
+                              _adminMode
+                                  ? "АДМИНИСТРАТОР · v$kAppVersion"
+                                  : "УПРАВЛЕНИЕ ЭКРАНАМИ",
+                              style: const TextStyle(
                                   fontSize: 9.5,
                                   color: Colors.white38,
-                                  letterSpacing: 1)),
+                                  letterSpacing: .7)),
                         ],
                       ),
                     ),
                   ]),
                 ),
                 const SizedBox(height: 25),
-                _navItem(0, Icons.grid_view_rounded, "Устройства"),
-                _navItem(1, Icons.video_library_outlined, "Медиатека"),
-                _navItem(2, Icons.diamond_outlined, "Бренд-пакет"),
-                const Spacer(),
-                Container(
-                  margin: const EdgeInsets.fromLTRB(6, 0, 6, 12),
-                  padding: const EdgeInsets.all(11),
-                  decoration: BoxDecoration(
-                    color: Colors.white.withValues(alpha: .035),
-                    borderRadius: BorderRadius.circular(11),
-                    border: Border.all(color: Colors.white10),
+                _navItem(0, Icons.grid_view_rounded, "Экраны"),
+                _navItem(1, Icons.video_library_outlined, "Контент"),
+                if (_adminMode) ...[
+                  const Padding(
+                    padding: EdgeInsets.fromLTRB(12, 18, 12, 7),
+                    child: Text('АДМИНИСТРИРОВАНИЕ',
+                        style: TextStyle(
+                            color: Colors.white24,
+                            fontSize: 9,
+                            fontWeight: FontWeight.w700,
+                            letterSpacing: 1.2)),
                   ),
-                  child: Row(children: [
-                    Container(
-                      width: 8,
-                      height: 8,
-                      decoration:
-                          BoxDecoration(color: accent, shape: BoxShape.circle),
+                  _navItem(2, Icons.diamond_outlined, "Бренд"),
+                  _navItem(
+                      3, Icons.tablet_android_rounded, "Планшеты и настройки"),
+                  _navItem(
+                      4, Icons.monitor_heart_outlined, "Диагностика и логи"),
+                ],
+                const Spacer(),
+                if (_adminMode)
+                  Container(
+                    margin: const EdgeInsets.fromLTRB(6, 0, 6, 12),
+                    padding: const EdgeInsets.all(11),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: .035),
+                      borderRadius: BorderRadius.circular(11),
+                      border: Border.all(color: Colors.white10),
                     ),
-                    const SizedBox(width: 9),
-                    Expanded(
-                      child: Text(
-                        'Пакет ${pack.version}\nактуален',
-                        style: const TextStyle(
-                            color: Colors.white54, fontSize: 10.5, height: 1.4),
+                    child: Row(children: [
+                      Container(
+                        width: 8,
+                        height: 8,
+                        decoration: BoxDecoration(
+                            color: accent, shape: BoxShape.circle),
                       ),
-                    ),
-                    Icon(Icons.verified_rounded, size: 16, color: accent),
-                  ]),
+                      const SizedBox(width: 9),
+                      Expanded(
+                        child: Text(
+                          'Пакет ${pack.version}\nактуален',
+                          style: const TextStyle(
+                              color: Colors.white54,
+                              fontSize: 10.5,
+                              height: 1.4),
+                        ),
+                      ),
+                      Icon(Icons.verified_rounded, size: 16, color: accent),
+                    ]),
+                  ),
+                _sideAction(
+                  _adminMode
+                      ? Icons.lock_open_rounded
+                      : Icons.lock_outline_rounded,
+                  _adminMode
+                      ? 'Выйти из режима администратора'
+                      : 'Вход администратора',
+                  _adminMode ? _leaveAdminMode : _showAdminLogin,
                 ),
-                _navItem(3, Icons.tune_rounded, "Настройки"),
-                _navItem(4, Icons.terminal_rounded, "Логи"),
                 const SizedBox(height: 7),
                 Row(
                   children: [
@@ -693,11 +795,13 @@ class _MainScreenState extends State<MainScreen> {
                         },
                       ),
                     ),
-                    const SizedBox(width: 6),
-                    Expanded(
-                      child: _sideAction(
-                          Icons.article_outlined, 'Файл лога', _openLog),
-                    ),
+                    if (_adminMode) ...[
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: _sideAction(
+                            Icons.article_outlined, 'Файл лога', _openLog),
+                      ),
+                    ],
                   ],
                 ),
               ],
@@ -725,7 +829,10 @@ class _MainScreenState extends State<MainScreen> {
       padding: const EdgeInsets.symmetric(vertical: 3),
       child: _HoverBuilder(
         builder: (hovered) => InkWell(
-          onTap: () => setState(() => _selectedIndex = index),
+          onTap: () {
+            setState(() => _selectedIndex = index);
+            _refreshAdminTimeout();
+          },
           borderRadius: BorderRadius.circular(10),
           child: AnimatedContainer(
             duration: const Duration(milliseconds: 180),
@@ -830,7 +937,8 @@ class _HoverBuilderState extends State<_HoverBuilder> {
 }
 
 class DashboardScreen extends StatefulWidget {
-  const DashboardScreen({super.key});
+  final bool employeeMode;
+  const DashboardScreen({super.key, this.employeeMode = true});
   @override
   State<DashboardScreen> createState() => _DashboardScreenState();
 }
@@ -2031,15 +2139,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Text("Устройства",
+                  const Text("Экраны",
                       style: TextStyle(
                           fontSize: 28,
                           fontWeight: FontWeight.w800,
                           letterSpacing: -.6)),
                   const SizedBox(height: 4),
                   Text(
-                      "$onlineCount из ${saved.length} в сети · "
-                      "$readyForWifiControl готовы к полному управлению",
+                      widget.employeeMode
+                          ? "$onlineCount из ${saved.length} доступны для управления"
+                          : "$onlineCount из ${saved.length} в сети · "
+                              "$readyForWifiControl готовы к полному управлению",
                       style:
                           const TextStyle(color: Colors.white38, fontSize: 13)),
                 ],
@@ -2048,32 +2158,34 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 spacing: 12,
                 runSpacing: 12,
                 children: [
-                  OutlinedButton.icon(
-                    onPressed:
-                        (_isRegistering || _busy) ? null : _showAddDeviceWizard,
-                    icon: _isRegistering
-                        ? const SizedBox(
-                            width: 16,
-                            height: 16,
-                            child: CircularProgressIndicator(
-                                color: Colors.greenAccent, strokeWidth: 2))
-                        : const Icon(Icons.add_rounded),
-                    label: const Text("Добавить планшет"),
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: Colors.greenAccent,
-                      side: const BorderSide(color: Colors.greenAccent),
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 18, vertical: 16),
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12)),
+                  if (!widget.employeeMode)
+                    OutlinedButton.icon(
+                      onPressed: (_isRegistering || _busy)
+                          ? null
+                          : _showAddDeviceWizard,
+                      icon: _isRegistering
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(
+                                  color: Colors.greenAccent, strokeWidth: 2))
+                          : const Icon(Icons.add_rounded),
+                      label: const Text("Добавить планшет"),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: Colors.greenAccent,
+                        side: const BorderSide(color: Colors.greenAccent),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 18, vertical: 16),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12)),
+                      ),
                     ),
-                  ),
                   FilledButton.icon(
                     onPressed: (saved.isEmpty || _busy)
                         ? null
                         : () => _guard(_syncOnlyAll),
                     icon: const Icon(Icons.sync_rounded),
-                    label: const Text("Синхронизировать всё"),
+                    label: const Text("Отправить контент"),
                     style: FilledButton.styleFrom(
                       backgroundColor: accent,
                       foregroundColor: const Color(0xFF101012),
@@ -2088,7 +2200,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         ? null
                         : () => _guard(() => _setPlaybackAll(true)),
                     icon: const Icon(Icons.play_circle_fill_rounded),
-                    label: const Text("Включить рекламу"),
+                    label: const Text("Начать смену"),
                     style: OutlinedButton.styleFrom(
                       foregroundColor: Colors.white70,
                       side: const BorderSide(color: Colors.white24),
@@ -2098,57 +2210,59 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           borderRadius: BorderRadius.circular(12)),
                     ),
                   ),
-                  OutlinedButton.icon(
-                    onPressed: (saved.isEmpty || _busy)
-                        ? null
-                        : () => _guard(() => _setPlaybackAll(false)),
-                    icon: const Icon(Icons.power_settings_new_rounded),
-                    label: const Text("Выключить рекламу"),
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: Colors.redAccent,
-                      side: const BorderSide(color: Colors.redAccent),
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 18, vertical: 16),
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12)),
+                  if (!widget.employeeMode)
+                    OutlinedButton.icon(
+                      onPressed: (saved.isEmpty || _busy)
+                          ? null
+                          : () => _guard(() => _setPlaybackAll(false)),
+                      icon: const Icon(Icons.power_settings_new_rounded),
+                      label: const Text("Выключить рекламу"),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: Colors.redAccent,
+                        side: const BorderSide(color: Colors.redAccent),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 18, vertical: 16),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12)),
+                      ),
                     ),
-                  ),
                   // Общий ползунок яркости — применяется ко всем онлайн сразу.
-                  Container(
-                    width: 240,
-                    padding: const EdgeInsets.symmetric(horizontal: 12),
-                    decoration: BoxDecoration(
-                      border: Border.all(color: const Color(0x80FFC107)),
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Row(
-                      children: [
-                        const Icon(Icons.brightness_6_rounded,
-                            color: Colors.amber, size: 20),
-                        Expanded(
-                          child: Slider(
-                            value: _masterBrightness.toDouble(),
-                            min: 1,
-                            max: 255,
-                            divisions: 50,
-                            activeColor: Colors.amber,
-                            label: "${_masterBrightness * 100 ~/ 255}%",
-                            onChanged: saved.isEmpty
-                                ? null
-                                : (v) => setState(
-                                    () => _masterBrightness = v.round()),
-                            onChangeEnd: (v) => _setBrightnessAll(v.round()),
+                  if (!widget.employeeMode)
+                    Container(
+                      width: 240,
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      decoration: BoxDecoration(
+                        border: Border.all(color: const Color(0x80FFC107)),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.brightness_6_rounded,
+                              color: Colors.amber, size: 20),
+                          Expanded(
+                            child: Slider(
+                              value: _masterBrightness.toDouble(),
+                              min: 1,
+                              max: 255,
+                              divisions: 50,
+                              activeColor: Colors.amber,
+                              label: "${_masterBrightness * 100 ~/ 255}%",
+                              onChanged: saved.isEmpty
+                                  ? null
+                                  : (v) => setState(
+                                      () => _masterBrightness = v.round()),
+                              onChangeEnd: (v) => _setBrightnessAll(v.round()),
+                            ),
                           ),
-                        ),
-                        SizedBox(
-                            width: 38,
-                            child: Text("${_masterBrightness * 100 ~/ 255}%",
-                                style: const TextStyle(
-                                    color: Colors.white70, fontSize: 12),
-                                textAlign: TextAlign.right)),
-                      ],
+                          SizedBox(
+                              width: 38,
+                              child: Text("${_masterBrightness * 100 ~/ 255}%",
+                                  style: const TextStyle(
+                                      color: Colors.white70, fontSize: 12),
+                                  textAlign: TextAlign.right)),
+                        ],
+                      ),
                     ),
-                  ),
                   OutlinedButton.icon(
                     onPressed: (saved.isEmpty || _busy) ? null : _endShift,
                     icon: const Icon(Icons.power_settings_new_rounded),
@@ -2187,7 +2301,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             child: CircularProgressIndicator(
                                 color: Colors.white, strokeWidth: 2))
                         : const Icon(Icons.refresh_rounded),
-                    label: const Text("Обновить"),
+                    label: const Text("Проверить состояние"),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.white.withValues(alpha: .08),
                       foregroundColor: Colors.white70,
@@ -2201,7 +2315,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
               )
             ],
           ),
-          const SizedBox(height: 28),
+          const SizedBox(height: 18),
+          _overallStatusCard(),
+          const SizedBox(height: 20),
           Expanded(
             child: saved.isEmpty
                 ? _emptyState()
@@ -2227,6 +2343,68 @@ class _DashboardScreenState extends State<DashboardScreen> {
           )
         ],
       ),
+    );
+  }
+
+  Widget _overallStatusCard() {
+    final online = statuses.values.where((s) => s.online).length;
+    final playing = statuses.values
+        .where((s) =>
+            s.online && s.playbackEnabled != false && s.playerPlaying == true)
+        .length;
+    final intentionallyOff = statuses.values
+        .where((s) => s.online && s.playbackEnabled == false)
+        .length;
+    final hasProblems = saved.isNotEmpty &&
+        (online < saved.length || playing + intentionallyOff < online);
+    final shiftOff =
+        saved.isNotEmpty && intentionallyOff == online && online > 0;
+    final color = hasProblems
+        ? Colors.orangeAccent
+        : shiftOff
+            ? Colors.blueAccent
+            : Colors.greenAccent;
+    final title = saved.isEmpty
+        ? 'Добавьте первый экран'
+        : hasProblems
+            ? 'Требуется внимание'
+            : shiftOff
+                ? 'Смена не запущена'
+                : 'Все экраны работают';
+    final subtitle = saved.isEmpty
+        ? 'Подключение планшетов доступно администратору'
+        : hasProblems
+            ? '${saved.length - online} не в сети · ${online - playing - intentionallyOff} не начали показ'
+            : shiftOff
+                ? '$online экранов готовы к началу показа'
+                : '$playing экранов показывают рекламу';
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 17),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: .09),
+        borderRadius: BorderRadius.circular(15),
+        border: Border.all(color: color.withValues(alpha: .28)),
+      ),
+      child: Row(children: [
+        Icon(
+            hasProblems
+                ? Icons.warning_amber_rounded
+                : Icons.check_circle_rounded,
+            color: color,
+            size: 28),
+        const SizedBox(width: 14),
+        Expanded(
+            child:
+                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(title,
+              style:
+                  const TextStyle(fontSize: 17, fontWeight: FontWeight.w700)),
+          const SizedBox(height: 3),
+          Text(subtitle,
+              style: const TextStyle(color: Colors.white54, fontSize: 12)),
+        ])),
+      ]),
     );
   }
 
@@ -2330,18 +2508,23 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           const SizedBox(width: 8),
                           Text(
                               isOnline
-                                  ? status?.transport ?? "Online"
-                                  : "Offline",
+                                  ? (widget.employeeMode
+                                      ? "На связи"
+                                      : status?.transport ?? "Online")
+                                  : (widget.employeeMode
+                                      ? "Нет сети"
+                                      : "Offline"),
                               style: TextStyle(
                                   fontSize: 11,
                                   color: isOnline
                                       ? Colors.greenAccent
                                       : Colors.white38)),
-                          _autoUpdateBadge(dev, status),
-                          _accessBadge(dev, status),
+                          if (!widget.employeeMode)
+                            _autoUpdateBadge(dev, status),
+                          if (!widget.employeeMode) _accessBadge(dev, status),
                         ],
                       ),
-                      if (isOnline)
+                      if (isOnline && (!widget.employeeMode || bat < 20))
                         Row(
                           children: [
                             Icon(
@@ -2407,10 +2590,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       style: const TextStyle(
                           fontSize: 15, fontWeight: FontWeight.w600),
                       overflow: TextOverflow.ellipsis),
-                  Text(dev.ip,
-                      style:
-                          const TextStyle(fontSize: 11, color: Colors.white38)),
-                  if (isOnline) ...[
+                  if (!widget.employeeMode)
+                    Text(dev.ip,
+                        style: const TextStyle(
+                            fontSize: 11, color: Colors.white38)),
+                  if (isOnline && !widget.employeeMode) ...[
                     const SizedBox(height: 5),
                     InkWell(
                       onTap: () => _showDeviceOwnerHelp(dev),
@@ -2475,9 +2659,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         const SizedBox(width: 4),
                         Flexible(
                           child: Text(
-                            "${status?.playbackEnabled == false ? "Реклама выключена" : status?.playerPlaying == true ? "Реклама играет" : "Должен играть · ошибка"}"
-                            " · v${status?.playerVersion}"
-                            "${status?.freeMb != null ? " · ${status!.freeMb} МБ своб." : ""}",
+                            widget.employeeMode
+                                ? (status?.playbackEnabled == false
+                                    ? "Экран выключен"
+                                    : status?.playerPlaying == true
+                                        ? "Показ идёт"
+                                        : "Показ не запустился")
+                                : "${status?.playbackEnabled == false ? "Реклама выключена" : status?.playerPlaying == true ? "Реклама играет" : "Должен играть · ошибка"}"
+                                    " · v${status?.playerVersion}"
+                                    "${status?.freeMb != null ? " · ${status!.freeMb} МБ своб." : ""}",
                             overflow: TextOverflow.ellipsis,
                             style: const TextStyle(
                                 fontSize: 10, color: Colors.white38),
@@ -2526,18 +2716,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     children: [
                       _smallAppleBtn(Icons.play_arrow_rounded,
                           canControl ? () => _setPlayback(dev, true) : null,
-                          tooltip: "Включить рекламу",
-                          color: Colors.greenAccent),
+                          tooltip: "Начать показ", color: Colors.greenAccent),
                       const SizedBox(width: 8),
                       _smallAppleBtn(Icons.sync_rounded,
                           canAct ? () => _syncOnly(dev) : null,
-                          tooltip: "Обновить ролики, не меняя состояние",
+                          tooltip: "Отправить контент",
                           color: Theme.of(context).colorScheme.primary),
                       const SizedBox(width: 8),
                       _smallAppleBtn(Icons.power_settings_new_rounded,
                           canControl ? () => _setPlayback(dev, false) : null,
-                          tooltip: "Выключить рекламу",
-                          color: Colors.redAccent),
+                          tooltip: "Остановить показ", color: Colors.redAccent),
                       const SizedBox(width: 8),
                       _smallAppleBtn(Icons.tune_rounded,
                           canControl ? () => _showDeviceControls(dev) : null,
@@ -3042,7 +3230,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
 }
 
 class MediaScreen extends StatefulWidget {
-  const MediaScreen({super.key});
+  final bool employeeMode;
+  const MediaScreen({super.key, this.employeeMode = true});
   @override
   State<MediaScreen> createState() => _MediaScreenState();
 }
@@ -3427,14 +3616,16 @@ class _MediaScreenState extends State<MediaScreen> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        const Text("Медиатека",
+                        const Text("Контент",
                             style: TextStyle(
                                 fontSize: 28,
                                 fontWeight: FontWeight.w800,
                                 letterSpacing: -.6)),
                         const SizedBox(height: 4),
                         Text(
-                            "${videos.length} роликов · ${totalMb.toStringAsFixed(1)} МБ · пакет ${pack.version}",
+                            widget.employeeMode
+                                ? "${videos.length} ${_pluralRoliki(videos.length)} готовы к отправке"
+                                : "${videos.length} роликов · ${totalMb.toStringAsFixed(1)} МБ · пакет ${pack.version}",
                             style: const TextStyle(
                                 color: Colors.white38, fontSize: 13)),
                       ],
@@ -3442,23 +3633,24 @@ class _MediaScreenState extends State<MediaScreen> {
                     Wrap(
                       spacing: 12,
                       children: [
-                        OutlinedButton.icon(
-                          onPressed: _pickSourceFolder,
-                          icon: const Icon(Icons.folder_open_rounded),
-                          label: const Text("Выбрать папку"),
-                          style: OutlinedButton.styleFrom(
-                            foregroundColor: Colors.white70,
-                            side: const BorderSide(color: Colors.white24),
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 18, vertical: 16),
-                            shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(12)),
+                        if (!widget.employeeMode)
+                          OutlinedButton.icon(
+                            onPressed: _pickSourceFolder,
+                            icon: const Icon(Icons.folder_open_rounded),
+                            label: const Text("Выбрать папку"),
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: Colors.white70,
+                              side: const BorderSide(color: Colors.white24),
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 18, vertical: 16),
+                              shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(12)),
+                            ),
                           ),
-                        ),
                         ElevatedButton.icon(
                           onPressed: _pickVideos,
                           icon: const Icon(Icons.add_to_photos_rounded),
-                          label: const Text("Добавить"),
+                          label: const Text("Добавить ролики"),
                           style: ElevatedButton.styleFrom(
                               backgroundColor: accent,
                               foregroundColor: const Color(0xFF101012),

@@ -245,6 +245,10 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
         videoView.setOnCompletionListener(mp -> { currentIndex++; playNext(); });
         videoView.setOnErrorListener((mp, what, extra) -> { currentIndex++; playNext(); return true; });
         rootLayout.setOnClickListener(v -> { if (isPlaylistVisible) hidePlaylist(); else toggleControls(); });
+        rootLayout.setOnLongClickListener(v -> {
+            showAdminPinDialog();
+            return true;
+        });
 
         checkPermissions();
         startProgressUpdater();
@@ -475,6 +479,11 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
         controlBrandBadge.setGravity(Gravity.CENTER);
         controlBrandBadge.setBackground(rounded(
                 Color.parseColor(BrandConfig.accent(this)), 9, 0, 0));
+        controlBrandBadge.setContentDescription("Удерживайте для входа администратора");
+        controlBrandBadge.setOnLongClickListener(v -> {
+            showAdminPinDialog();
+            return true;
+        });
         LinearLayout.LayoutParams badgeLp = new LinearLayout.LayoutParams(38, 38);
         badgeLp.rightMargin = 15;
         topRow.addView(controlBrandBadge, badgeLp);
@@ -486,7 +495,7 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
         topRow.addView(timeText, new LinearLayout.LayoutParams(0, -2, 1));
 
         syncBtn = new TextView(this);
-        syncBtn.setText("🔄 Обновить");
+        syncBtn.setText("✓ Проверить контент");
         syncBtn.setTextColor(Color.parseColor("#34C759"));
         syncBtn.setTextSize(15);
         syncBtn.setPadding(15, 10, 15, 10);
@@ -501,20 +510,16 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
         listBtn.setOnClickListener(v -> showPlaylist());
         topRow.addView(listBtn);
 
-        TextView settingsBtn = new TextView(this);
-        settingsBtn.setText("⚙️");
-        settingsBtn.setTextSize(18);
-        settingsBtn.setPadding(15, 10, 15, 10);
-        settingsBtn.setOnClickListener(v -> showSettingsDialog());
-        topRow.addView(settingsBtn);
-
-        TextView exitBtn = new TextView(this);
-        exitBtn.setText("✕");
-        exitBtn.setTextColor(Color.parseColor("#FF3B30"));
-        exitBtn.setTextSize(20);
-        exitBtn.setPadding(15, 10, 15, 10);
-        exitBtn.setOnClickListener(v -> finish());
-        topRow.addView(exitBtn);
+        TextView hideBtn = new TextView(this);
+        hideBtn.setText("Скрыть");
+        hideBtn.setTextColor(Color.parseColor("#99FFFFFF"));
+        hideBtn.setTextSize(14);
+        hideBtn.setPadding(15, 10, 15, 10);
+        hideBtn.setOnClickListener(v -> {
+            isControlsVisible = false;
+            controlsLayout.setVisibility(View.GONE);
+        });
+        topRow.addView(hideBtn);
 
         LinearLayout buttonsRow = new LinearLayout(this);
         buttonsRow.setOrientation(LinearLayout.HORIZONTAL);
@@ -580,6 +585,59 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
         });
         volRow.addView(volumeBar, new LinearLayout.LayoutParams(0, -2, 1));
         TextView volMax = new TextView(this); volMax.setText("🔊"); volRow.addView(volMax);
+
+        LinearLayout brightnessRow = new LinearLayout(this);
+        brightnessRow.setOrientation(LinearLayout.HORIZONTAL);
+        brightnessRow.setGravity(Gravity.CENTER_VERTICAL);
+        brightnessRow.setPadding(0, 8, 0, 0);
+        controlsLayout.addView(brightnessRow);
+        TextView dimIcon = new TextView(this); dimIcon.setText("☀"); dimIcon.setAlpha(.45f);
+        brightnessRow.addView(dimIcon);
+        SeekBar brightnessBar = new SeekBar(this);
+        brightnessBar.setMax(255);
+        brightnessBar.setProgress(getBrightness());
+        brightnessBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                if (fromUser) onBrightness(Math.max(10, progress));
+                resetHideTimer();
+            }
+            @Override public void onStartTrackingTouch(SeekBar seekBar) {}
+            @Override public void onStopTrackingTouch(SeekBar seekBar) {}
+        });
+        brightnessRow.addView(brightnessBar, new LinearLayout.LayoutParams(0, -2, 1));
+        TextView brightIcon = new TextView(this); brightIcon.setText("☀"); brightIcon.setTextSize(20);
+        brightnessRow.addView(brightIcon);
+    }
+
+    /** Технические настройки не видны сотруднику и открываются только по PIN. */
+    private void showAdminPinDialog() {
+        final EditText input = new EditText(this);
+        input.setInputType(android.text.InputType.TYPE_CLASS_NUMBER |
+                android.text.InputType.TYPE_NUMBER_VARIATION_PASSWORD);
+        input.setHint("PIN-код");
+        input.setSingleLine(true);
+        int pad = (int) (24 * getResources().getDisplayMetrics().density);
+        FrameLayout wrapper = new FrameLayout(this);
+        wrapper.setPadding(pad, 0, pad, 0);
+        wrapper.addView(input, new FrameLayout.LayoutParams(-1, -2));
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("Вход администратора")
+                .setMessage("Технические настройки планшета")
+                .setView(wrapper)
+                .setNegativeButton("Отмена", null)
+                .setPositiveButton("Войти", null)
+                .create();
+        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+                .setOnClickListener(v -> {
+                    if ("2468".equals(input.getText().toString())) {
+                        dialog.dismiss();
+                        showSettingsDialog();
+                    } else {
+                        input.setError("Неверный PIN-код");
+                    }
+                }));
+        dialog.show();
+        input.requestFocus();
     }
 
     private DiscoveryListener activeDiscovery;
@@ -697,7 +755,7 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
         updateRow.addView(updateBtn);
 
         new AlertDialog.Builder(this)
-            .setTitle("Настройки · v" + MediaServer.VERSION)
+            .setTitle("Панель администратора · v" + MediaServer.VERSION)
             .setView(content)
             .setPositiveButton("Сохранить", (dialog, which) -> {
                 if (activeDiscovery != null) { activeDiscovery.cancel(); activeDiscovery = null; }
