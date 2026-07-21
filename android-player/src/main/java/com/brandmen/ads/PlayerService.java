@@ -22,6 +22,7 @@ import org.json.JSONObject;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.OutputStream;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Foreground-сервис: держит HTTP-сервер (порт 5011) и Wi-Fi-лок живыми
@@ -51,6 +52,8 @@ public class PlayerService extends Service implements MediaServer.ControlCallbac
     private AudioManager audioManager;
     private android.app.admin.DevicePolicyManager dpm;
     private ComponentName adminComponent;
+    private DiscoveryListener controlDiscovery;
+    private final AtomicBoolean controlDiscoveryRunning = new AtomicBoolean(false);
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private static final long REGISTER_INTERVAL_MS = 60_000L;
     private final Runnable registerWithControl = new Runnable() {
@@ -133,6 +136,7 @@ public class PlayerService extends Service implements MediaServer.ControlCallbac
     public void onDestroy() {
         mainHandler.removeCallbacks(netHeal);
         mainHandler.removeCallbacks(registerWithControl);
+        if (controlDiscovery != null) controlDiscovery.cancel();
         if (commandPoller != null) commandPoller.stop();
         if (mediaServer != null) mediaServer.stop();
         releaseLocks();
@@ -146,7 +150,10 @@ public class PlayerService extends Service implements MediaServer.ControlCallbac
                 SharedPreferences prefs =
                         getSharedPreferences("BrandmenPrefs", MODE_PRIVATE);
                 String serverIp = prefs.getString("server_ip", "");
-                if (serverIp == null || serverIp.trim().isEmpty()) return;
+                if (serverIp == null || serverIp.trim().isEmpty()) {
+                    discoverControlInBackground();
+                    return;
+                }
 
                 DeploymentManager identity = new DeploymentManager(this);
                 JSONObject registration = new JSONObject();
@@ -174,10 +181,47 @@ public class PlayerService extends Service implements MediaServer.ControlCallbac
                 // Пульт может быть выключен — это штатно; повторим через минуту.
                 android.util.Log.d("PlayerService",
                         "Control registration deferred: " + e.getMessage());
+                // При смене Wi-Fi старый адрес пульта обычно уже недоступен.
+                // Ищем активный Windows-пульт по его UDP beacon даже при
+                // выключенном экране и выгруженной Activity.
+                discoverControlInBackground();
             } finally {
                 if (conn != null) conn.disconnect();
             }
         }, "ControlRegistration").start();
+    }
+
+    /**
+     * Фоновый поиск пульта по UDP beacon. Один поиск за раз; найденный адрес
+     * становится основным и сразу используется для повторной регистрации.
+     */
+    private void discoverControlInBackground() {
+        if (!NetworkWatchdog.isOnline(this)) return;
+        if (!controlDiscoveryRunning.compareAndSet(false, true)) return;
+
+        DiscoveryListener listener = new DiscoveryListener();
+        controlDiscovery = listener;
+        listener.findAsync(new DiscoveryListener.Callback() {
+            @Override public void onFound(String ip) {
+                try {
+                    getSharedPreferences("BrandmenPrefs", MODE_PRIVATE)
+                            .edit().putString("server_ip", ip).apply();
+                    android.util.Log.i("PlayerService",
+                            "Control discovered in background: " + ip);
+                } finally {
+                    controlDiscoveryRunning.set(false);
+                    controlDiscovery = null;
+                }
+                // Пульт мог быть в режиме сопряжения только короткое время —
+                // не ждём следующего минутного тика.
+                registerWithKnownControl();
+            }
+
+            @Override public void onTimeout() {
+                controlDiscoveryRunning.set(false);
+                controlDiscovery = null;
+            }
+        });
     }
 
     /** Запускает foreground-сервис. Безопасно вызывать многократно. */
