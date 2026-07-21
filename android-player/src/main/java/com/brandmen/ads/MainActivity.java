@@ -56,16 +56,16 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
     private boolean isPlaylistVisible = false;
     private Handler hideHandler = new Handler();
     private final Handler maintenanceHandler = new Handler(Looper.getMainLooper());
+    private boolean volumeUpHeld = false;
+    private boolean volumeDownHeld = false;
+    private boolean maintenanceComboScheduled = false;
+    private boolean maintenanceMode = false;
     private final Handler screenOffHandler = new Handler(Looper.getMainLooper());
     private final Runnable screenOffRunnable = () -> {
         // launch мог прийти после stop/wake. Устаревшая команда не должна
         // погасить экран, если реклама уже снова включена владельцем.
         if (!Kiosk.isPlaybackEnabled(this) && !maintenanceMode) onSleep();
     };
-    private boolean volumeUpHeld = false;
-    private boolean volumeDownHeld = false;
-    private boolean maintenanceComboScheduled = false;
-    private boolean maintenanceMode = false;
     private final Runnable maintenanceCombo = () -> {
         maintenanceComboScheduled = false;
         if (!volumeUpHeld || !volumeDownHeld) return;
