@@ -56,6 +56,12 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
     private boolean isPlaylistVisible = false;
     private Handler hideHandler = new Handler();
     private final Handler maintenanceHandler = new Handler(Looper.getMainLooper());
+    private final Handler screenOffHandler = new Handler(Looper.getMainLooper());
+    private final Runnable screenOffRunnable = () -> {
+        // launch мог прийти после stop/wake. Устаревшая команда не должна
+        // погасить экран, если реклама уже снова включена владельцем.
+        if (!Kiosk.isPlaybackEnabled(this) && !maintenanceMode) onSleep();
+    };
     private boolean volumeUpHeld = false;
     private boolean volumeDownHeld = false;
     private boolean maintenanceComboScheduled = false;
@@ -380,7 +386,7 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
             case "launch": onLaunch(); break;
             case "stop": onStopPlayback(); break;
             case "content": onContentChanged(); break;
-            case "restart": onRestart(); break;
+            case "restart": onRestartPlayback(); break;
         }
     }
 
@@ -1391,6 +1397,7 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
 
     @Override protected void onDestroy() {
         maintenanceHandler.removeCallbacksAndMessages(null);
+        screenOffHandler.removeCallbacks(screenOffRunnable);
         if (wakeLock != null && wakeLock.isHeld()) {
             try { wakeLock.release(); } catch (Exception ignored) {}
         }
@@ -1447,6 +1454,7 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
 
     @Override public void onLaunch() {
         Kiosk.setPlaybackEnabled(this, true);
+        screenOffHandler.removeCallbacks(screenOffRunnable);
         applyPlaybackWindowState(true);
         onWake();
         loadVideos();
@@ -1464,11 +1472,12 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
         // реклама намеренно выключена. Гасим дисплей, но не останавливаем
         // PlayerService: HTTP и outbound-команды продолжают работать.
         if (dpm != null && dpm.isAdminActive(adminComponent)) {
-            new Handler().postDelayed(this::onSleep, 250L);
+            screenOffHandler.removeCallbacks(screenOffRunnable);
+            screenOffHandler.postDelayed(screenOffRunnable, 250L);
         }
     }
 
-    @Override public void onRestart() {
+    @Override public void onRestartPlayback() {
         currentIndex = 0;
         if (Kiosk.isPlaybackEnabled(this)) playNext();
     }

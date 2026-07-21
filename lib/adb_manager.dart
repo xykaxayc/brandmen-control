@@ -437,7 +437,9 @@ class AdbManager {
 
   Future<bool> enablePlayback(String ip) async {
     final client = DeviceHttp(ip);
-    await client.wake();
+    // launch атомарно меняет desired-state до поднятия Activity и сам будит
+    // экран. Отдельный wake при выключенной рекламе создавал гонку: Activity
+    // успевала запланировать lockNow() до следующей команды launch.
     return client.launch();
   }
 

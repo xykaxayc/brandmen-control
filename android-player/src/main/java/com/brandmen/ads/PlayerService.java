@@ -368,7 +368,7 @@ public class PlayerService extends Service implements MediaServer.ControlCallbac
         if (activity != null) activity.onStopPlayback();
         onSleep();
     }
-    @Override public void onRestart() { sendCmd("restart"); }
+    @Override public void onRestartPlayback() { sendCmd("restart"); }
     @Override public void onContentChanged() {
         MainActivity activity = MainActivity.peek();
         if (activity != null) {

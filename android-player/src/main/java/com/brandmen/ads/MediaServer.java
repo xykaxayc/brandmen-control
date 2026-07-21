@@ -44,7 +44,7 @@ public class MediaServer {
         void onBrightness(int level);
         void onLaunch();
         void onStopPlayback();
-        void onRestart();
+        void onRestartPlayback();
         void onContentChanged();
         int getVolume();
         int getVolumeMax();
@@ -291,7 +291,7 @@ public class MediaServer {
                 sendJson(out, 200, "{\"ok\":true}");
                 break;
             case "restart":
-                mainHandler.post(callback::onRestart);
+                mainHandler.post(callback::onRestartPlayback);
                 sendJson(out, 200, "{\"ok\":true}");
                 break;
             case "unmanage":
