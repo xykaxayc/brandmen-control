@@ -55,6 +55,19 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
     private boolean isControlsVisible = true;
     private boolean isPlaylistVisible = false;
     private Handler hideHandler = new Handler();
+    private final Handler maintenanceHandler = new Handler(Looper.getMainLooper());
+    private boolean volumeUpHeld = false;
+    private boolean volumeDownHeld = false;
+    private boolean maintenanceComboScheduled = false;
+    private boolean maintenanceMode = false;
+    private final Runnable maintenanceCombo = () -> {
+        maintenanceComboScheduled = false;
+        if (!volumeUpHeld || !volumeDownHeld) return;
+        volumeUpHeld = false;
+        volumeDownHeld = false;
+        keepScreenAwakeForAdminLogin();
+        showAdminPinDialog();
+    };
     private android.media.AudioManager audioManager;
     private SharedPreferences prefs;
 
@@ -389,6 +402,32 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
         }
     }
 
+    /**
+     * Аварийный локальный вход: после пробуждения удерживать обе клавиши
+     * громкости 5 секунд. Работает даже при скрытой панели управления.
+     */
+    @Override
+    public boolean dispatchKeyEvent(KeyEvent event) {
+        int code = event.getKeyCode();
+        if (code != KeyEvent.KEYCODE_VOLUME_UP &&
+                code != KeyEvent.KEYCODE_VOLUME_DOWN) {
+            return super.dispatchKeyEvent(event);
+        }
+
+        boolean pressed = event.getAction() != KeyEvent.ACTION_UP;
+        if (code == KeyEvent.KEYCODE_VOLUME_UP) volumeUpHeld = pressed;
+        if (code == KeyEvent.KEYCODE_VOLUME_DOWN) volumeDownHeld = pressed;
+
+        if (volumeUpHeld && volumeDownHeld && !maintenanceComboScheduled) {
+            maintenanceComboScheduled = true;
+            maintenanceHandler.postDelayed(maintenanceCombo, 5_000L);
+        } else if ((!volumeUpHeld || !volumeDownHeld) && maintenanceComboScheduled) {
+            maintenanceHandler.removeCallbacks(maintenanceCombo);
+            maintenanceComboScheduled = false;
+        }
+        return true;
+    }
+
     @Override
     protected void onPause() {
         if (nsdManager != null && discoveryListener != null) {
@@ -611,6 +650,7 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
 
     /** Технические настройки не видны сотруднику и открываются только по PIN. */
     private void showAdminPinDialog() {
+        keepScreenAwakeForAdminLogin();
         final EditText input = new EditText(this);
         input.setInputType(android.text.InputType.TYPE_CLASS_NUMBER |
                 android.text.InputType.TYPE_NUMBER_VARIATION_PASSWORD);
@@ -631,6 +671,7 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
                 .setOnClickListener(v -> {
                     if ("2468".equals(input.getText().toString())) {
                         dialog.dismiss();
+                        enterMaintenanceMode();
                         showSettingsDialog();
                     } else {
                         input.setError("Неверный PIN-код");
@@ -638,6 +679,31 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
                 }));
         dialog.show();
         input.requestFocus();
+    }
+
+    /** Даёт минуту на ввод PIN, не меняя желаемое состояние рекламы. */
+    private void keepScreenAwakeForAdminLogin() {
+        applyPlaybackWindowState(true);
+        onWake();
+        maintenanceHandler.removeCallbacksAndMessages(null);
+        maintenanceHandler.postDelayed(() -> {
+            if (!maintenanceMode && !Kiosk.isPlaybackEnabled(this)) {
+                onStopPlayback();
+            }
+        }, 60_000L);
+    }
+
+    /** Десять минут для Wi-Fi и обслуживания, затем возвращаем ночное состояние. */
+    private void enterMaintenanceMode() {
+        maintenanceMode = true;
+        applyPlaybackWindowState(true);
+        onWake();
+        maintenanceHandler.removeCallbacksAndMessages(null);
+        maintenanceHandler.postDelayed(() -> {
+            maintenanceMode = false;
+            if (!Kiosk.isPlaybackEnabled(this)) onStopPlayback();
+        }, 10 * 60_000L);
+        Toast.makeText(this, "Режим обслуживания: 10 минут", Toast.LENGTH_LONG).show();
     }
 
     private DiscoveryListener activeDiscovery;
@@ -1324,6 +1390,7 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
     }
 
     @Override protected void onDestroy() {
+        maintenanceHandler.removeCallbacksAndMessages(null);
         if (wakeLock != null && wakeLock.isHeld()) {
             try { wakeLock.release(); } catch (Exception ignored) {}
         }
