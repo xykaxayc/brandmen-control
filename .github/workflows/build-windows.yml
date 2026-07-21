@@ -136,7 +136,7 @@ jobs:
         with:
           tag_name: ${{ steps.ver.outputs.tag }}
           name: "Build ${{ steps.ver.outputs.version }}"
-          prerelease: true
+          prerelease: false
           generate_release_notes: false
           files: |
             BrandmenControl-Windows.zip

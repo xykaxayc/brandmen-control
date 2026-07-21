@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:http/http.dart' as http;
 import 'package:http/io_client.dart';
+import 'package:crypto/crypto.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'logger.dart';
@@ -22,13 +23,26 @@ const String kReleasesPageUrl = 'https://github.com/$_kRepo/releases/latest';
 // может не содержать нужный ассет — ищем новейший релиз, где он ЕСТЬ.
 const String _kReleasesUrl =
     'https://api.github.com/repos/$_kRepo/releases?per_page=15';
+const String _kUpdateMirrorUrl = 'https://77.246.102.205:8443/updates/releases';
+const String _kUpdateMirrorToken = '933897b46de4e38806e6d6669d768e9c';
+const String _kUpdateMirrorCertSha256 =
+    '3c7ab97b4fabb7e4ead59d0af8da6089c7a2f16c525b56914c455b4d412ed3c8';
 
 // Обновления исполняют скачанный код, поэтому неподтверждённые сертификаты
 // больше не принимаются даже для GitHub. Если TLS перехватывает антивирус или
 // прокси, нужно установить его корневой сертификат в доверенное хранилище.
 HttpClient _githubHttpClient() => HttpClient();
 
-http.Client _githubClient() => IOClient(_githubHttpClient());
+HttpClient _updateHttpClient(Uri uri) {
+  if (uri.host != Uri.parse(_kUpdateMirrorUrl).host) {
+    return _githubHttpClient();
+  }
+  final targetHost = uri.host;
+  return HttpClient()
+    ..badCertificateCallback = (cert, host, port) =>
+        host == targetHost &&
+        sha256.convert(cert.der).toString() == _kUpdateMirrorCertSha256;
+}
 
 class UpdateInfo {
   final String version;
@@ -220,11 +234,30 @@ class AppUpdater {
   // ── Внутренние хелперы ──────────────────────────────────────────────────
 
   static Future<List<dynamic>> _fetchReleases() async {
-    final client = _githubClient();
+    final githubUri =
+        Uri.parse('$_kReleasesUrl&_=${DateTime.now().millisecondsSinceEpoch}');
+    try {
+      return await _fetchReleasesAt(githubUri, source: 'GitHub');
+    } catch (e) {
+      // На части Windows-ПК локальное хранилище корневых сертификатов не
+      // принимает цепочку GitHub. Не отключаем TLS-проверку: переключаемся на
+      // собственное зеркало с жёстко закреплённым SHA-256 сертификата.
+      AppLogger.log('[UPD] GitHub TLS недоступен, резервный сервер: $e');
+      final mirrorUri = Uri.parse(_kUpdateMirrorUrl).replace(queryParameters: {
+        'token': _kUpdateMirrorToken,
+        '_': DateTime.now().millisecondsSinceEpoch.toString(),
+      });
+      return _fetchReleasesAt(mirrorUri, source: 'Brandmen mirror');
+    }
+  }
+
+  static Future<List<dynamic>> _fetchReleasesAt(Uri uri,
+      {required String source}) async {
+    final client = IOClient(_updateHttpClient(uri));
     final http.Response response;
     try {
       response = await client.get(
-        Uri.parse('$_kReleasesUrl&_=${DateTime.now().millisecondsSinceEpoch}'),
+        uri,
         headers: {
           'Accept': 'application/vnd.github+json',
           'Cache-Control': 'no-cache',
@@ -236,7 +269,7 @@ class AppUpdater {
       client.close();
     }
 
-    AppLogger.log('[UPD] GET $_kReleasesUrl → HTTP ${response.statusCode}, '
+    AppLogger.log('[UPD] GET $source → HTTP ${response.statusCode}, '
         '${response.body.length} байт');
     if (response.statusCode != 200) {
       AppLogger.log('[UPD] не 200 — тело: '
@@ -311,7 +344,7 @@ class AppUpdater {
   }) async {
     // dart:io HttpClient следует 302-редиректам (GitHub releases → CDN).
     // Тот же обход проверки сертификата для доменов GitHub, что и при проверке.
-    final client = _githubHttpClient();
+    final client = _updateHttpClient(Uri.parse(url));
     cancel?._bind(client);
     final destFile = File(destPath);
     IOSink? sink;

@@ -32,7 +32,8 @@ import time
 import datetime
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, quote
+from urllib.request import Request, urlopen
 
 PORT = int(os.environ.get("PORT", "8443"))
 TOKEN = os.environ.get("LOG_TOKEN", "")
@@ -40,6 +41,46 @@ DIR = os.environ.get("LOG_DIR", os.path.join(os.path.dirname(os.path.abspath(__f
 CERT = os.environ.get("CERT", os.path.join(os.path.dirname(os.path.abspath(__file__)), "cert.pem"))
 KEY = os.environ.get("KEY", os.path.join(os.path.dirname(os.path.abspath(__file__)), "key.pem"))
 os.makedirs(DIR, exist_ok=True)
+
+UPDATE_REPO = "xykaxayc/brandmen-control"
+UPDATE_ASSETS = {
+    "BrandmenAds.apk",
+    "BrandmenControl-macOS.dmg",
+    "BrandmenControl-macOS.zip",
+    "BrandmenControl-Setup.exe",
+    "BrandmenControl-Windows.zip",
+}
+UPDATE_CACHE = {"at": 0.0, "releases": []}
+UPDATE_CACHE_LOCK = threading.Lock()
+
+
+def update_releases():
+    """GitHub releases с download URL, переписанными на закреплённый сервер."""
+    with UPDATE_CACHE_LOCK:
+        now = time.time()
+        if UPDATE_CACHE["releases"] and now - UPDATE_CACHE["at"] < 60:
+            return UPDATE_CACHE["releases"]
+        req = Request(
+            f"https://api.github.com/repos/{UPDATE_REPO}/releases?per_page=15",
+            headers={"Accept": "application/vnd.github+json",
+                     "User-Agent": "BrandmenUpdateMirror/1"})
+        with urlopen(req, timeout=15) as response:
+            releases = json.loads(response.read().decode("utf-8"))
+        for release in releases:
+            tag = str(release.get("tag_name", ""))
+            allowed = []
+            for asset in release.get("assets", []):
+                name = str(asset.get("name", ""))
+                if name not in UPDATE_ASSETS:
+                    continue
+                item = dict(asset)
+                item["browser_download_url"] = (
+                    f"https://77.246.102.205:8443/updates/download"
+                    f"?tag={quote(tag)}&name={quote(name)}&token={quote(TOKEN)}")
+                allowed.append(item)
+            release["assets"] = allowed
+        UPDATE_CACHE.update(at=now, releases=releases)
+        return releases
 
 # --- Очередь команд для планшетов (outbound-канал) -------------------------
 # Планшет сам ходит на сервер (poll), забирает команды и шлёт ack. Это убирает
@@ -552,6 +593,43 @@ class H(BaseHTTPRequestHandler):
         q = parse_qs(u.query)
         if u.path == "/":
             return self._send(200, "brandmen log server")
+        if u.path == "/updates/releases":
+            if not authed(self):
+                return self._send(401, "unauthorized")
+            try:
+                body = json.dumps(update_releases(), ensure_ascii=False)
+                return self._send(200, body, "application/json; charset=utf-8")
+            except Exception as e:
+                print(f"[updates] releases error: {e}", flush=True)
+                return self._send(502, "update source unavailable")
+        if u.path == "/updates/download":
+            if not authed(self):
+                return self._send(401, "unauthorized")
+            tag = q.get("tag", [""])[0]
+            name = q.get("name", [""])[0]
+            if not re.fullmatch(r"v0\.\d+\.0", tag) or name not in UPDATE_ASSETS:
+                return self._send(400, "invalid update asset")
+            url = f"https://github.com/{UPDATE_REPO}/releases/download/{quote(tag)}/{quote(name)}"
+            try:
+                req = Request(url, headers={"User-Agent": "BrandmenUpdateMirror/1"})
+                with urlopen(req, timeout=60) as response:
+                    self.send_response(200)
+                    self.send_header("Content-Type", response.headers.get(
+                        "Content-Type", "application/octet-stream"))
+                    length = response.headers.get("Content-Length")
+                    if length:
+                        self.send_header("Content-Length", length)
+                    self.send_header("Content-Disposition", f'attachment; filename="{name}"')
+                    self.end_headers()
+                    while True:
+                        chunk = response.read(256 * 1024)
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+                return
+            except Exception as e:
+                print(f"[updates] download error {tag}/{name}: {e}", flush=True)
+                return self._send(502, "update download unavailable")
         if u.path == "/commands/poll":
             if not authed(self):
                 return self._send(401, "unauthorized")
