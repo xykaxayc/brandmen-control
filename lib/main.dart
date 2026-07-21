@@ -297,6 +297,10 @@ class _MainScreenState extends State<MainScreen> {
       apiToken: reg.apiToken,
     );
     DeviceHttp.registerToken(reg.ip, reg.apiToken);
+    // SettingsScreen живёт внутри IndexedStack и раньше сохранял снимок списка
+    // с момента запуска. После смены Wi‑Fi Dashboard уже видел новый IP, а
+    // админская кнопка обновления APK продолжала обращаться к старому адресу.
+    await _settingsKey.currentState?._loadDevices();
     if (!reg.isReconnect) {
       BrandmenServer.instance?.stopPairing();
       _settingsKey.currentState?._stopPairing();
@@ -831,6 +835,9 @@ class _MainScreenState extends State<MainScreen> {
         builder: (hovered) => InkWell(
           onTap: () {
             setState(() => _selectedIndex = index);
+            if (index == 3) {
+              unawaited(_settingsKey.currentState?._loadDevices());
+            }
             _refreshAdminTimeout();
           },
           borderRadius: BorderRadius.circular(10),
@@ -4239,6 +4246,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _checkAndUpdateApk() async {
+    // IP планшета может поменяться после переподключения к другой Wi‑Fi сети.
+    // Всегда начинаем операцию со свежих данных, а не с UI-кэша вкладки.
+    final latestDevices = await DeviceStorage.load();
+    if (!mounted) return;
+    setState(() => savedDevices = latestDevices);
+
     final status = ValueNotifier<String>('');
     final progress =
         ValueNotifier<double?>(null); // null = крутилка, 0..1 = прогрессбар
