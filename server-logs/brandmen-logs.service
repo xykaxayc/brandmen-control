@@ -1,0 +1,20 @@
+[Unit]
+Description=Brandmen logs, updates and device command server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Environment=PORT=8443
+Environment=LOG_TOKEN=933897b46de4e38806e6d6669d768e9c
+Environment=LOG_DIR=/opt/brandmen-logs/logs
+Environment=CERT=/opt/brandmen-logs/cert.pem
+Environment=KEY=/opt/brandmen-logs/key.pem
+Environment=PUBLIC_BASE=https://185.50.203.112
+WorkingDirectory=/opt/brandmen-logs
+ExecStart=/usr/bin/python3 /opt/brandmen-logs/logserver.py
+Restart=always
+RestartSec=3
+User=root
+
+[Install]
+WantedBy=multi-user.target

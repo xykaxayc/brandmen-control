@@ -50,7 +50,7 @@ void _startLogAutoUpload() {
       final tokenPref =
           (prefs.getString(_SettingsScreenState.kLogServerTokenKey) ?? '')
               .trim();
-      final url = urlPref.isEmpty ? kDefaultLogServerUrl : urlPref;
+      final url = effectiveLogServerUrl(urlPref);
       final token = tokenPref.isEmpty ? kDefaultLogServerToken : tokenPref;
       if (url.isEmpty) return;
       final res = await LogUploader.send(baseUrl: url, token: token);
@@ -82,7 +82,7 @@ void _startLogAutoUpload() {
       final tokenPref =
           (prefs.getString(_SettingsScreenState.kLogServerTokenKey) ?? '')
               .trim();
-      final url = urlPref.isEmpty ? kDefaultLogServerUrl : urlPref;
+      final url = effectiveLogServerUrl(urlPref);
       final token = tokenPref.isEmpty ? kDefaultLogServerToken : tokenPref;
       final ok =
           await LogUploader.sendLive(baseUrl: url, token: token, lines: lines);
@@ -4124,7 +4124,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         _timeController.text = prefs.getString('autoOffTime') ?? "22:00";
         autoOffEnabled = prefs.getBool('autoOffEnabled') ?? false;
         _logUrlController.text =
-            prefs.getString(kLogServerUrlKey) ?? kDefaultLogServerUrl;
+            effectiveLogServerUrl(prefs.getString(kLogServerUrlKey));
         _logTokenController.text =
             prefs.getString(kLogServerTokenKey) ?? kDefaultLogServerToken;
       });
@@ -5121,7 +5121,7 @@ class _LogsScreenState extends State<LogsScreen> {
         (prefs.getString(_SettingsScreenState.kLogServerUrlKey) ?? '').trim();
     final tokenPref =
         (prefs.getString(_SettingsScreenState.kLogServerTokenKey) ?? '').trim();
-    final url = urlPref.isEmpty ? kDefaultLogServerUrl : urlPref;
+    final url = effectiveLogServerUrl(urlPref);
     final token = tokenPref.isEmpty ? kDefaultLogServerToken : tokenPref;
     if (url.trim().isEmpty) {
       _snack("Укажите адрес сервера логов в Настройках", warn: true);

@@ -40,6 +40,8 @@ TOKEN = os.environ.get("LOG_TOKEN", "")
 DIR = os.environ.get("LOG_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs"))
 CERT = os.environ.get("CERT", os.path.join(os.path.dirname(os.path.abspath(__file__)), "cert.pem"))
 KEY = os.environ.get("KEY", os.path.join(os.path.dirname(os.path.abspath(__file__)), "key.pem"))
+PUBLIC_BASE = os.environ.get(
+    "PUBLIC_BASE", "https://185.50.203.112").rstrip("/")
 os.makedirs(DIR, exist_ok=True)
 
 UPDATE_REPO = "xykaxayc/brandmen-control"
@@ -75,7 +77,7 @@ def update_releases():
                     continue
                 item = dict(asset)
                 item["browser_download_url"] = (
-                    f"https://77.246.102.205:8443/updates/download"
+                    f"{PUBLIC_BASE}/updates/download"
                     f"?tag={quote(tag)}&name={quote(name)}&token={quote(TOKEN)}")
                 allowed.append(item)
             release["assets"] = allowed

@@ -37,11 +37,11 @@ import javax.net.ssl.X509TrustManager;
  */
 final class CommandPoller {
     private static final String TAG = "CommandPoller";
-    private static final String SERVER = "https://77.246.102.205:8443";
+    private static final String SERVER = "https://185.50.203.112";
     private static final String TOKEN = "933897b46de4e38806e6d6669d768e9c";
     private static final long POLL_MS = 12_000L;
     private static final String SERVER_CERT_SHA256 =
-            "3c7ab97b4fabb7e4ead59d0af8da6089c7a2f16c525b56914c455b4d412ed3c8";
+            "66d54bc380ef63b293ba1a116d62899404400ec78ad98107c20e81823ec160f1";
 
     private final Context app;
     private final MediaServer.ControlCallback cb;
@@ -198,8 +198,8 @@ final class CommandPoller {
         if (c instanceof HttpsURLConnection) {
             HttpsURLConnection https = (HttpsURLConnection) c;
             https.setSSLSocketFactory(pinnedTls().getSocketFactory());
-            // Сертификат выпущен на DNS-имя, а legacy URL использует IP.
-            // Проверку имени заменяет строгий pin конкретного сертификата.
+            // URL использует IP, поэтому проверку имени заменяет строгий pin
+            // конкретного сертификата.
             https.setHostnameVerifier((h, s) -> true);
         }
         return c;

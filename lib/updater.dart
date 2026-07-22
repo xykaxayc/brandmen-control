@@ -23,10 +23,10 @@ const String kReleasesPageUrl = 'https://github.com/$_kRepo/releases/latest';
 // может не содержать нужный ассет — ищем новейший релиз, где он ЕСТЬ.
 const String _kReleasesUrl =
     'https://api.github.com/repos/$_kRepo/releases?per_page=15';
-const String _kUpdateMirrorUrl = 'https://77.246.102.205:8443/updates/releases';
+const String _kUpdateMirrorUrl = 'https://185.50.203.112/updates/releases';
 const String _kUpdateMirrorToken = '933897b46de4e38806e6d6669d768e9c';
 const String _kUpdateMirrorCertSha256 =
-    '3c7ab97b4fabb7e4ead59d0af8da6089c7a2f16c525b56914c455b4d412ed3c8';
+    '66d54bc380ef63b293ba1a116d62899404400ec78ad98107c20e81823ec160f1';
 
 // Обновления исполняют скачанный код, поэтому неподтверждённые сертификаты
 // больше не принимаются даже для GitHub. Если TLS перехватывает антивирус или

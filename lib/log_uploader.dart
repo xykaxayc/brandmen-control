@@ -5,15 +5,24 @@ import 'package:http/io_client.dart';
 import 'logger.dart';
 import 'updater.dart' show kAppVersion;
 
-/// Адрес и токен сервера логов по умолчанию — зашиты, чтобы каждый ПК слал
-/// логи на наш сервер сам, без ручной настройки. Можно переопределить в
-/// Настройках (ключи log_server_url / log_server_token). Сервер — приёмник
-/// `server-logs/logserver.py` на порту 8443 (самоподписанный TLS принимается
-/// через badCertificateCallback ниже, т.к. host совпадает с адресом).
-const String kDefaultLogServerUrl = 'https://77.246.102.205:8443';
+/// Служебный канал использует постоянный сертификат с SHA-256 pin и не зависит
+/// от системного хранилища CA на Windows. Браузерная панель доступна без порта:
+/// https://brandmen.xykaxayc.ru
+const String kDefaultLogServerUrl = 'https://185.50.203.112';
+const String _kLegacyLogServerUrl = 'https://77.246.102.205:8443';
 const String kDefaultLogServerToken = '933897b46de4e38806e6d6669d768e9c';
 const String _kLogServerCertSha256 =
-    '3c7ab97b4fabb7e4ead59d0af8da6089c7a2f16c525b56914c455b4d412ed3c8';
+    '66d54bc380ef63b293ba1a116d62899404400ec78ad98107c20e81823ec160f1';
+
+/// Сохранённый адрес старого сервера переносится автоматически. Явный адрес
+/// стороннего сервера оставляем без изменений.
+String effectiveLogServerUrl(String? configured) {
+  final value = (configured ?? '').trim().replaceAll(RegExp(r'/+$'), '');
+  if (value.isEmpty || value == _kLegacyLogServerUrl) {
+    return kDefaultLogServerUrl;
+  }
+  return value;
+}
 
 bool _trustedLogServerCertificate(
     X509Certificate cert, String host, int port, String targetHost) {
