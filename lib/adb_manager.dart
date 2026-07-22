@@ -1455,14 +1455,33 @@ class AdbManager {
   // Устанавливает APK: всегда кладёт копию в /sdcard/Download (ручной фолбэк
   // на случай если установка по ADB запрещена политикой устройства), плюс
   // пробует авто-установку через adb install -r.
-  Future<ApkInstallResult> installApk(String ip, String apkPath) async {
+  Future<ApkInstallResult> installApk(String ip, String apkPath,
+      {String? targetVersion}) async {
     // 0. Сначала пробуем по HTTP (порт 5011) — тот же надёжный канал, что и
     // синк, работает без ADB. Плеер сам покажет окно установки поверх себя.
     try {
       final apk = File(apkPath);
+      final healthBefore = await DeviceHttp(ip).health();
+      final silentExpected = healthBefore?['deviceOwner'] == true;
       if (await apk.exists() && await DeviceHttp(ip).installApkHttp(apk)) {
-        AppLogger.log(
-            'installApk $ip: доставлен по HTTP, окно установки на планшете');
+        // HTTP 200 подтверждает только приём APK. На Device Owner установка
+        // тихая и асинхронная: ждём перезапуска плеера и новой /version, чтобы
+        // Windows не сообщал ложный успех и не отправлял APK повторно.
+        if (silentExpected && targetVersion != null) {
+          for (var attempt = 0; attempt < 15; attempt++) {
+            await Future<void>.delayed(const Duration(seconds: 1));
+            final installedVersion = await getApkVersion(ip);
+            if (installedVersion == targetVersion) {
+              AppLogger.log('installApk $ip: подтверждена v$targetVersion');
+              return ApkInstallResult.installed;
+            }
+          }
+          AppLogger.log('installApk $ip: APK принят, но v$targetVersion '
+              'ещё не подтверждена');
+        } else {
+          AppLogger.log(
+              'installApk $ip: доставлен по HTTP, ожидается подтверждение на планшете');
+        }
         return ApkInstallResult.dialogShown;
       }
       AppLogger.log('installApk $ip: HTTP-установка недоступна, пробую ADB');

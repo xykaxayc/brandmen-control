@@ -289,7 +289,7 @@ class AppUpdater {
           ((a as Map?)?['tag_name'] as String? ?? '').replaceFirst('v', '');
       final bv =
           ((b as Map?)?['tag_name'] as String? ?? '').replaceFirst('v', '');
-      return _compareVersions(bv, av);
+      return compareVersions(bv, av);
     });
     return list;
   }
@@ -486,21 +486,25 @@ rm -- "\$0"
   }
 
   static bool _isNewer(String remote, String local) {
-    return _compareVersions(remote, local) > 0;
+    return compareVersions(remote, local) > 0;
   }
 
-  static int _compareVersions(String remote, String local) {
-    if (remote.isEmpty || remote == '0.0.0') return 0;
-    if (local.isEmpty) return 0;
+  /// Семантическое сравнение версий APK/приложения без лексикографических
+  /// ошибок вроде 0.9 > 0.110. Возвращает >0, если [left] новее [right].
+  static int compareVersions(String left, String right) {
+    if (left.isEmpty || right.isEmpty) return 0;
     List<int> parse(String v) =>
-        v.split('.').map((s) => int.tryParse(s) ?? 0).toList();
-    final r = parse(remote);
-    final l = parse(local);
+        v.replaceFirst(RegExp(r'^v'), '').split('.').map((s) {
+          final digits = RegExp(r'^\d+').firstMatch(s)?.group(0);
+          return int.tryParse(digits ?? '') ?? 0;
+        }).toList();
+    final l = parse(left);
+    final r = parse(right);
     for (int i = 0; i < 3; i++) {
-      final rv = i < r.length ? r[i] : 0;
       final lv = i < l.length ? l[i] : 0;
-      if (rv > lv) return 1;
-      if (rv < lv) return -1;
+      final rv = i < r.length ? r[i] : 0;
+      if (lv > rv) return 1;
+      if (lv < rv) return -1;
     }
     return 0;
   }

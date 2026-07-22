@@ -4380,20 +4380,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (ver != null) {
         reachableIps.add(dev.ip);
         deviceVersions[dev.ip] = ver;
-        final p1 = ver.split('.').map((s) => int.tryParse(s) ?? 0).toList();
-        final pl =
-            lowestVersion.split('.').map((s) => int.tryParse(s) ?? 0).toList();
-        bool isLower = false;
-        for (int j = 0; j < 3; j++) {
-          final v1 = j < p1.length ? p1[j] : 0;
-          final vl = j < pl.length ? pl[j] : 0;
-          if (v1 < vl) {
-            isLower = true;
-            break;
-          }
-          if (v1 > vl) break;
+        if (AppUpdater.compareVersions(ver, lowestVersion) < 0) {
+          lowestVersion = ver;
         }
-        if (isLower) lowestVersion = ver;
       }
     }
 
@@ -4456,6 +4445,45 @@ class _SettingsScreenState extends State<SettingsScreen> {
       return;
     }
 
+    // Новая версия определяется по самому старому планшету, но отправлять APK
+    // нужно только тем, у кого фактическая версия ниже целевой. Раньше здесь
+    // использовался reachableIps, поэтому обновлённые планшеты получали файл
+    // снова при наличии хотя бы одного старого устройства во флоте.
+    final outdatedIps = reachableIps
+        .where((ip) =>
+            AppUpdater.compareVersions(
+                deviceVersions[ip] ?? '0.0.0', apkInfo.version) <
+            0)
+        .toList();
+    if (outdatedIps.isEmpty) {
+      close();
+      progress.dispose();
+      if (!mounted) return;
+      showDialog(
+        context: context,
+        builder: (c) => AlertDialog(
+          backgroundColor: const Color(0xFF2C2C2E),
+          title: const Text('Все планшеты уже обновлены'),
+          content: Text(devList),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(c), child: const Text('OK'))
+          ],
+        ),
+      );
+      return;
+    }
+
+    final updatePlan = reachableIps.map((ip) {
+      final name = savedDevices
+          .firstWhere((d) => d.ip == ip,
+              orElse: () => SavedDevice(ip: ip, name: ip))
+          .name;
+      final version = deviceVersions[ip] ?? '0.0.0';
+      final needsUpdate = outdatedIps.contains(ip);
+      return '$name: v$version ${needsUpdate ? "→ v${apkInfo.version}" : "✓ уже актуально"}';
+    }).join('\n');
+
     // ── Шаг 3: подтверждение ─────────────────────────────────────────────
     close();
     status.dispose();
@@ -4483,17 +4511,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text('Новая версия найдена на GitHub.',
+              const Text('Новая версия APK найдена.',
                   style: TextStyle(color: Colors.white70)),
               const SizedBox(height: 12),
-              Text(devList,
+              Text(updatePlan,
                   style: const TextStyle(color: Colors.white54, fontSize: 12)),
-              const SizedBox(height: 4),
-              Text('→ v${apkInfo.version}',
-                  style: const TextStyle(
-                      color: Colors.greenAccent,
-                      fontSize: 13,
-                      fontWeight: FontWeight.bold)),
             ],
           ),
         ),
@@ -4505,7 +4527,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ElevatedButton.icon(
             onPressed: () => Navigator.pop(c, true),
             icon: const Icon(Icons.download_rounded, size: 18),
-            label: Text('Обновить ${reachableIps.length} планшетов'),
+            label: Text('Обновить ${outdatedIps.length} планшетов'),
             style: ElevatedButton.styleFrom(
               backgroundColor: Colors.greenAccent,
               foregroundColor: Colors.black,
@@ -4607,16 +4629,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final List<String> manualNeeded = [];
     final List<String> failed = [];
 
-    for (int i = 0; i < reachableIps.length; i++) {
-      final ip = reachableIps[i];
+    for (int i = 0; i < outdatedIps.length; i++) {
+      final ip = outdatedIps[i];
       final devName = savedDevices
           .firstWhere((d) => d.ip == ip,
               orElse: () => SavedDevice(ip: ip, name: ip))
           .name;
-      progress.value = (i + 1) / reachableIps.length;
+      progress.value = (i + 1) / outdatedIps.length;
       dlStatus.value =
-          'Устанавливаю на $devName\n(${i + 1}/${reachableIps.length})...';
-      final res = await adb.installApk(ip, apkFile.path);
+          'Устанавливаю на $devName\n(${i + 1}/${outdatedIps.length})...';
+      final res = await adb.installApk(ip, apkFile.path,
+          targetVersion: apkInfo.version);
       switch (res) {
         case ApkInstallResult.installed:
           autoInstalled.add(devName);
@@ -4664,7 +4687,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
           'Ошибка', failed.join(', ')));
     }
 
-    final allAuto = manualNeeded.isEmpty && failed.isEmpty;
+    final allAuto =
+        dialogShown.isEmpty && manualNeeded.isEmpty && failed.isEmpty;
     showDialog(
       context: context,
       builder: (c) => AlertDialog(
