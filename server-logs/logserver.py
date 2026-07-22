@@ -38,7 +38,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, quote, urlencode
 from urllib.request import Request, urlopen
-from remote_panel import login_page, panel_page
+from remote_panel import login_page, panel_page, downloads_page
 
 PORT = int(os.environ.get("PORT", "8443"))
 TOKEN = os.environ.get("LOG_TOKEN", "")
@@ -670,6 +670,32 @@ class H(BaseHTTPRequestHandler):
         except Exception:
             return {}
 
+    def _stream_release_asset(self, tag, name):
+        if not re.fullmatch(r"v0\.\d+\.0", tag) or name not in UPDATE_ASSETS:
+            return self._send(400, "invalid update asset")
+        url = f"https://github.com/{UPDATE_REPO}/releases/download/{quote(tag)}/{quote(name)}"
+        try:
+            req = Request(url, headers={"User-Agent": "BrandmenUpdateMirror/1"})
+            with urlopen(req, timeout=60) as response:
+                self.send_response(200)
+                self.send_header("Content-Type", response.headers.get(
+                    "Content-Type", "application/octet-stream"))
+                length = response.headers.get("Content-Length")
+                if length:
+                    self.send_header("Content-Length", length)
+                self.send_header("Content-Disposition", f'attachment; filename="{name}"')
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.end_headers()
+                while True:
+                    chunk = response.read(256 * 1024)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+            return
+        except Exception as e:
+            print(f"[updates] download error {tag}/{name}: {e}", flush=True)
+            return self._send(502, "update download unavailable")
+
     def log_message(self, *a):
         pass
 
@@ -842,6 +868,21 @@ class H(BaseHTTPRequestHandler):
         if u.path == "/logout":
             return self._redirect("/login",
                                   f"{SESSION_COOKIE}=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Lax")
+        if u.path in ("/downloads", "/downloads/file"):
+            session = self._web_or_redirect()
+            if not session:
+                return
+            if u.path == "/downloads/file":
+                return self._stream_release_asset(
+                    q.get("tag", [""])[0], q.get("name", [""])[0])
+            try:
+                releases = update_releases()
+                release = releases[0] if releases else {}
+                return self._send(200, downloads_page(session["u"], release),
+                                  "text/html; charset=utf-8")
+            except Exception as e:
+                print(f"[web] downloads error: {e}", flush=True)
+                return self._send(502, "release list unavailable")
         if u.path == "/updates/releases":
             if not api_authed(self):
                 return self._send(401, "unauthorized")
@@ -856,29 +897,7 @@ class H(BaseHTTPRequestHandler):
                 return self._send(401, "unauthorized")
             tag = q.get("tag", [""])[0]
             name = q.get("name", [""])[0]
-            if not re.fullmatch(r"v0\.\d+\.0", tag) or name not in UPDATE_ASSETS:
-                return self._send(400, "invalid update asset")
-            url = f"https://github.com/{UPDATE_REPO}/releases/download/{quote(tag)}/{quote(name)}"
-            try:
-                req = Request(url, headers={"User-Agent": "BrandmenUpdateMirror/1"})
-                with urlopen(req, timeout=60) as response:
-                    self.send_response(200)
-                    self.send_header("Content-Type", response.headers.get(
-                        "Content-Type", "application/octet-stream"))
-                    length = response.headers.get("Content-Length")
-                    if length:
-                        self.send_header("Content-Length", length)
-                    self.send_header("Content-Disposition", f'attachment; filename="{name}"')
-                    self.end_headers()
-                    while True:
-                        chunk = response.read(256 * 1024)
-                        if not chunk:
-                            break
-                        self.wfile.write(chunk)
-                return
-            except Exception as e:
-                print(f"[updates] download error {tag}/{name}: {e}", flush=True)
-                return self._send(502, "update download unavailable")
+            return self._stream_release_asset(tag, name)
         if u.path == "/commands/poll":
             if not api_authed(self):
                 return self._send(401, "unauthorized")
