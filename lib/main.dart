@@ -32,7 +32,11 @@ void main() async {
   await AppLogger.init();
   await AppSettings.load();
   await BrandPacks.load();
-  await _startServer();
+  final primaryInstance = await _startServer();
+  if (!primaryInstance) {
+    runApp(const _AlreadyRunningApp());
+    return;
+  }
   _startLogAutoUpload();
   _startFleetSnapshotUpload();
   runApp(const BrandmenApp());
@@ -166,7 +170,7 @@ class AppSettings {
   }
 }
 
-Future<void> _startServer() async {
+Future<bool> _startServer() async {
   try {
     await MediaConfig.resolveDir();
     BrandmenServer.instance = BrandmenServer();
@@ -175,8 +179,35 @@ Future<void> _startServer() async {
         "HTTP сервер запущен на порту 5010, папка: ${MediaConfig.current}");
   } catch (e) {
     AppLogger.log("Ошибка запуска сервера: $e");
+    // Порт 5010 принадлежит основной копии Brandmen. Раньше вторая копия
+    // продолжала работать без сервера и дублировала опросы/синхронизации.
+    return false;
   }
   DiscoveryBeacon().start();
+  return true;
+}
+
+class _AlreadyRunningApp extends StatelessWidget {
+  const _AlreadyRunningApp();
+
+  @override
+  Widget build(BuildContext context) => const MaterialApp(
+        debugShowCheckedModeBanner: false,
+        home: Scaffold(
+          backgroundColor: Color(0xFF171719),
+          body: Center(
+            child: Padding(
+              padding: EdgeInsets.all(32),
+              child: Text(
+                'Brandmen уже запущен. Закройте это окно и откройте основную '
+                'копию приложения из панели задач.',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.white, fontSize: 17),
+              ),
+            ),
+          ),
+        ),
+      );
 }
 
 class BrandmenApp extends StatelessWidget {
@@ -1055,6 +1086,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
   bool _busy = false;
   bool _bulkCancel = false;
   bool _reconcilingDesired = false;
+  final Map<String, DateTime> _desiredRetryAfter = {};
+  final Set<String> _desiredPairingWarnings = {};
   // Текущее положение общего (мастер) ползунка яркости — применяется ко всем
   // онлайн-планшетам сразу. По умолчанию максимум (255).
   int _masterBrightness = 255;
@@ -1208,13 +1241,35 @@ class _DashboardScreenState extends State<DashboardScreen> {
             available.deploymentId != desired ||
             status?.online != true ||
             status?.protocolVersion != kDeploymentProtocolVersion ||
-            status?.activeDeploymentId == desired ||
             (_ops[device.ip]?.isBusy ?? false)) {
           continue;
         }
+        if (status?.activeDeploymentId == desired) {
+          _desiredRetryAfter.remove(device.ip);
+          _desiredPairingWarnings.remove(device.ip);
+          continue;
+        }
+        // Без ключа v2 может только откатиться на legacy HTTP. Legacy не
+        // выставляет activeDeploymentId, поэтому следующий refresh снова бы
+        // отправил тот же плейлист. Ждём нормального локального сопряжения.
+        if (!DeviceHttp.hasApiToken(device.ip)) {
+          if (_desiredPairingWarnings.add(device.ip)) {
+            AppLogger.log('[DESIRED] ${device.ip}: ожидает сопряжения; '
+                'фоновая синхронизация пропущена');
+          }
+          continue;
+        }
+        final retryAfter = _desiredRetryAfter[device.ip];
+        if (retryAfter != null && DateTime.now().isBefore(retryAfter)) {
+          continue;
+        }
+        // Даже при временной ошибке Wi-Fi/commit не штурмуем планшет каждый
+        // refresh. Успешное применение будет видно по activeDeploymentId.
+        _desiredRetryAfter[device.ip] =
+            DateTime.now().add(const Duration(minutes: 5));
         AppLogger.log('[DESIRED] ${device.ip}: active='
             '${status?.activeDeploymentId} desired=$desired — применяю');
-        await _runDeviceSync(device, launch: false);
+        await _runDeviceSync(device, launch: false, automatic: true);
       }
     } finally {
       _reconcilingDesired = false;
@@ -1790,7 +1845,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
   /// и итог показываются инлайн на карточке (`_ops[ip]`). Отмена — через
   /// крестик на карточке (`_cancel`). Можно запускать параллельно для разных
   /// планшетов; повторный запуск того же — игнорируется.
-  Future<void> _runDeviceSync(SavedDevice dev, {required bool launch}) async {
+  Future<void> _runDeviceSync(
+    SavedDevice dev, {
+    required bool launch,
+    bool automatic = false,
+  }) async {
     final ip = dev.ip;
     if (_ops[ip]?.isBusy ?? false) return;
     _cancel.remove(ip);
@@ -1843,6 +1902,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       isCancelled: cancelled,
       forceUpload: norm.converted.isNotEmpty,
       deployment: deployment,
+      requireDeploymentV2: automatic,
       onProgress: (done, total, file) {
         if (file.isNotEmpty) {
           _setOp(
@@ -1857,6 +1917,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
       return;
     }
 
+    if (!automatic && result.transport != 'Deployment v2') {
+      await DeviceStorage.clearDesired(
+        [ip],
+        expectedDeploymentId: deployment.deploymentId,
+      );
+    }
+
     if (!result.success) {
       _setOp(ip, DeviceOp.error(humanizeError(result.error)));
       _clearOpLater(ip, after: const Duration(seconds: 8));
@@ -1868,8 +1935,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
     // Новый Android сам перечитывает manifest и продолжает играть только если
     // до синка был включён. Явный launch — отдельная команда пользователя.
     final shouldLaunch = launch && (statuses[ip]?.online ?? false);
-    if (shouldLaunch) {
-      _setOp(ip, const DeviceOp.busy("Включаю рекламу…"));
+    final shouldResumeLegacy = !launch &&
+        result.transport != 'Deployment v2' &&
+        statuses[ip]?.playbackEnabled == true;
+    final shouldEnsurePlayback = shouldLaunch || shouldResumeLegacy;
+    if (shouldEnsurePlayback) {
+      _setOp(
+          ip,
+          DeviceOp.busy(
+              shouldLaunch ? "Включаю рекламу…" : "Применяю плейлист…"));
       await adb.enablePlayback(ip);
       _setOp(ip, const DeviceOp.busy("Проверяю воспроизведение…"));
       final isV2 = result.transport == 'Deployment v2';
@@ -1897,9 +1971,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final base = result.pushed.isEmpty
         ? "Актуально"
         : "Загружено ${result.pushed.length}";
-    _setOp(ip, DeviceOp.success(shouldLaunch ? "$base ▶" : base));
+    _setOp(ip, DeviceOp.success(shouldEnsurePlayback ? "$base ▶" : base));
     _clearOpLater(ip);
-    if (shouldLaunch) _captureOne(ip);
+    if (shouldEnsurePlayback) _captureOne(ip);
     if (norm.ffmpegMissing) await _showFfmpegMissingDialog();
   }
 
@@ -1981,7 +2055,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     int failed = 0;
     // Фаза 1: файлы — последовательно (WiFi-канал общий, параллельная заливка
     // не ускоряет). Планшеты, которым нужен запуск, копим на фазу 2.
-    final toLaunch = <(SavedDevice, SyncResult)>[];
+    final toLaunch = <(SavedDevice, SyncResult, bool)>[];
     for (final dev in online) {
       if (!mounted) return;
       final ip = dev.ip;
@@ -2020,15 +2094,29 @@ class _DashboardScreenState extends State<DashboardScreen> {
         continue;
       }
 
+      if (sync && deployment != null && result.transport != 'Deployment v2') {
+        await DeviceStorage.clearDesired(
+          [ip],
+          expectedDeploymentId: deployment.deploymentId,
+        );
+      }
+
       if (!result.success) {
         _setOp(ip, DeviceOp.error(humanizeError(result.error)));
         _clearOpLater(ip, after: const Duration(seconds: 8));
         continue;
       }
 
-      if (launch && deviceOnline) {
-        _setOp(ip, const DeviceOp.busy("Ожидает включения…"));
-        toLaunch.add((dev, result));
+      final resumeLegacy = sync &&
+          !launch &&
+          result.transport != 'Deployment v2' &&
+          statuses[ip]?.playbackEnabled == true;
+      if ((launch || resumeLegacy) && deviceOnline) {
+        _setOp(
+            ip,
+            DeviceOp.busy(
+                launch ? "Ожидает включения…" : "Применяю плейлист…"));
+        toLaunch.add((dev, result, launch));
       } else {
         final base = !sync
             ? "Запущено"
@@ -2049,7 +2137,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       if (!mounted) return;
       final batch = toLaunch.skip(i).take(launchBatch);
       await Future.wait(batch.map((entry) async {
-        final (dev, result) = entry;
+        final (dev, result, explicitlyLaunched) = entry;
         final ip = dev.ip;
         if (_bulkCancel) {
           _setOp(ip, null);
@@ -2059,7 +2147,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ip,
             DeviceOp.busy(mute
                 ? "Запуск без звука…"
-                : (launch ? "Запуск…" : "Применяю плейлист…")));
+                : (explicitlyLaunched ? "Запуск…" : "Применяю плейлист…")));
         await adb.enablePlayback(ip);
         if (mute) await adb.setVolume(ip, 0);
         _setOp(ip, const DeviceOp.busy("Проверка запуска…"));

@@ -27,6 +27,11 @@ class DeviceHttp {
     _apiTokens[ip] = token;
   }
 
+  /// Deployment v2 требует ключ, полученный при локальном сопряжении.
+  /// Публичные legacy-endpoint'ы продолжают работать без него, но их нельзя
+  /// использовать для desired-state: они не публикуют activeDeploymentId.
+  static bool hasApiToken(String ip) => _apiTokens[ip]?.isNotEmpty == true;
+
   static Future<T> _retry<T>(
     String label,
     Future<T> Function() action,

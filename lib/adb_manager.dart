@@ -584,6 +584,9 @@ class AdbManager {
     // В этом режиме отправляем весь актуальный набор на каждый планшет.
     bool forceUpload = false,
     ContentDeployment? deployment,
+    // Фоновое desired-state не имеет права незаметно откатываться на legacy:
+    // legacy не выставляет activeDeploymentId, и иначе синк повторяется вечно.
+    bool requireDeploymentV2 = false,
   }) async {
     final httpOk = tryHttpFirst && await DeviceHttp.isAvailable(ip);
     if (httpOk) {
@@ -599,6 +602,14 @@ class AdbManager {
           prepared,
           onProgress: onProgress,
           isCancelled: isCancelled,
+        );
+      }
+      if (requireDeploymentV2) {
+        return const SyncResult(
+          success: false,
+          pushed: [],
+          transport: 'Deployment v2',
+          error: 'Защищённая синхронизация недоступна — повторите сопряжение',
         );
       }
       AppLogger.log('Sync $ip: используем HTTP (порт 5011)');

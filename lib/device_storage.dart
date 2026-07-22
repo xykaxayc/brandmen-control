@@ -145,6 +145,29 @@ class DeviceStorage {
     await save(list);
   }
 
+  /// Убирает ожидание deployment после синхронизации через legacy-протокол.
+  /// [expectedDeploymentId] защищает от стирания более нового запроса.
+  static Future<void> clearDesired(
+    Iterable<String> ips, {
+    String? expectedDeploymentId,
+  }) async {
+    final targets = ips.toSet();
+    final list = await load();
+    var changed = false;
+    for (final device in list) {
+      if (!targets.contains(device.ip)) continue;
+      if (expectedDeploymentId != null &&
+          device.desiredDeploymentId != expectedDeploymentId) {
+        continue;
+      }
+      if (device.desiredDeploymentId != null) {
+        device.desiredDeploymentId = null;
+        changed = true;
+      }
+    }
+    if (changed) await save(list);
+  }
+
   static Future<void> remove(String ip) async {
     final list = await load();
     list.removeWhere((d) => d.ip == ip);

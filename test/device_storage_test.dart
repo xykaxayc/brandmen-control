@@ -41,4 +41,23 @@ void main() {
     expect(devices.single.ip, '192.168.1.44');
     expect(devices.single.name, 'Xiaomi');
   });
+
+  test('legacy sync clears only the deployment it actually attempted',
+      () async {
+    await DeviceStorage.add('192.168.1.10', name: 'Планшет 1');
+    await DeviceStorage.setDesired(['192.168.1.10'], 'deployment-old');
+
+    await DeviceStorage.clearDesired(
+      ['192.168.1.10'],
+      expectedDeploymentId: 'deployment-new',
+    );
+    expect((await DeviceStorage.load()).single.desiredDeploymentId,
+        'deployment-old');
+
+    await DeviceStorage.clearDesired(
+      ['192.168.1.10'],
+      expectedDeploymentId: 'deployment-old',
+    );
+    expect((await DeviceStorage.load()).single.desiredDeploymentId, isNull);
+  });
 }
