@@ -64,6 +64,9 @@ UPDATE_ASSETS = {
 }
 UPDATE_CACHE = {"at": 0.0, "releases": []}
 UPDATE_CACHE_LOCK = threading.Lock()
+ASSET_CACHE_DIR = os.environ.get("UPDATE_CACHE_DIR", os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "update-cache"))
+os.makedirs(ASSET_CACHE_DIR, exist_ok=True)
 
 
 def update_releases():
@@ -673,7 +676,28 @@ class H(BaseHTTPRequestHandler):
     def _stream_release_asset(self, tag, name):
         if not re.fullmatch(r"v0\.\d+\.0", tag) or name not in UPDATE_ASSETS:
             return self._send(400, "invalid update asset")
+        cache_path = os.path.join(ASSET_CACHE_DIR, safe(tag + "__" + name))
+        if os.path.isfile(cache_path) and os.path.getsize(cache_path) > 0:
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Length", str(os.path.getsize(cache_path)))
+                self.send_header("Content-Disposition", f'attachment; filename="{name}"')
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header("X-Brandmen-Cache", "HIT")
+                self.end_headers()
+                with open(cache_path, "rb") as cached:
+                    while True:
+                        chunk = cached.read(256 * 1024)
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+                return
+            except Exception as e:
+                print(f"[updates] cached download error {tag}/{name}: {e}", flush=True)
+                return
         url = f"https://github.com/{UPDATE_REPO}/releases/download/{quote(tag)}/{quote(name)}"
+        tmp = cache_path + ".tmp-" + secrets.token_hex(4)
         try:
             req = Request(url, headers={"User-Agent": "BrandmenUpdateMirror/1"})
             with urlopen(req, timeout=60) as response:
@@ -685,14 +709,22 @@ class H(BaseHTTPRequestHandler):
                     self.send_header("Content-Length", length)
                 self.send_header("Content-Disposition", f'attachment; filename="{name}"')
                 self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header("X-Brandmen-Cache", "MISS")
                 self.end_headers()
-                while True:
-                    chunk = response.read(256 * 1024)
-                    if not chunk:
-                        break
-                    self.wfile.write(chunk)
+                with open(tmp, "wb") as cache_file:
+                    while True:
+                        chunk = response.read(256 * 1024)
+                        if not chunk:
+                            break
+                        cache_file.write(chunk)
+                        self.wfile.write(chunk)
+                os.replace(tmp, cache_path)
             return
         except Exception as e:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
             print(f"[updates] download error {tag}/{name}: {e}", flush=True)
             return self._send(502, "update download unavailable")
 

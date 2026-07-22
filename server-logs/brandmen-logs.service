@@ -8,6 +8,7 @@ EnvironmentFile=-/opt/brandmen-logs/brandmen.env
 Environment=PORT=8443
 Environment=LOG_DIR=/opt/brandmen-logs/logs
 Environment=AGENTS_DIR=/opt/brandmen-logs/agents
+Environment=UPDATE_CACHE_DIR=/opt/brandmen-logs/update-cache
 Environment=CERT=/opt/brandmen-logs/cert.pem
 Environment=KEY=/opt/brandmen-logs/key.pem
 Environment=PUBLIC_BASE=https://185.50.203.112
