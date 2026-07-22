@@ -39,6 +39,47 @@ bool _trustedLogServerCertificate(
 ///   тело: текст лога
 /// Ответ 2xx = успех; тело ответа (если есть) показывается пользователю.
 class LogUploader {
+  /// Передаёт центральной панели список экранов, сохранённый на этом ПК.
+  /// Секреты сопряжения (apiToken) намеренно не отправляются.
+  static Future<bool> sendFleetSnapshot({
+    required String baseUrl,
+    required String token,
+    required List<Map<String, dynamic>> devices,
+  }) async {
+    final base = baseUrl.trim().replaceAll(RegExp(r'/+$'), '');
+    if (base.isEmpty) return false;
+    final Uri uri;
+    try {
+      uri = Uri.parse('$base/agent/snapshot');
+    } catch (_) {
+      return false;
+    }
+    final httpClient = HttpClient()
+      ..badCertificateCallback = (cert, host, port) =>
+          _trustedLogServerCertificate(cert, host, port, uri.host);
+    final client = IOClient(httpClient);
+    try {
+      final response = await client
+          .post(uri,
+              headers: {
+                if (token.trim().isNotEmpty)
+                  'Authorization': 'Bearer ${token.trim()}',
+                'Content-Type': 'application/json; charset=utf-8',
+              },
+              body: jsonEncode({
+                'site': Platform.localHostname,
+                'version': kAppVersion,
+                'devices': devices,
+              }))
+          .timeout(const Duration(seconds: 15));
+      return response.statusCode >= 200 && response.statusCode < 300;
+    } catch (_) {
+      return false;
+    } finally {
+      client.close();
+    }
+  }
+
   static Future<({bool ok, String message})> send({
     required String baseUrl,
     required String token,

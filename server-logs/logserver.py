@@ -29,11 +29,16 @@ import ssl
 import json
 import html
 import time
+import base64
+import hashlib
+import hmac
+import secrets
 import datetime
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse, parse_qs, quote
+from urllib.parse import urlparse, parse_qs, quote, urlencode
 from urllib.request import Request, urlopen
+from remote_panel import login_page, panel_page
 
 PORT = int(os.environ.get("PORT", "8443"))
 TOKEN = os.environ.get("LOG_TOKEN", "")
@@ -42,6 +47,11 @@ CERT = os.environ.get("CERT", os.path.join(os.path.dirname(os.path.abspath(__fil
 KEY = os.environ.get("KEY", os.path.join(os.path.dirname(os.path.abspath(__file__)), "key.pem"))
 PUBLIC_BASE = os.environ.get(
     "PUBLIC_BASE", "https://185.50.203.112").rstrip("/")
+ADMIN_USER = os.environ.get("ADMIN_USER", "admin")
+ADMIN_PASSWORD_HASH = os.environ.get("ADMIN_PASSWORD_HASH", "")
+SESSION_SECRET = os.environ.get("SESSION_SECRET", "")
+SESSION_COOKIE = "brandmen_session"
+SESSION_TTL = 12 * 60 * 60
 os.makedirs(DIR, exist_ok=True)
 
 UPDATE_REPO = "xykaxayc/brandmen-control"
@@ -92,6 +102,11 @@ CMDS_DIR = os.environ.get("CMDS_DIR", os.path.join(os.path.dirname(os.path.abspa
 os.makedirs(CMDS_DIR, exist_ok=True)
 CMDS_LOCK = threading.Lock()
 CMDS_KEEP = 50  # сколько последних команд на планшет хранить
+AGENTS_DIR = os.environ.get("AGENTS_DIR", os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "agents"))
+os.makedirs(AGENTS_DIR, exist_ok=True)
+LOGIN_ATTEMPTS = {}
+LOGIN_LOCK = threading.Lock()
 
 
 def safe(s):
@@ -182,13 +197,173 @@ def list_cmd_sites():
     return out
 
 
-def authed(handler):
+def api_authed(handler):
     if not TOKEN:
         return True
-    q = parse_qs(urlparse(handler.path).query)
-    if q.get("token", [""])[0] == TOKEN:
+    supplied = handler.headers.get("Authorization", "")
+    if supplied.startswith("Bearer ") and hmac.compare_digest(
+            supplied[7:].encode(), TOKEN.encode()):
         return True
-    return handler.headers.get("Authorization", "") == f"Bearer {TOKEN}"
+    # Легаси-клиенты ещё передают токен в URL. Оставляем только для служебных
+    # API на время обновления флота; браузерная панель query-token не принимает.
+    q = parse_qs(urlparse(handler.path).query)
+    candidate = q.get("token", [""])[0]
+    return bool(candidate) and hmac.compare_digest(candidate.encode(), TOKEN.encode())
+
+
+def _b64e(raw):
+    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+
+def _b64d(value):
+    return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+
+
+def verify_password(password):
+    """Verify pbkdf2_sha256$iterations$salt_b64$digest_b64."""
+    try:
+        kind, rounds, salt, expected = ADMIN_PASSWORD_HASH.split("$", 3)
+        if kind != "pbkdf2_sha256":
+            return False
+        actual = hashlib.pbkdf2_hmac(
+            "sha256", password.encode(), _b64d(salt), int(rounds))
+        return hmac.compare_digest(_b64e(actual), expected)
+    except Exception:
+        return False
+
+
+def new_session(username):
+    payload = {
+        "u": username,
+        "exp": int(time.time()) + SESSION_TTL,
+        "csrf": secrets.token_urlsafe(24),
+    }
+    raw = _b64e(json.dumps(payload, separators=(",", ":")).encode())
+    sig = hmac.new(SESSION_SECRET.encode(), raw.encode(), hashlib.sha256).hexdigest()
+    return raw + "." + sig
+
+
+def web_session(handler):
+    if not SESSION_SECRET:
+        return None
+    cookies = handler.headers.get("Cookie", "")
+    value = ""
+    for item in cookies.split(";"):
+        name, sep, val = item.strip().partition("=")
+        if sep and name == SESSION_COOKIE:
+            value = val
+            break
+    try:
+        raw, sig = value.rsplit(".", 1)
+        expected = hmac.new(
+            SESSION_SECRET.encode(), raw.encode(), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(sig, expected):
+            return None
+        session = json.loads(_b64d(raw).decode())
+        if session.get("u") != ADMIN_USER or int(session.get("exp", 0)) < time.time():
+            return None
+        return session
+    except Exception:
+        return None
+
+
+def csrf_ok(handler, session):
+    value = handler.headers.get("X-CSRF-Token", "")
+    expected = str(session.get("csrf", "")) if session else ""
+    return bool(value and expected and hmac.compare_digest(value, expected))
+
+
+def client_ip(handler):
+    forwarded = handler.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+    return forwarded or handler.client_address[0]
+
+
+def login_allowed(ip, success=False):
+    now = time.time()
+    with LOGIN_LOCK:
+        recent = [t for t in LOGIN_ATTEMPTS.get(ip, []) if now - t < 300]
+        if success:
+            LOGIN_ATTEMPTS.pop(ip, None)
+            return True
+        allowed = len(recent) < 5
+        if allowed:
+            recent.append(now)
+            LOGIN_ATTEMPTS[ip] = recent
+        return allowed
+
+
+def save_agent_snapshot(body):
+    site = safe(str(body.get("site", "")))
+    if site == "unknown":
+        raise ValueError("missing site")
+    devices = body.get("devices") if isinstance(body.get("devices"), list) else []
+    clean = {
+        "site": site,
+        "version": safe(str(body.get("version", ""))),
+        "seen_utc": datetime.datetime.utcnow().isoformat() + "Z",
+        "devices": [],
+    }
+    for item in devices[:500]:
+        if not isinstance(item, dict):
+            continue
+        clean["devices"].append({
+            "name": str(item.get("name", ""))[:160],
+            "ip": str(item.get("ip", ""))[:80],
+            "device_id": safe(str(item.get("device_id", ""))) if item.get("device_id") else "",
+            "desired_deployment_id": str(item.get("desired_deployment_id", ""))[:160],
+        })
+    path = os.path.join(AGENTS_DIR, site + ".json")
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(clean, f, ensure_ascii=False)
+    os.replace(tmp, path)
+    return clean
+
+
+def list_agent_snapshots():
+    out = []
+    for fn in sorted(os.listdir(AGENTS_DIR)):
+        if not fn.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(AGENTS_DIR, fn), encoding="utf-8") as f:
+                item = json.load(f)
+            seen = datetime.datetime.fromisoformat(item["seen_utc"].rstrip("Z"))
+            item["age_min"] = round(
+                (datetime.datetime.utcnow() - seen).total_seconds() / 60, 1)
+            out.append(item)
+        except Exception:
+            continue
+    return out
+
+
+def dashboard_data():
+    devices = list_cmd_sites()
+    for device in devices:
+        device["controllable"] = True
+    by_id = {d["site"]: d for d in devices}
+    agents = list_agent_snapshots()
+    for agent in agents:
+        for item in agent.get("devices", []):
+            did = item.get("device_id", "")
+            candidates = ([did] if did.startswith("tab-") else [did, "tab-" + did]) if did else []
+            found = next((by_id[x] for x in candidates if x in by_id), None)
+            if found:
+                found.setdefault("name", item.get("name"))
+                found.setdefault("ip", item.get("ip"))
+                found["agent"] = agent["site"]
+            else:
+                key = ("tab-" + did) if did else "agent-" + safe(
+                    agent["site"] + "-" + item.get("ip", ""))
+                row = {
+                    "site": key, "name": item.get("name"), "ip": item.get("ip"),
+                    "meta": {}, "age_min": None, "queue": [], "agent": agent["site"],
+                    "controllable": False,
+                }
+                devices.append(row)
+                by_id[key] = row
+    return {"devices": devices, "agents": agents,
+            "server_utc": datetime.datetime.utcnow().isoformat() + "Z"}
 
 
 def list_sites():
@@ -456,11 +631,44 @@ class H(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
+        if ctype.startswith("text/html"):
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Security-Policy",
+                             "default-src 'self'; style-src 'self' 'unsafe-inline'; "
+                             "script-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+                             "frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
         self.end_headers()
         try:
             self.wfile.write(body)
         except Exception:
             pass
+
+    def _redirect(self, location, cookie=None):
+        self.send_response(302)
+        self.send_header("Location", location)
+        if cookie:
+            self.send_header("Set-Cookie", cookie)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def _web_or_redirect(self):
+        session = web_session(self)
+        if session:
+            return session
+        self._redirect("/login")
+        return None
+
+    def _read_form(self):
+        n = min(int(self.headers.get("Content-Length", "0") or "0"), 64 * 1024)
+        raw = self.rfile.read(n) if n else b""
+        try:
+            return {k: v[0] for k, v in parse_qs(
+                raw.decode("utf-8"), keep_blank_values=True).items()}
+        except Exception:
+            return {}
 
     def log_message(self, *a):
         pass
@@ -524,20 +732,52 @@ class H(BaseHTTPRequestHandler):
     def do_POST(self):
         u = urlparse(self.path)
         q = parse_qs(u.query)
+        if u.path == "/login":
+            ip = client_ip(self)
+            if not login_allowed(ip):
+                return self._send(429, login_page(
+                    "Слишком много попыток. Повторите через 5 минут."),
+                    "text/html; charset=utf-8")
+            form = self._read_form()
+            username = form.get("username", "")
+            password = form.get("password", "")
+            if (hmac.compare_digest(username, ADMIN_USER)
+                    and verify_password(password)):
+                login_allowed(ip, success=True)
+                cookie = (f"{SESSION_COOKIE}={new_session(username)}; Path=/; "
+                          f"Max-Age={SESSION_TTL}; Secure; HttpOnly; SameSite=Lax")
+                print(f"[web] login {username} from {ip}", flush=True)
+                return self._redirect("/panel", cookie)
+            return self._send(401, login_page("Неверный логин или пароль."),
+                              "text/html; charset=utf-8")
+        if u.path == "/agent/snapshot":
+            if not api_authed(self):
+                return self._send(401, "unauthorized")
+            try:
+                snapshot = save_agent_snapshot(self._read_json())
+                return self._send(200, json.dumps({
+                    "ok": True, "devices": len(snapshot["devices"])}),
+                    "application/json; charset=utf-8")
+            except ValueError as e:
+                return self._send(400, str(e))
         # --- Команды планшетам --------------------------------------------
         if u.path == "/commands/enqueue":
-            if not authed(self):
+            session = web_session(self)
+            if not api_authed(self) and not (session and csrf_ok(self, session)):
                 return self._send(401, "unauthorized")
             site = safe(q.get("site", [""])[0])
             b = self._read_json()
             cmd = str(b.get("cmd", "")).strip()
-            if not cmd:
-                return self._send(400, "missing cmd")
+            if site == "unknown":
+                return self._send(400, "missing site")
+            if cmd not in {"launch", "stop", "restart", "wake", "sleep",
+                           "reboot", "unmanage", "volume", "brightness"}:
+                return self._send(400, "invalid cmd")
             cid = enqueue_cmd(site, cmd, b.get("args") or {})
             print(f"[cmd] enqueue {site} <- {cmd} #{cid}", flush=True)
             return self._send(200, json.dumps({"id": cid}), "application/json; charset=utf-8")
         if u.path == "/commands/ack":
-            if not authed(self):
+            if not api_authed(self):
                 return self._send(401, "unauthorized")
             site = safe(q.get("site", [""])[0])
             b = self._read_json()
@@ -550,7 +790,7 @@ class H(BaseHTTPRequestHandler):
         if u.path == "/live":
             # Живой поток: дописываем новые строки в один файл _live.log на сайт,
             # обрезаем по размеру, чтобы не рос бесконечно. Для отладки в реалтайме.
-            if not authed(self):
+            if not api_authed(self):
                 return self._send(401, "unauthorized")
             site = safe(q.get("site", [""])[0])
             n = int(self.headers.get("Content-Length", "0") or "0")
@@ -575,7 +815,7 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, "ok")
         if u.path != "/logs":
             return self._send(404, "not found")
-        if not authed(self):
+        if not api_authed(self):
             return self._send(401, "unauthorized")
         site = safe(q.get("site", [""])[0])
         version = safe(q.get("version", [""])[0])
@@ -594,9 +834,16 @@ class H(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         q = parse_qs(u.query)
         if u.path == "/":
-            return self._send(200, "brandmen log server")
+            return self._redirect("/panel" if web_session(self) else "/login")
+        if u.path == "/login":
+            if web_session(self):
+                return self._redirect("/panel")
+            return self._send(200, login_page(), "text/html; charset=utf-8")
+        if u.path == "/logout":
+            return self._redirect("/login",
+                                  f"{SESSION_COOKIE}=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Lax")
         if u.path == "/updates/releases":
-            if not authed(self):
+            if not api_authed(self):
                 return self._send(401, "unauthorized")
             try:
                 body = json.dumps(update_releases(), ensure_ascii=False)
@@ -605,7 +852,7 @@ class H(BaseHTTPRequestHandler):
                 print(f"[updates] releases error: {e}", flush=True)
                 return self._send(502, "update source unavailable")
         if u.path == "/updates/download":
-            if not authed(self):
+            if not api_authed(self):
                 return self._send(401, "unauthorized")
             tag = q.get("tag", [""])[0]
             name = q.get("name", [""])[0]
@@ -633,15 +880,26 @@ class H(BaseHTTPRequestHandler):
                 print(f"[updates] download error {tag}/{name}: {e}", flush=True)
                 return self._send(502, "update download unavailable")
         if u.path == "/commands/poll":
-            if not authed(self):
+            if not api_authed(self):
                 return self._send(401, "unauthorized")
             site = safe(q.get("site", [""])[0])
             meta = {k: q.get(k, [""])[0] for k in ("name", "ip", "v", "model") if q.get(k)}
             return self._send(200, json.dumps(poll_cmds(site, meta), ensure_ascii=False),
                               "application/json; charset=utf-8")
-        if u.path in ("/list", "/view", "/dash", "/live", "/ui", "/files",
-                      "/cmds", "/commands") and not authed(self):
-            return self._send(401, "unauthorized")
+        if u.path == "/api/dashboard":
+            session = web_session(self)
+            if not session:
+                return self._send(401, "unauthorized")
+            return self._send(200, json.dumps(dashboard_data(), ensure_ascii=False),
+                              "application/json; charset=utf-8")
+        if u.path in ("/panel", "/list", "/view", "/dash",
+                      "/live", "/ui", "/files", "/cmds", "/commands"):
+            session = self._web_or_redirect()
+            if not session:
+                return
+        if u.path == "/panel":
+            return self._send(200, panel_page(session["u"], session["csrf"]),
+                              "text/html; charset=utf-8")
         if u.path == "/ui":
             return self._send(200, PANEL_HTML, "text/html; charset=utf-8")
         if u.path == "/files":
@@ -652,8 +910,7 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, json.dumps(list_cmd_sites(), ensure_ascii=False, indent=2),
                               "application/json; charset=utf-8")
         if u.path == "/cmds":
-            return self._send(200, self._cmds_console(q.get("token", [""])[0]),
-                              "text/html; charset=utf-8")
+            return self._redirect("/panel")
         if u.path == "/live":
             site = safe(q.get("site", [""])[0])
             lf = os.path.join(DIR, site, "_live.log")
@@ -681,13 +938,7 @@ class H(BaseHTTPRequestHandler):
             with open(path, "rb") as fh:
                 return self._send(200, fh.read())
         if u.path == "/dash":
-            # Старый табличный дашборд заменён панелью /ui — редиректим.
-            tok = q.get("token", [""])[0]
-            self.send_response(302)
-            self.send_header("Location", f"/ui?token={html.escape(tok)}")
-            self.send_header("Content-Length", "0")
-            self.end_headers()
-            return
+            return self._redirect("/panel")
         return self._send(404, "not found")
 
 

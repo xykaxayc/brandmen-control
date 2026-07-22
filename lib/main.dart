@@ -34,7 +34,44 @@ void main() async {
   await BrandPacks.load();
   await _startServer();
   _startLogAutoUpload();
+  _startFleetSnapshotUpload();
   runApp(const BrandmenApp());
+}
+
+/// Передаёт в удалённую панель тот же список планшетов, который сохранён в
+/// Windows/macOS. Это только инвентаризация: секреты локального сопряжения не
+/// покидают компьютер.
+void _startFleetSnapshotUpload() {
+  Future<void> tick() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final urlPref =
+          (prefs.getString(_SettingsScreenState.kLogServerUrlKey) ?? '').trim();
+      final tokenPref =
+          (prefs.getString(_SettingsScreenState.kLogServerTokenKey) ?? '')
+              .trim();
+      final devices = await DeviceStorage.load();
+      final ok = await LogUploader.sendFleetSnapshot(
+        baseUrl: effectiveLogServerUrl(urlPref),
+        token: tokenPref.isEmpty ? kDefaultLogServerToken : tokenPref,
+        devices: devices
+            .map((d) => {
+                  'ip': d.ip,
+                  'name': d.name,
+                  if (d.deviceId != null) 'device_id': d.deviceId,
+                  if (d.desiredDeploymentId != null)
+                    'desired_deployment_id': d.desiredDeploymentId,
+                })
+            .toList(),
+      );
+      if (!ok) AppLogger.log('[FLEET] не удалось обновить удалённую панель');
+    } catch (e) {
+      AppLogger.log('[FLEET] ошибка отправки списка экранов: $e');
+    }
+  }
+
+  Timer(const Duration(seconds: 20), tick);
+  Timer.periodic(const Duration(minutes: 1), (_) => tick());
 }
 
 /// Автоотправка лога на сервер — чтобы каждый ПК сам появлялся на дашборде и

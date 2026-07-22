@@ -125,6 +125,7 @@ final class CommandPoller {
         try {
             switch (cmd) {
                 case "launch":    main.post(cb::onLaunch); return null;
+                case "stop":      main.post(cb::onStopPlayback); return null;
                 case "restart":   main.post(cb::onRestartPlayback); return null;
                 case "wake":      main.post(cb::onWake); return null;
                 case "sleep":     main.post(cb::onSleep); return null;
