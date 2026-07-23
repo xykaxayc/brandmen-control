@@ -60,4 +60,48 @@ void main() {
     );
     expect((await DeviceStorage.load()).single.desiredDeploymentId, isNull);
   });
+
+  test('known legacy device may establish its first token after IP change',
+      () async {
+    await DeviceStorage.add(
+      '192.168.1.150',
+      name: 'Планшет',
+      deviceId: 'tab-stable-id',
+    );
+
+    expect(
+      await DeviceStorage.canMigrateLegacyRegistration(
+        'tab-stable-id',
+        'new-secret-token',
+        '192.168.1.142',
+      ),
+      isTrue,
+    );
+    expect(
+      await DeviceStorage.canMigrateLegacyRegistration(
+        'tab-stable-id',
+        'new-secret-token',
+        '192.168.2.142',
+      ),
+      isFalse,
+    );
+  });
+
+  test('device with a stored token cannot use legacy migration', () async {
+    await DeviceStorage.add(
+      '192.168.1.150',
+      name: 'Планшет',
+      deviceId: 'tab-stable-id',
+      apiToken: 'original-token',
+    );
+
+    expect(
+      await DeviceStorage.canMigrateLegacyRegistration(
+        'tab-stable-id',
+        'different-token',
+        '192.168.1.142',
+      ),
+      isFalse,
+    );
+  });
 }

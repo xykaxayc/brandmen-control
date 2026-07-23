@@ -1378,6 +1378,13 @@ class AdbManager {
         message = owner.output;
       }
 
+      final keyboardNote = await _ensureInputMethod(usbDeviceId);
+      if (keyboardNote.isNotEmpty) {
+        message = [message, keyboardNote]
+            .where((part) => part.trim().isNotEmpty)
+            .join(' ');
+      }
+
       AppLogger.log(
           "USB ($usbDeviceId): IP=$ip, включаем постоянный TCP/IP...");
       await _run(adb, [
@@ -1439,6 +1446,65 @@ class AdbManager {
         message: '$e'
       );
     }
+  }
+
+  /// Xiaomi иногда оставляет enabled_input_methods со ссылками на удалённые
+  /// китайские клавиатуры. Тогда поле ввода получает фокус, но IME не
+  /// появляется. Во время USB-подготовки выбираем реально установленную IME.
+  Future<String> _ensureInputMethod(String deviceId) async {
+    final adb = await _getAdb();
+    final availableResult = await _run(
+      adb,
+      ['-s', deviceId, 'shell', 'ime', 'list', '-s'],
+      timeout: const Duration(seconds: 5),
+    );
+    final available = availableResult.stdout
+        .toString()
+        .split(RegExp(r'[\r\n]+'))
+        .map((line) => line.trim())
+        .where((line) => line.contains('/'))
+        .toList();
+    if (available.isEmpty) {
+      AppLogger.log('USB ($deviceId): на планшете нет доступной клавиатуры');
+      return 'Клавиатура не найдена — установите её на планшет.';
+    }
+
+    final currentResult = await _run(adb, [
+      '-s',
+      deviceId,
+      'shell',
+      'settings',
+      'get',
+      'secure',
+      'default_input_method'
+    ]);
+    final current = currentResult.stdout.toString().trim();
+    if (current.isNotEmpty &&
+        current != 'null' &&
+        available.contains(current)) {
+      return '';
+    }
+
+    String selected = available.first;
+    for (final preferred in const [
+      'com.menny.android.anysoftkeyboard/.SoftKeyboard',
+      'com.miui.securityinputmethod/.latin.LatinIME',
+    ]) {
+      if (available.contains(preferred)) {
+        selected = preferred;
+        break;
+      }
+    }
+    await _run(adb, ['-s', deviceId, 'shell', 'ime', 'enable', selected]);
+    final setResult =
+        await _run(adb, ['-s', deviceId, 'shell', 'ime', 'set', selected]);
+    if (setResult.exitCode == 0) {
+      AppLogger.log('USB ($deviceId): клавиатура восстановлена ($selected)');
+      return 'Клавиатура восстановлена.';
+    }
+    AppLogger.log('USB ($deviceId): не удалось выбрать клавиатуру: '
+        '${setResult.stdout}${setResult.stderr}');
+    return 'Не удалось включить экранную клавиатуру.';
   }
 
   Future<List<String>> getUsbDevices() async {

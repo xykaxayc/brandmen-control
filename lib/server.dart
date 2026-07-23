@@ -167,12 +167,18 @@ class BrandmenServer {
         } catch (_) {}
         final knownDevice =
             await DeviceStorage.authenticate(deviceId, apiToken);
-        if (!pairingActive && !knownDevice) {
+        final legacyReconnect = !knownDevice &&
+            await DeviceStorage.canMigrateLegacyRegistration(
+              deviceId,
+              apiToken,
+              clientIp,
+            );
+        if (!pairingActive && !knownDevice && !legacyReconnect) {
           return Response.forbidden('{"error":"pairing_off"}',
               headers: {'content-type': 'application/json'});
         }
         if (clientIp.isNotEmpty) {
-          AppLogger.log(knownDevice
+          AppLogger.log(knownDevice || legacyReconnect
               ? 'Планшет восстановил связь: $clientIp ($deviceName)'
               : 'Устройство зарегистрировалось: $clientIp ($deviceName)');
           _registrationController.add(DeviceRegistration(
@@ -180,10 +186,15 @@ class BrandmenServer {
             name: deviceName,
             deviceId: deviceId,
             apiToken: apiToken,
-            isReconnect: knownDevice,
+            isReconnect: knownDevice || legacyReconnect,
           ));
         }
-        return Response.ok(jsonEncode({'ok': true, 'reconnected': knownDevice}),
+        return Response.ok(
+            jsonEncode({
+              'ok': true,
+              'reconnected': knownDevice || legacyReconnect,
+              if (legacyReconnect) 'migrated': true,
+            }),
             headers: {'content-type': 'application/json'});
       }
 

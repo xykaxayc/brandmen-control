@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class SavedDevice {
@@ -88,6 +89,40 @@ class DeviceStorage {
       }
     }
     return false;
+  }
+
+  /// Одноразовая миграция старой записи, созданной до появления apiToken.
+  /// Разрешаем её только для уже известного deviceId и только внутри той же
+  /// IPv4 /24 сети. После регистрации [add] сохранит токен, и все следующие
+  /// смены IP снова будут проходить строгую проверку authenticate().
+  static Future<bool> canMigrateLegacyRegistration(
+    String? deviceId,
+    String? apiToken,
+    String newIp,
+  ) async {
+    if (deviceId == null ||
+        deviceId.isEmpty ||
+        apiToken == null ||
+        apiToken.isEmpty) {
+      return false;
+    }
+    final devices = await load();
+    for (final device in devices) {
+      if (device.deviceId != deviceId) continue;
+      if (device.apiToken?.isNotEmpty == true) return false;
+      return _sameIpv4Subnet24(device.ip, newIp);
+    }
+    return false;
+  }
+
+  static bool _sameIpv4Subnet24(String left, String right) {
+    final a = InternetAddress.tryParse(left);
+    final b = InternetAddress.tryParse(right);
+    if (a == null || b == null || a.type != b.type) return false;
+    if (a.type != InternetAddressType.IPv4) return false;
+    final ab = a.rawAddress;
+    final bb = b.rawAddress;
+    return ab[0] == bb[0] && ab[1] == bb[1] && ab[2] == bb[2];
   }
 
   static Future<void> add(
