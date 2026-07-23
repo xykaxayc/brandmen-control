@@ -177,6 +177,23 @@ def ack_cmd(site, cid, ok, result):
         _save_cmds(site, data)
 
 
+def poll_meta(query):
+    """Нормализованное фактическое состояние планшета из heartbeat."""
+    text_fields = ("name", "ip", "v", "model", "device_id", "current")
+    meta = {key: str(query.get(key, [""])[0])[:300]
+            for key in text_fields if query.get(key)}
+    for key in ("playing", "playback_enabled", "device_owner"):
+        if query.get(key):
+            meta[key] = query[key][0].lower() in ("1", "true", "yes", "on")
+    for key in ("index", "total"):
+        if query.get(key):
+            try:
+                meta[key] = int(query[key][0])
+            except (TypeError, ValueError):
+                pass
+    return meta
+
+
 def list_cmd_sites():
     out = []
     if not os.path.isdir(CMDS_DIR):
@@ -340,6 +357,44 @@ def list_agent_snapshots():
     return out
 
 
+ISSUE_PATTERN = re.compile(
+    r"(ошиб|сбой|офлайн|не играет|failed|failure|exception|timeout|unreachable)",
+    re.IGNORECASE)
+
+
+def recent_issues(limit=20):
+    """Короткий дедуплицированный список проблем вместо потока служебных логов."""
+    found = {}
+    if not os.path.isdir(DIR):
+        return []
+    for site in os.listdir(DIR):
+        path = os.path.join(DIR, site, "_live.log")
+        if not os.path.isfile(path):
+            continue
+        try:
+            with open(path, "rb") as source:
+                size = os.path.getsize(path)
+                source.seek(max(0, size - 256 * 1024))
+                lines = source.read().decode("utf-8", "replace").splitlines()[-1500:]
+            for line in lines:
+                message = line.strip()
+                if not message or not ISSUE_PATTERN.search(message):
+                    continue
+                normalized = re.sub(
+                    r"^\[?\d{4}[-/.]\d{2}[-/.]\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?Z?\]?\s*",
+                    "", message)
+                normalized = re.sub(r"\s+", " ", normalized)[:500]
+                key = (safe(site), normalized)
+                if key in found:
+                    found[key]["count"] += 1
+                else:
+                    found[key] = {"site": safe(site), "message": normalized,
+                                  "count": 1}
+        except OSError:
+            continue
+    return list(found.values())[-limit:][::-1]
+
+
 def dashboard_data():
     devices = list_cmd_sites()
     for device in devices:
@@ -365,7 +420,7 @@ def dashboard_data():
                 }
                 devices.append(row)
                 by_id[key] = row
-    return {"devices": devices, "agents": agents,
+    return {"devices": devices, "agents": agents, "issues": recent_issues(),
             "server_utc": datetime.datetime.utcnow().isoformat() + "Z"}
 
 
@@ -828,7 +883,7 @@ class H(BaseHTTPRequestHandler):
             cmd = str(b.get("cmd", "")).strip()
             if site == "unknown":
                 return self._send(400, "missing site")
-            if cmd not in {"launch", "stop", "restart", "wake", "sleep",
+            if cmd not in {"status", "launch", "stop", "restart", "wake", "sleep",
                            "reboot", "unmanage", "volume", "brightness"}:
                 return self._send(400, "invalid cmd")
             cid = enqueue_cmd(site, cmd, b.get("args") or {})
@@ -934,7 +989,7 @@ class H(BaseHTTPRequestHandler):
             if not api_authed(self):
                 return self._send(401, "unauthorized")
             site = safe(q.get("site", [""])[0])
-            meta = {k: q.get(k, [""])[0] for k in ("name", "ip", "v", "model") if q.get(k)}
+            meta = poll_meta(q)
             return self._send(200, json.dumps(poll_cmds(site, meta), ensure_ascii=False),
                               "application/json; charset=utf-8")
         if u.path == "/api/dashboard":

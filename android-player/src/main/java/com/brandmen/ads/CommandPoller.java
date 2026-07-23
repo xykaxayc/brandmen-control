@@ -16,6 +16,9 @@ import java.net.URL;
 import java.net.URLEncoder;
 import java.security.MessageDigest;
 import java.security.cert.X509Certificate;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import javax.net.ssl.HttpsURLConnection;
 import javax.net.ssl.SSLContext;
@@ -100,11 +103,18 @@ final class CommandPoller {
     }
 
     private void pollOnce() throws Exception {
+        JSONObject state = stateSnapshot();
         String url = SERVER + "/commands/poll?site=" + enc(siteId())
-                + "&token=" + TOKEN
+                + "&device_id=" + enc(siteId())
                 + "&ip=" + enc(wifiIp())
                 + "&v=" + enc(MediaServer.VERSION)
-                + "&model=" + enc(android.os.Build.MODEL);
+                + "&model=" + enc(android.os.Build.MODEL)
+                + "&playing=" + state.optBoolean("playing", false)
+                + "&playback_enabled=" + state.optBoolean("playback_enabled", false)
+                + "&current=" + enc(state.optString("current", ""))
+                + "&index=" + state.optInt("index", -1)
+                + "&total=" + state.optInt("total", 0)
+                + "&device_owner=" + state.optBoolean("device_owner", false);
         String resp = httpGet(url);
         if (resp == null || resp.isEmpty()) return;
         JSONArray arr = new JSONArray(resp);
@@ -114,46 +124,104 @@ final class CommandPoller {
             int id = c.optInt("id", -1);
             String cmd = c.optString("cmd", "");
             JSONObject args = c.optJSONObject("args");
-            String result = execute(cmd, args);
-            ack(id, result == null, result == null ? "ok" : result);
+            ExecutionResult result = execute(cmd, args);
+            ack(id, result.ok, result.message);
         }
     }
 
-    /** Выполняет команду через ControlCallback. Возвращает null при успехе, текст ошибки иначе. */
-    private String execute(String cmd, JSONObject args) {
-        if (cb == null) return "no callback";
+    /** Выполняет команду на UI-потоке и только после этого подтверждает её серверу. */
+    private ExecutionResult execute(String cmd, JSONObject args) {
+        if (cb == null) return ExecutionResult.error("no callback");
         try {
+            if ("status".equals(cmd)) {
+                return ExecutionResult.ok(stateSnapshot().toString());
+            }
+            final Runnable action;
             switch (cmd) {
-                case "launch":    main.post(cb::onLaunch); return null;
-                case "stop":      main.post(cb::onStopPlayback); return null;
-                case "restart":   main.post(cb::onRestartPlayback); return null;
-                case "wake":      main.post(cb::onWake); return null;
-                case "sleep":     main.post(cb::onSleep); return null;
-                case "reboot":    main.post(cb::onReboot); return null;
-                case "unmanage":  main.post(cb::onClearDeviceOwner); return null;
+                case "launch":    action = cb::onLaunch; break;
+                case "stop":      action = cb::onStopPlayback; break;
+                case "restart":   action = cb::onRestartPlayback; break;
+                case "wake":      action = cb::onWake; break;
+                case "sleep":     action = cb::onSleep; break;
+                case "reboot":    action = cb::onReboot; break;
+                case "unmanage":  action = cb::onClearDeviceOwner; break;
                 case "volume": {
                     int lvl = args != null ? args.optInt("level", -1) : -1;
-                    if (lvl < 0) return "missing level";
-                    main.post(() -> cb.onVolume(lvl));
-                    return null;
+                    if (lvl < 0) return ExecutionResult.error("missing level");
+                    action = () -> cb.onVolume(lvl);
+                    break;
                 }
                 case "brightness": {
                     int lvl = args != null ? args.optInt("level", -1) : -1;
-                    if (lvl < 0) return "missing level";
-                    main.post(() -> cb.onBrightness(lvl));
-                    return null;
+                    if (lvl < 0) return ExecutionResult.error("missing level");
+                    action = () -> cb.onBrightness(lvl);
+                    break;
                 }
                 default:
-                    return "unknown cmd: " + cmd;
+                    return ExecutionResult.error("unknown cmd: " + cmd);
             }
+            CountDownLatch done = new CountDownLatch(1);
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            main.post(() -> {
+                try { action.run(); }
+                catch (Throwable error) { failure.set(error); }
+                finally { done.countDown(); }
+            });
+            if (!done.await(5, TimeUnit.SECONDS)) {
+                return ExecutionResult.error("main thread timeout");
+            }
+            if (failure.get() != null) {
+                return ExecutionResult.error("command failed: " + failure.get().getMessage());
+            }
+            return ExecutionResult.ok(stateSnapshot().toString());
         } catch (Exception e) {
-            return "err: " + e.getMessage();
+            return ExecutionResult.error("err: " + e.getMessage());
+        }
+    }
+
+    /** Снимок фактического состояния. Callback читается на main thread. */
+    private JSONObject stateSnapshot() {
+        final JSONObject state = new JSONObject();
+        CountDownLatch done = new CountDownLatch(1);
+        main.post(() -> {
+            try {
+                state.put("device_id", siteId());
+                state.put("playing", cb != null && cb.isPlaying());
+                state.put("playback_enabled", Kiosk.isPlaybackEnabled(app));
+                state.put("current", cb == null ? "" : cb.getCurrentName());
+                state.put("index", cb == null ? -1 : cb.getCurrentIndex());
+                state.put("total", cb == null ? 0 : cb.getPlaylistCount());
+                state.put("device_owner", Kiosk.isDeviceOwner(app));
+            } catch (Exception e) {
+                try { state.put("error", String.valueOf(e.getMessage())); }
+                catch (Exception ignored) {}
+            } finally {
+                done.countDown();
+            }
+        });
+        try { done.await(3, TimeUnit.SECONDS); }
+        catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        return state;
+    }
+
+    private static final class ExecutionResult {
+        final boolean ok;
+        final String message;
+        private ExecutionResult(boolean ok, String message) {
+            this.ok = ok;
+            this.message = message;
+        }
+        static ExecutionResult ok(String message) {
+            return new ExecutionResult(true, message == null ? "ok" : message);
+        }
+        static ExecutionResult error(String message) {
+            return new ExecutionResult(false, message == null ? "error" : message);
         }
     }
 
     private void ack(int id, boolean ok, String result) {
         try {
-            String url = SERVER + "/commands/ack?site=" + enc(siteId()) + "&token=" + TOKEN;
+            String url = SERVER + "/commands/ack?site=" + enc(siteId());
             JSONObject b = new JSONObject();
             b.put("id", id);
             b.put("ok", ok);
@@ -196,6 +264,8 @@ final class CommandPoller {
     private HttpURLConnection open(String urlStr) throws Exception {
         URL url = new URL(urlStr);
         HttpURLConnection c = (HttpURLConnection) url.openConnection();
+        // Секрет не попадает в URL, историю прокси и access-логи.
+        c.setRequestProperty("Authorization", "Bearer " + TOKEN);
         if (c instanceof HttpsURLConnection) {
             HttpsURLConnection https = (HttpsURLConnection) c;
             https.setSSLSocketFactory(pinnedTls().getSocketFactory());
