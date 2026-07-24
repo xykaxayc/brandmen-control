@@ -33,6 +33,7 @@ import base64
 import hashlib
 import hmac
 import secrets
+import struct
 import datetime
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -430,6 +431,19 @@ def dashboard_data():
             "server_utc": datetime.datetime.utcnow().isoformat() + "Z"}
 
 
+def websocket_frame(payload=b"", opcode=0x1):
+    """Build one unmasked server-to-browser WebSocket frame (RFC 6455)."""
+    if isinstance(payload, str):
+        payload = payload.encode("utf-8")
+    length = len(payload)
+    head = bytes([0x80 | (opcode & 0x0f)])
+    if length < 126:
+        return head + bytes([length]) + payload
+    if length < 65536:
+        return head + bytes([126]) + struct.pack("!H", length) + payload
+    return head + bytes([127]) + struct.pack("!Q", length) + payload
+
+
 def list_sites():
     out = []
     if not os.path.isdir(DIR):
@@ -535,6 +549,7 @@ main{flex:1;display:flex;min-height:0}
   <label class="tgl"><input type="checkbox" id="fold" checked>схлопывать повторы</label>
   <input type="search" id="q" placeholder="фильтр…">
   <a class="raw" id="raw" target="_blank">raw</a>
+  <span id="stream">подключение…</span>
   <span id="stats"></span>
 </header>
 <main>
@@ -544,7 +559,7 @@ main{flex:1;display:flex;min-height:0}
 <script>
 const T=new URLSearchParams(location.search).get('token')||'';
 const $=id=>document.getElementById(id);
-let curSite=null,curFile=null,rawText='',timer=null;
+let curSite=null,curFile=null,rawText='',timer=null,logSocket=null,logFallback=null,wsRetry=1000;
 
 const esc=s=>s.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 async function jget(u){const r=await fetch(u);if(!r.ok)throw new Error(r.status);return r.json()}
@@ -598,8 +613,24 @@ function logUrl(){
 async function loadLog(){
   if(!curSite||!curFile){return}
   $('raw').href=logUrl();
+  if(curFile.startsWith('_')){connectLog();return}
+  closeLog();
   try{rawText=await tget(logUrl())}catch(e){rawText='(ошибка загрузки: '+e.message+')'}
   render();
+}
+
+function streamState(ok,text){$('stream').textContent=(ok?'● ':'○ ')+text;$('stream').style.color=ok?'var(--ok)':'var(--warn)'}
+function fallbackLog(on){if(on&&!logFallback)logFallback=setInterval(async()=>{if(!curFile?.startsWith('_'))return;try{rawText=await tget(logUrl());render()}catch(_){}},15000);if(!on&&logFallback){clearInterval(logFallback);logFallback=null}}
+function closeLog(){fallbackLog(false);if(logSocket){logSocket.onclose=null;logSocket.close();logSocket=null}}
+function connectLog(){
+  closeLog();
+  const selectedSite=curSite,proto=location.protocol==='https:'?'wss:':'ws:';
+  logSocket=new WebSocket(proto+'//'+location.host+'/ws/logs?site='+encodeURIComponent(selectedSite));
+  streamState(false,'подключение к живому логу');
+  logSocket.onopen=()=>{wsRetry=1000;fallbackLog(false);streamState(true,'живой лог')};
+  logSocket.onmessage=e=>{try{const m=JSON.parse(e.data);if(selectedSite!==curSite)return;if(m.type==='log_snapshot'||m.type==='log_reset')rawText=m.text||'';else if(m.type==='log_append')rawText+=m.text||'';else return;render()}catch(_){}};
+  logSocket.onclose=()=>{if(selectedSite!==curSite)return;logSocket=null;fallbackLog(true);streamState(false,'резервное обновление');setTimeout(()=>{if(selectedSite===curSite&&curFile?.startsWith('_'))connectLog()},wsRetry);wsRetry=Math.min(wsRetry*2,30000)};
+  logSocket.onerror=()=>logSocket.close();
 }
 
 function classify(t){
@@ -663,18 +694,17 @@ $('q').oninput=render;$('errs').onchange=render;$('fold').onchange=render;
 
 function tick(){
   if(!$('auto').checked)return;
-  const isLive=curFile&&curFile.startsWith('_');
-  const isLast=curFile===$('fsel').options[0]?.value||isLive;
   loadSites();
-  if(isLast)loadLog();
+  if(!logSocket&&curFile&&curFile.startsWith('_'))loadLog();
 }
-setInterval(tick,10000);
+setInterval(tick,30000);
 loadSites();
 </script></body></html>"""
 
 
 class H(BaseHTTPRequestHandler):
     server_version = "brandmen-logs/1.0"
+    protocol_version = "HTTP/1.1"
     # Рвём зависшие соединения — иначе мёртвые клиенты копят потоки.
     timeout = 30
 
@@ -703,6 +733,7 @@ class H(BaseHTTPRequestHandler):
             self.send_header("Content-Security-Policy",
                              "default-src 'self'; style-src 'self' 'unsafe-inline'; "
                              "script-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+                             "connect-src 'self' ws: wss:; "
                              "frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
         self.end_headers()
         try:
@@ -724,6 +755,102 @@ class H(BaseHTTPRequestHandler):
             return session
         self._redirect("/login")
         return None
+
+    def _websocket_upgrade(self):
+        """Validate the browser session/origin and complete a WS handshake."""
+        session = web_session(self)
+        if not session:
+            self._send(401, "unauthorized")
+            return False
+        if self.headers.get("Upgrade", "").lower() != "websocket":
+            self._send(426, "websocket upgrade required")
+            return False
+        key = self.headers.get("Sec-WebSocket-Key", "").strip()
+        origin = self.headers.get("Origin", "")
+        request_host = self.headers.get("Host", "").lower()
+        origin_host = urlparse(origin).netloc.lower() if origin else ""
+        public_host = urlparse(PUBLIC_BASE).netloc.lower()
+        if not key or not origin_host or origin_host not in {request_host, public_host}:
+            self._send(403, "invalid websocket origin")
+            return False
+        accept = base64.b64encode(hashlib.sha1(
+            (key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode("ascii")
+        ).digest()).decode("ascii")
+        self.send_response(101, "Switching Protocols")
+        self.send_header("Upgrade", "websocket")
+        self.send_header("Connection", "Upgrade")
+        self.send_header("Sec-WebSocket-Accept", accept)
+        self.end_headers()
+        self.connection.settimeout(30)
+        return True
+
+    def _ws_json(self, value):
+        body = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        self.connection.sendall(websocket_frame(body))
+
+    def _ws_dashboard(self):
+        if not self._websocket_upgrade():
+            return
+        last_digest = None
+        last_ping = 0.0
+        started = time.time()
+        try:
+            while time.time() - started < SESSION_TTL:
+                data = dashboard_data()
+                stable = dict(data)
+                stable.pop("server_utc", None)
+                digest = hashlib.sha256(json.dumps(
+                    stable, ensure_ascii=False, sort_keys=True).encode("utf-8")).digest()
+                if digest != last_digest:
+                    self._ws_json({"type": "dashboard", "data": data})
+                    last_digest = digest
+                now = time.time()
+                if now - last_ping >= 20:
+                    self.connection.sendall(websocket_frame(b"", opcode=0x9))
+                    last_ping = now
+                time.sleep(2)
+        except (BrokenPipeError, ConnectionError, OSError, ssl.SSLError):
+            pass
+
+    def _ws_logs(self, site):
+        if not self._websocket_upgrade():
+            return
+        path = os.path.join(DIR, site, "_live.log")
+        position = 0
+        last_ping = 0.0
+        started = time.time()
+        try:
+            if os.path.isfile(path):
+                size = os.path.getsize(path)
+                position = max(0, size - 512 * 1024)
+                with open(path, "rb") as source:
+                    source.seek(position)
+                    chunk = source.read()
+                    position = source.tell()
+                self._ws_json({"type": "log_snapshot",
+                               "text": chunk.decode("utf-8", "replace")})
+            else:
+                self._ws_json({"type": "log_snapshot", "text": ""})
+            while time.time() - started < SESSION_TTL:
+                if os.path.isfile(path):
+                    size = os.path.getsize(path)
+                    if size < position:
+                        position = 0
+                        self._ws_json({"type": "log_reset", "text": ""})
+                    if size > position:
+                        with open(path, "rb") as source:
+                            source.seek(position)
+                            chunk = source.read(min(size - position, 256 * 1024))
+                            position = source.tell()
+                        self._ws_json({"type": "log_append",
+                                       "text": chunk.decode("utf-8", "replace")})
+                now = time.time()
+                if now - last_ping >= 20:
+                    self.connection.sendall(websocket_frame(b"", opcode=0x9))
+                    last_ping = now
+                time.sleep(1)
+        except (BrokenPipeError, ConnectionError, OSError, ssl.SSLError):
+            pass
 
     def _read_form(self):
         n = min(int(self.headers.get("Content-Length", "0") or "0"), 64 * 1024)
@@ -952,6 +1079,13 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self):
         u = urlparse(self.path)
         q = parse_qs(u.query)
+        if u.path == "/ws/dashboard":
+            return self._ws_dashboard()
+        if u.path == "/ws/logs":
+            site = safe(q.get("site", [""])[0])
+            if site == "unknown":
+                return self._send(400, "missing site")
+            return self._ws_logs(site)
         if u.path == "/":
             return self._redirect("/panel" if web_session(self) else "/login")
         if u.path == "/login":
