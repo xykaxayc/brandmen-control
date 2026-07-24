@@ -7,6 +7,7 @@ class SavedDevice {
   String name;
   String? deviceId;
   String? desiredDeploymentId;
+  bool? desiredPlaybackEnabled;
   String? apiToken;
 
   SavedDevice({
@@ -14,6 +15,7 @@ class SavedDevice {
     required this.name,
     this.deviceId,
     this.desiredDeploymentId,
+    this.desiredPlaybackEnabled,
     this.apiToken,
   });
 
@@ -23,6 +25,8 @@ class SavedDevice {
         if (deviceId != null) 'device_id': deviceId,
         if (desiredDeploymentId != null)
           'desired_deployment_id': desiredDeploymentId,
+        if (desiredPlaybackEnabled != null)
+          'desired_playback_enabled': desiredPlaybackEnabled,
         if (apiToken != null) 'api_token': apiToken,
       };
 
@@ -31,6 +35,7 @@ class SavedDevice {
         name: j['name'] as String,
         deviceId: j['device_id'] as String?,
         desiredDeploymentId: j['desired_deployment_id'] as String?,
+        desiredPlaybackEnabled: j['desired_playback_enabled'] as bool?,
         apiToken: j['api_token'] as String?,
       );
 }
@@ -178,6 +183,24 @@ class DeviceStorage {
       }
     }
     await save(list);
+  }
+
+  /// Сохраняет операторское состояние показа отдельно от текущей доступности.
+  /// Поэтому планшет, который был офлайн в момент «Запустить все», выполнит
+  /// команду после возвращения в сеть, а смена IP не потеряет намерение.
+  static Future<void> setDesiredPlayback(
+      Iterable<String> ips, bool enabled) async {
+    final targets = ips.toSet();
+    final list = await load();
+    var changed = false;
+    for (final device in list) {
+      if (!targets.contains(device.ip)) continue;
+      if (device.desiredPlaybackEnabled != enabled) {
+        device.desiredPlaybackEnabled = enabled;
+        changed = true;
+      }
+    }
+    if (changed) await save(list);
   }
 
   /// Убирает ожидание deployment после синхронизации через legacy-протокол.

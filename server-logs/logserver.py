@@ -331,6 +331,8 @@ def save_agent_snapshot(body):
             "ip": str(item.get("ip", ""))[:80],
             "device_id": safe(str(item.get("device_id", ""))) if item.get("device_id") else "",
             "desired_deployment_id": str(item.get("desired_deployment_id", ""))[:160],
+            "desired_playback_enabled": item.get("desired_playback_enabled")
+            if isinstance(item.get("desired_playback_enabled"), bool) else None,
         })
     path = os.path.join(AGENTS_DIR, site + ".json")
     tmp = path + ".tmp"
@@ -410,6 +412,8 @@ def dashboard_data():
                 found.setdefault("name", item.get("name"))
                 found.setdefault("ip", item.get("ip"))
                 found["agent"] = agent["site"]
+                found["desired_playback_enabled"] = item.get(
+                    "desired_playback_enabled")
             else:
                 key = ("tab-" + did) if did else "agent-" + safe(
                     agent["site"] + "-" + item.get("ip", ""))
@@ -417,6 +421,8 @@ def dashboard_data():
                     "site": key, "name": item.get("name"), "ip": item.get("ip"),
                     "meta": {}, "age_min": None, "queue": [], "agent": agent["site"],
                     "controllable": False,
+                    "desired_playback_enabled": item.get(
+                        "desired_playback_enabled"),
                 }
                 devices.append(row)
                 by_id[key] = row

@@ -275,6 +275,15 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
         installCrashHandler();
         handleInstallResult(getIntent());
         handleCommand(getIntent());
+        // Activity может быть пересоздана Android без нашей command-intent.
+        // Раньше в таком случае desired=true сохранялся, но плейлист даже не
+        // загружался и экран оставался пустым до внешней команды «Обновить».
+        boolean commandHandled = getIntent() != null
+                && CMD_ACTION.equals(getIntent().getAction());
+        if (!commandHandled && Kiosk.isPlaybackEnabled(this) && !isPlaying()) {
+            loadVideos();
+            playNext();
+        }
         ensureOverlayPermission();
     }
 
@@ -291,26 +300,31 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
             int stalls = 0;
             @Override public void run() {
                 try {
-                    if (!isPlaylistVisible && !userPaused && !videoFiles.isEmpty()) {
-                        boolean playing = false;
-                        try { playing = videoView.isPlaying(); } catch (Exception ignored) {}
-                        if (!playing) {
-                            android.util.Log.w("Watchdog", "не играет — перезапуск воспроизведения");
-                            lastPos = -1; stalls = 0;
-                            playNext();
-                        } else {
-                            int pos = -1;
-                            try { pos = videoView.getCurrentPosition(); } catch (Exception ignored) {}
-                            if (pos == lastPos && pos >= 0) {
-                                stalls++;
-                                if (stalls >= 2) {
-                                    android.util.Log.w("Watchdog", "ролик завис — следующий");
-                                    stalls = 0; lastPos = -1;
-                                    currentIndex++;
-                                    playNext();
-                                }
+                    if (!isPlaylistVisible && Kiosk.isPlaybackEnabled(MainActivity.this)) {
+                        if (videoFiles.isEmpty()) loadVideos();
+                        // При пустом каталоге playNext уже держит один
+                        // отложенный retry. Не плодим дополнительные callbacks.
+                        if (!videoFiles.isEmpty()) {
+                            boolean playing = false;
+                            try { playing = videoView.isPlaying(); } catch (Exception ignored) {}
+                            if (!playing) {
+                                android.util.Log.w("Watchdog", "не играет — перезапуск воспроизведения");
+                                lastPos = -1; stalls = 0;
+                                playNext();
                             } else {
-                                stalls = 0; lastPos = pos;
+                                int pos = -1;
+                                try { pos = videoView.getCurrentPosition(); } catch (Exception ignored) {}
+                                if (pos == lastPos && pos >= 0) {
+                                    stalls++;
+                                    if (stalls >= 2) {
+                                        android.util.Log.w("Watchdog", "ролик завис — следующий");
+                                        stalls = 0; lastPos = -1;
+                                        currentIndex++;
+                                        playNext();
+                                    }
+                                } else {
+                                    stalls = 0; lastPos = pos;
+                                }
                             }
                         }
                     }

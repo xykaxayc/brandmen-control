@@ -104,4 +104,36 @@ void main() {
       isFalse,
     );
   });
+
+  test('desired playback survives IP change by device identity', () async {
+    await DeviceStorage.add(
+      '192.168.1.150',
+      name: 'Планшет',
+      deviceId: 'tab-stable-id',
+      apiToken: 'secret-token',
+    );
+    await DeviceStorage.setDesiredPlayback(['192.168.1.150'], true);
+
+    await DeviceStorage.add(
+      '192.168.1.142',
+      name: 'Планшет',
+      deviceId: 'tab-stable-id',
+      apiToken: 'secret-token',
+    );
+
+    final device = (await DeviceStorage.load()).single;
+    expect(device.ip, '192.168.1.142');
+    expect(device.desiredPlaybackEnabled, isTrue);
+  });
+
+  test('desired playback is stored for offline devices', () async {
+    await DeviceStorage.add('192.168.1.10', name: 'Первый');
+    await DeviceStorage.add('192.168.1.11', name: 'Второй');
+
+    await DeviceStorage.setDesiredPlayback(
+        ['192.168.1.10', '192.168.1.11'], false);
+
+    final devices = await DeviceStorage.load();
+    expect(devices.map((d) => d.desiredPlaybackEnabled), everyElement(isFalse));
+  });
 }

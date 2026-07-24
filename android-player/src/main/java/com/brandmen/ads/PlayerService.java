@@ -72,6 +72,41 @@ public class PlayerService extends Service implements MediaServer.ControlCallbac
         }
     };
 
+    /**
+     * Независимая проверка желаемого состояния воспроизведения. Activity может
+     * быть выгружена HyperOS, зависнуть на старте или открыться без command
+     * intent. Два промаха подряд защищают от ложного рестарта между роликами.
+     */
+    private static final long PLAYBACK_GUARD_INTERVAL_MS = 15_000L;
+    private int playbackMisses = 0;
+    private final Runnable playbackGuard = new Runnable() {
+        @Override public void run() {
+            try {
+                if (!Kiosk.isPlaybackEnabled(PlayerService.this)) {
+                    playbackMisses = 0;
+                } else {
+                    MainActivity activity = MainActivity.peek();
+                    if (activity == null) {
+                        android.util.Log.w("PlaybackGuard",
+                                "показ включён, Activity отсутствует — запускаю");
+                        playbackMisses = 0;
+                        ensurePlayerRunning();
+                    } else if (activity.isPlaying()) {
+                        playbackMisses = 0;
+                    } else if (++playbackMisses >= 2) {
+                        android.util.Log.w("PlaybackGuard",
+                                "показ включён, видео не играет — восстанавливаю");
+                        playbackMisses = 0;
+                        ensurePlayerRunning();
+                    }
+                }
+            } catch (Exception e) {
+                android.util.Log.e("PlaybackGuard", "ошибка: " + e.getMessage());
+            }
+            mainHandler.postDelayed(this, PLAYBACK_GUARD_INTERVAL_MS);
+        }
+    };
+
     @Override
     public void onCreate() {
         super.onCreate();
@@ -86,6 +121,9 @@ public class PlayerService extends Service implements MediaServer.ControlCallbac
         try { Kiosk.applyPolicies(this); } catch (Exception ignored) {}
         // Само-восстановление сети: сразу и затем раз в минуту, пока сервис жив.
         mainHandler.postDelayed(netHeal, NET_HEAL_INTERVAL_MS);
+        // Первый контроль запуска после того, как Activity успеет подготовить
+        // VideoView; затем проверяем автономно каждые 15 секунд.
+        mainHandler.postDelayed(playbackGuard, 10_000L);
         try {
             mediaServer = new MediaServer(this, ADS_DIR, this);
             mediaServer.start();
@@ -136,6 +174,7 @@ public class PlayerService extends Service implements MediaServer.ControlCallbac
     public void onDestroy() {
         mainHandler.removeCallbacks(netHeal);
         mainHandler.removeCallbacks(registerWithControl);
+        mainHandler.removeCallbacks(playbackGuard);
         if (controlDiscovery != null) controlDiscovery.cancel();
         if (commandPoller != null) commandPoller.stop();
         if (mediaServer != null) mediaServer.stop();

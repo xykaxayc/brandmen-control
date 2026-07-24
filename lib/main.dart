@@ -65,6 +65,8 @@ void _startFleetSnapshotUpload() {
                   if (d.deviceId != null) 'device_id': d.deviceId,
                   if (d.desiredDeploymentId != null)
                     'desired_deployment_id': d.desiredDeploymentId,
+                  if (d.desiredPlaybackEnabled != null)
+                    'desired_playback_enabled': d.desiredPlaybackEnabled,
                 })
             .toList(),
       );
@@ -718,7 +720,9 @@ class _MainScreenState extends State<MainScreen> {
         AppLogger.log(
             "АВТОМАТИЧЕСКОЕ РАСПИСАНИЕ: Пора выключать экраны ($offTime)");
         final saved = await DeviceStorage.load();
-        await adb.bulkSleep(saved.map((d) => d.ip).toList());
+        final ips = saved.map((d) => d.ip).toList();
+        await DeviceStorage.setDesiredPlayback(ips, false);
+        await adb.bulkDisablePlayback(ips);
       }
     });
   }
@@ -1086,7 +1090,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
   bool _busy = false;
   bool _bulkCancel = false;
   bool _reconcilingDesired = false;
+  bool _reconcilingPlayback = false;
   final Map<String, DateTime> _desiredRetryAfter = {};
+  final Map<String, DateTime> _playbackRetryAfter = {};
   final Set<String> _desiredPairingWarnings = {};
   // Текущее положение общего (мастер) ползунка яркости — применяется ко всем
   // онлайн-планшетам сразу. По умолчанию максимум (255).
@@ -1213,7 +1219,88 @@ class _DashboardScreenState extends State<DashboardScreen> {
       },
     );
     if (mounted) setState(() => _isLoading = false);
-    unawaited(_reconcileDesiredState());
+    // Контент и воспроизведение сверяем последовательно: одновременный commit
+    // плейлиста и launch создавали гонку на медленных планшетах.
+    unawaited(_reconcileDesiredState().whenComplete(_reconcilePlaybackState));
+  }
+
+  /// Приводит фактическое воспроизведение к последней команде оператора.
+  /// Намерение хранится в SavedDevice, поэтому охватывает планшеты, которые
+  /// были офлайн во время «Запустить все / Завершить смену» или сменили IP.
+  Future<void> _reconcilePlaybackState() async {
+    if (_reconcilingPlayback || _busy || !mounted) return;
+    _reconcilingPlayback = true;
+    try {
+      final devices = await DeviceStorage.load();
+      for (final device in devices) {
+        if (!mounted || _busy) return;
+        final desired = device.desiredPlaybackEnabled;
+        final status = statuses[device.ip];
+        if (desired == null ||
+            status?.online != true ||
+            status?.httpAvailable != true ||
+            (_ops[device.ip]?.isBusy ?? false)) {
+          continue;
+        }
+
+        final matches = desired
+            ? status?.playbackEnabled == true && status?.playerPlaying == true
+            : status?.playbackEnabled == false && status?.playerPlaying != true;
+        if (matches) {
+          _playbackRetryAfter.remove(device.ip);
+          continue;
+        }
+        final retryAfter = _playbackRetryAfter[device.ip];
+        if (retryAfter != null && DateTime.now().isBefore(retryAfter)) continue;
+
+        // playing=false бывает несколько секунд между роликами. Если desired
+        // уже true, перепроверяем напрямую и не перезапускаем живой показ.
+        if (desired && status?.playbackEnabled == true) {
+          await Future.delayed(const Duration(seconds: 8));
+          if (!mounted || _busy) return;
+          final now = await DeviceHttp(device.ip).controlNow();
+          if (now?['playing'] == true) {
+            _playbackRetryAfter.remove(device.ip);
+            continue;
+          }
+        }
+
+        _playbackRetryAfter[device.ip] =
+            DateTime.now().add(const Duration(minutes: 2));
+        AppLogger.log('[PLAYBACK] ${device.ip}: ожидалось '
+            '${desired ? "воспроизведение" : "выключение"}, '
+            'факт enabled=${status?.playbackEnabled} '
+            'playing=${status?.playerPlaying} — исправляю');
+        _setOp(
+            device.ip,
+            DeviceOp.busy(
+                desired ? 'Восстанавливаю показ…' : 'Завершаю показ…'));
+        final accepted = desired
+            ? await adb.enablePlayback(device.ip)
+            : await adb.disablePlayback(device.ip);
+        final ok = desired
+            ? accepted && await adb.verifyPlaying(device.ip, attempts: 20)
+            : accepted;
+        AppLogger.log('[PLAYBACK] ${device.ip}: '
+            '${ok ? "состояние восстановлено" : "повтор не подтверждён"}');
+        _setOp(
+            device.ip,
+            ok
+                ? DeviceOp.success(
+                    desired ? 'Показ восстановлен ▶' : 'Реклама выключена')
+                : const DeviceOp.error(
+                    'Не удалось восстановить автоматически'));
+        _clearOpLater(device.ip, after: const Duration(seconds: 8));
+        if (ok) {
+          _playbackRetryAfter.remove(device.ip);
+        } else {
+          _playbackRetryAfter[device.ip] =
+              DateTime.now().add(const Duration(minutes: 3));
+        }
+      }
+    } finally {
+      _reconcilingPlayback = false;
+    }
   }
 
   /// Планшет, вернувшийся в сеть, сам догоняет последнюю запрошенную версию.
@@ -1591,6 +1678,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (_ops[ip]?.isBusy ?? false) return;
     _setOp(
         ip, DeviceOp.busy(enabled ? "Включаю рекламу…" : "Выключаю рекламу…"));
+    await DeviceStorage.setDesiredPlayback([ip], enabled);
     final accepted =
         enabled ? await adb.enablePlayback(ip) : await adb.disablePlayback(ip);
     if (enabled) {
@@ -1614,9 +1702,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Future<void> _setPlaybackAll(bool enabled) async {
+    // Запоминаем намерение для ВСЕХ планшетов, включая офлайн. После появления
+    // в сети _reconcilePlaybackState применит его автоматически.
+    await DeviceStorage.setDesiredPlayback(saved.map((d) => d.ip), enabled);
     final online = saved.where((d) => statuses[d.ip]?.online == true).toList();
     if (online.isEmpty) {
-      _toast("Нет онлайн-планшетов", warn: true);
+      _toast('Команда сохранена — выполнится при появлении планшетов в сети',
+          warn: true);
       return;
     }
     for (final dev in online) {
