@@ -76,9 +76,47 @@ final class Kiosk {
 
     static void setPlaybackEnabled(Context ctx, boolean enabled) {
         playbackPrefs(ctx).edit().putBoolean(PLAYBACK_ENABLED, enabled).commit();
+        // Включили показ — значит экран снова нужен. Держим это здесь, а не
+        // в вызывающих местах: показ включается из девяти точек, включая
+        // кнопки ⏮ ▶ ⏭ на самом планшете, и любую из них легко забыть.
+        if (enabled) resumeGuard(ctx);
         // Оставляем совместимую копию для старых версий при откате APK.
         ctx.getApplicationContext().getSharedPreferences(PLAYER_PREFS, Context.MODE_PRIVATE)
                 .edit().putBoolean(PLAYBACK_ENABLED, enabled).apply();
+    }
+
+    /**
+     * Пауза сторожа: до этого момента ensurePlayerRunning не будит экран и не
+     * поднимает плеер. Нужна, чтобы отличить «погасили намеренно» от аварии.
+     * Раньше такого различия не было: администратор гасил экран, а через 30
+     * секунд сторож включал его обратно — и он же выбрасывал администратора
+     * из системных настроек, пока тот подключал планшет к Wi-Fi.
+     *
+     * Считаем по elapsedRealtime, а не по настенным часам: на планшете без
+     * сети время не синхронизировано и может прыгать. Побочный эффект —
+     * пауза не переживает перезагрузку, и это безопасное направление:
+     * худшее, что случится, — планшет вернётся к обычной работе.
+     */
+    private static final String GUARD_PAUSED_UNTIL = "guard_paused_until";
+
+    static void pauseGuard(Context ctx, long durationMs) {
+        playbackPrefs(ctx).edit()
+                .putLong(GUARD_PAUSED_UNTIL, SystemClock.elapsedRealtime() + durationMs)
+                .commit();
+    }
+
+    static void resumeGuard(Context ctx) {
+        playbackPrefs(ctx).edit().remove(GUARD_PAUSED_UNTIL).commit();
+    }
+
+    static boolean isGuardPaused(Context ctx) {
+        long until = playbackPrefs(ctx).getLong(GUARD_PAUSED_UNTIL, 0L);
+        if (until == 0L) return false;
+        if (SystemClock.elapsedRealtime() >= until) {
+            resumeGuard(ctx);
+            return false;
+        }
+        return true;
     }
 
     static ComponentName admin(Context ctx) {

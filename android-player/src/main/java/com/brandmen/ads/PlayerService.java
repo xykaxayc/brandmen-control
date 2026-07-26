@@ -159,6 +159,12 @@ public class PlayerService extends Service implements MediaServer.ControlCallbac
         if (!Kiosk.isPlaybackEnabled(this)) {
             return;
         }
+        // Экран погашен командой оператора или идёт обслуживание — не мешаем.
+        // Без этой проверки сторож включал экран через 30 секунд после любой
+        // блокировки и вытаскивал плеер поверх системных настроек.
+        if (Kiosk.isGuardPaused(this)) {
+            return;
+        }
         MainActivity activity = MainActivity.peek();
         if (activity != null && activity.isPlaying()) {
             return;
@@ -396,9 +402,13 @@ public class PlayerService extends Service implements MediaServer.ControlCallbac
         }
     }
 
-    @Override public void onWake() { sendCmd("wake"); }
+    @Override public void onWake() {
+        Kiosk.resumeGuard(this);
+        sendCmd("wake");
+    }
     @Override public void onLaunch() {
         Kiosk.setPlaybackEnabled(this, true);
+        Kiosk.resumeGuard(this);
         sendCmd("launch");
     }
     @Override public void onStopPlayback() {
@@ -427,7 +437,15 @@ public class PlayerService extends Service implements MediaServer.ControlCallbac
         android.util.Log.w("PlayerService", "reboot: " + ok);
     }
 
+    /**
+     * Гасим экран и держим его погашенным. Раньше sleep только вызывал
+     * lockNow(), а сторож через 30 секунд включал экран обратно — команда
+     * «выключить экран» не могла сработать в принципе.
+     */
+    static final long SLEEP_GUARD_PAUSE_MS = 12 * 60 * 60 * 1000L;
+
     @Override public void onSleep() {
+        Kiosk.pauseGuard(this, SLEEP_GUARD_PAUSE_MS);
         try { if (dpm != null && dpm.isAdminActive(adminComponent)) dpm.lockNow(); }
         catch (Exception e) { android.util.Log.w("PlayerService", "sleep: " + e.getMessage()); }
     }

@@ -16,7 +16,9 @@ public class WatchdogReceiver extends BroadcastReceiver {
     @Override
     public void onReceive(Context context, Intent intent) {
         try {
-            if (Kiosk.isPlaybackEnabled(context)) {
+            // Пока экран погашен командой оператора или идёт обслуживание,
+            // будильник только поддерживает сервис живым и не поднимает плеер.
+            if (Kiosk.isPlaybackEnabled(context) && !Kiosk.isGuardPaused(context)) {
                 PlayerService.startAndLaunch(context);
             } else {
                 PlayerService.start(context);
