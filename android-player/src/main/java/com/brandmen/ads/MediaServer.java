@@ -59,6 +59,11 @@ public class MediaServer {
         default void onClearDeviceOwner() {}
         /** Перезагрузить устройство (только device owner). */
         default void onReboot() {}
+        /**
+         * Самостоятельно скачать и поставить свежий APK. Нужна, чтобы
+         * обновлять планшет из веб-панели — без пульта и без локальной сети.
+         */
+        default void onSelfUpdate() {}
     }
 
     private final String mediaDir;

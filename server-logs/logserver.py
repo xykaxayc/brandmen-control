@@ -1088,7 +1088,7 @@ class H(BaseHTTPRequestHandler):
             if site == "unknown":
                 return self._send(400, "missing site")
             if cmd not in {"status", "launch", "stop", "restart", "wake", "sleep",
-                           "reboot", "unmanage", "volume", "brightness"}:
+                           "reboot", "unmanage", "volume", "brightness", "update"}:
                 return self._send(400, "invalid cmd")
             cid = enqueue_cmd(site, cmd, b.get("args") or {})
             print(f"[cmd] enqueue {site} <- {cmd} #{cid}", flush=True)

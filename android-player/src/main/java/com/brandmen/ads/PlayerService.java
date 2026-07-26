@@ -436,6 +436,57 @@ public class PlayerService extends Service implements MediaServer.ControlCallbac
     }
 
     /**
+     * Обновление по команде из веб-панели: планшет сам находит свежий релиз,
+     * качает APK и ставит его. На device owner установка идёт молча.
+     * Раньше единственными путями были пульт по локальной сети и кнопка
+     * в админ-панели на самом планшете — то есть выезд на точку.
+     */
+    private volatile boolean selfUpdateRunning = false;
+
+    @Override public void onSelfUpdate() {
+        if (selfUpdateRunning) {
+            android.util.Log.w("PlayerService", "selfUpdate: уже идёт");
+            return;
+        }
+        if (new DeploymentManager(this).isOperationActive()) {
+            android.util.Log.w("PlayerService", "selfUpdate отложен: идёт операция с контентом");
+            return;
+        }
+        selfUpdateRunning = true;
+        UpdateChecker.checkAsync(MediaServer.VERSION, new UpdateChecker.CheckCallback() {
+            @Override public void onUpdateAvailable(UpdateChecker.UpdateInfo info) {
+                android.util.Log.w("PlayerService", "selfUpdate: качаю " + info.version);
+                File dest = new File(getCacheDir(), "BrandmenAds-update.apk");
+                UpdateChecker.downloadAsync(info.downloadUrl, dest,
+                        new UpdateChecker.DownloadCallback() {
+                            @Override public void onProgress(int percent) {}
+                            @Override public void onDone(File apkFile) {
+                                selfUpdateRunning = false;
+                                android.util.Log.w("PlayerService",
+                                        "selfUpdate: ставлю " + info.version);
+                                mainHandler.post(() -> onInstallApk(apkFile));
+                            }
+                            @Override public void onError(String message) {
+                                selfUpdateRunning = false;
+                                android.util.Log.w("PlayerService",
+                                        "selfUpdate: скачивание не удалось — " + message);
+                            }
+                        });
+            }
+
+            @Override public void onUpToDate() {
+                selfUpdateRunning = false;
+                android.util.Log.w("PlayerService", "selfUpdate: уже последняя версия");
+            }
+
+            @Override public void onError(String message) {
+                selfUpdateRunning = false;
+                android.util.Log.w("PlayerService", "selfUpdate: проверка не удалась — " + message);
+            }
+        });
+    }
+
+    /**
      * Гасим экран и держим его погашенным. Раньше sleep только вызывал
      * lockNow(), не трогая желаемое состояние: сторож через 30 секунд видел
      * «показ включён, видео не играет», считал это аварией и включал экран
