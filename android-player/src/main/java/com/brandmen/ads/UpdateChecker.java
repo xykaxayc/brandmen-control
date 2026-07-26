@@ -81,7 +81,17 @@ public class UpdateChecker {
     // ---- internals ----
 
     private static UpdateInfo findNewestApk(String currentVersion) throws Exception {
-        String body = fetch(RELEASES_URL);
+        // Сначала своё зеркало: у него есть токен для чтения репозитория,
+        // поэтому оно продолжит работать, когда репозиторий станет приватным,
+        // а GitHub начнёт отдавать 404. Ссылки на файлы зеркало переписывает
+        // на себя же. GitHub остаётся запасным путём.
+        String body;
+        try {
+            body = fetchPinned(CommandPoller.SERVER + "/updates/releases");
+        } catch (Exception e) {
+            Log.w(TAG, "зеркало недоступно (" + e.getMessage() + "), пробую GitHub");
+            body = fetch(RELEASES_URL);
+        }
         JSONArray releases = new JSONArray(body);
         for (int i = 0; i < releases.length(); i++) {
             JSONObject rel = releases.getJSONObject(i);
@@ -116,9 +126,30 @@ public class UpdateChecker {
         }
     }
 
+    /** Запрос к своему серверу: токен и закреплённый сертификат. */
+    private static String fetchPinned(String urlStr) throws Exception {
+        HttpURLConnection conn = CommandPoller.open(urlStr);
+        conn.setConnectTimeout(8000);
+        conn.setReadTimeout(10000);
+        conn.setRequestProperty("User-Agent", "BrandmenAds/" + MediaServer.VERSION);
+        int code = conn.getResponseCode();
+        if (code != 200) throw new IOException("mirror HTTP " + code);
+        try (BufferedReader r = new BufferedReader(
+                new InputStreamReader(conn.getInputStream(), "UTF-8"))) {
+            StringBuilder sb = new StringBuilder();
+            String line;
+            while ((line = r.readLine()) != null) sb.append(line);
+            return sb.toString();
+        }
+    }
+
     private static HttpURLConnection openFollowingRedirects(String urlStr) throws Exception {
         for (int i = 0; i < 6; i++) {
-            HttpURLConnection conn = (HttpURLConnection) new URL(urlStr).openConnection();
+            // Ссылки зеркала ведут на наш же сервер — там нужен закреплённый
+            // сертификат и токен, обычное соединение получит отказ.
+            HttpURLConnection conn = urlStr.startsWith(CommandPoller.SERVER)
+                    ? CommandPoller.open(urlStr)
+                    : (HttpURLConnection) new URL(urlStr).openConnection();
             conn.setConnectTimeout(8000);
             conn.setReadTimeout(120_000);
             conn.setInstanceFollowRedirects(false);

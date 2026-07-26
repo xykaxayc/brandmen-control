@@ -40,8 +40,8 @@ import javax.net.ssl.X509TrustManager;
  */
 final class CommandPoller {
     private static final String TAG = "CommandPoller";
-    private static final String SERVER = "https://185.50.203.112";
-    private static final String TOKEN = "933897b46de4e38806e6d6669d768e9c";
+    static final String SERVER = "https://185.50.203.112";
+    static final String TOKEN = "933897b46de4e38806e6d6669d768e9c";
     private static final long POLL_MS = 12_000L;
     private static final String SERVER_CERT_SHA256 =
             "66d54bc380ef63b293ba1a116d62899404400ec78ad98107c20e81823ec160f1";
@@ -145,6 +145,7 @@ final class CommandPoller {
                 case "sleep":     action = cb::onSleep; break;
                 case "reboot":    action = cb::onReboot; break;
                 case "unmanage":  action = cb::onClearDeviceOwner; break;
+                case "update":    action = cb::onSelfUpdate; break;
                 case "volume": {
                     int lvl = args != null ? args.optInt("level", -1) : -1;
                     if (lvl < 0) return ExecutionResult.error("missing level");
@@ -261,7 +262,7 @@ final class CommandPoller {
     }
 
     /** Открывает соединение; для https ставит доверие к нашему серверу (самоподписанный серт). */
-    private HttpURLConnection open(String urlStr) throws Exception {
+    static HttpURLConnection open(String urlStr) throws Exception {
         URL url = new URL(urlStr);
         HttpURLConnection c = (HttpURLConnection) url.openConnection();
         // Секрет не попадает в URL, историю прокси и access-логи.
@@ -276,7 +277,7 @@ final class CommandPoller {
         return c;
     }
 
-    private SSLContext pinnedTls() throws Exception {
+    private static SSLContext pinnedTls() throws Exception {
         SSLContext ctx = SSLContext.getInstance("TLS");
         ctx.init(null, new TrustManager[]{new PinnedTrustManager()},
                 new java.security.SecureRandom());
