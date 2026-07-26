@@ -12,6 +12,15 @@ on:
       - 'android-player/**'
       - '.github/workflows/build-android.yml'
   workflow_dispatch:
+    inputs:
+      publish_release:
+        description: 'Опубликовать релиз (иначе только собрать артефакт)'
+        type: boolean
+        default: false
+
+concurrency:
+  group: brandmen-release
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -50,6 +59,11 @@ jobs:
         run: |
           sed -i 's/VERSION = "0\.0\.0"/VERSION = "${{ steps.ver.outputs.version }}"/' \
             src/main/java/com/brandmen/ads/MediaServer.java
+          # sed возвращает 0 и когда ничего не заменил. Без этой проверки APK
+          # молча уезжает с версией 0.0.0, и весь флот уходит в цикл обновлений.
+          grep -q 'VERSION = "${{ steps.ver.outputs.version }}"' \
+            src/main/java/com/brandmen/ads/MediaServer.java \
+            || { echo "::error::Подстановка версии в MediaServer.java не сработала"; exit 1; }
 
       - name: Compile resources
         working-directory: android-player
@@ -91,9 +105,11 @@ jobs:
       - name: Pack APK
         working-directory: android-player
         run: |
-          # versionCode должен только расти, даже если релизный tag восстановлен
-          # из бэкапа или создан повторно. Пользователь видит versionName ниже.
-          COUNT=$(git rev-list --count HEAD)
+          # versionCode должен только расти: Android запрещает установку APK
+          # с меньшим кодом, а вылечить это можно только удалением приложения
+          # на точке. git rev-list --count таким свойством не обладает (падает
+          # при rebase/squash и на отставшей ветке), поэтому берём номер тега.
+          COUNT=$(echo "${{ steps.ver.outputs.version }}" | cut -d. -f2)
           # aapt2 link компилирует манифест в бинарный формат и создаёт базовый APK
           $ANDROID_SDK_ROOT/build-tools/34.0.0/aapt2 link \
             -o brandmen-base.apk \
@@ -132,7 +148,9 @@ jobs:
           retention-days: 30
 
       - name: Create or update release
-        if: github.event_name != 'pull_request'
+        if: >-
+          (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+          (github.event_name == 'workflow_dispatch' && inputs.publish_release)
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.ver.outputs.tag }}
