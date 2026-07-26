@@ -65,6 +65,11 @@ class BrandmenServer {
   late HttpServer _server;
   Registration? _registration;
 
+  /// Когда планшет последний раз отмечался и с какого адреса — чтобы отличать
+  /// минутную перекличку от настоящего возвращения после молчания.
+  final Map<String, DateTime> _lastSeen = {};
+  final Map<String, String> _lastIp = {};
+
   final _registrationController =
       StreamController<DeviceRegistration>.broadcast();
   Stream<DeviceRegistration> get onDeviceRegistered =>
@@ -178,9 +183,32 @@ class BrandmenServer {
               headers: {'content-type': 'application/json'});
         }
         if (clientIp.isNotEmpty) {
-          AppLogger.log(knownDevice || legacyReconnect
-              ? 'Планшет восстановил связь: $clientIp ($deviceName)'
-              : 'Устройство зарегистрировалось: $clientIp ($deviceName)');
+          // Планшет перерегистрируется раз в минуту — это перекличка, а не
+          // авария. Раньше каждая писала «восстановил связь»: восемь планшетов
+          // давали ~11 тысяч строк в сутки, и настоящие отказы в них тонули.
+          // Пишем только то, что действительно событие: новое устройство,
+          // смена адреса или возвращение после долгого молчания.
+          final known = knownDevice || legacyReconnect;
+          final key = (deviceId?.isNotEmpty == true) ? deviceId! : clientIp;
+          final previous = _lastSeen[key];
+          final previousIp = _lastIp[key];
+          final now = DateTime.now();
+          final wasAway = previous == null ||
+              now.difference(previous) >= const Duration(minutes: 5);
+          final movedIp = previousIp != null && previousIp != clientIp;
+          _lastSeen[key] = now;
+          _lastIp[key] = clientIp;
+
+          if (!known) {
+            AppLogger.log('Устройство зарегистрировалось: $clientIp ($deviceName)');
+          } else if (movedIp) {
+            AppLogger.log('Планшет сменил адрес: $previousIp → $clientIp ($deviceName)');
+          } else if (wasAway) {
+            final away = previous == null
+                ? ''
+                : ' (молчал ${now.difference(previous).inMinutes} мин)';
+            AppLogger.log('Планшет вернулся на связь: $clientIp ($deviceName)$away');
+          }
           _registrationController.add(DeviceRegistration(
             ip: clientIp,
             name: deviceName,
