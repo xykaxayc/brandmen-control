@@ -715,8 +715,13 @@ class _MainScreenState extends State<MainScreen> {
       final now = DateTime.now();
       final currentTime = DateFormat('HH:mm').format(now);
 
-      if (currentTime == offTime && _lastTriggerMinute != currentTime) {
-        _lastTriggerMinute = currentTime;
+      // Метка должна включать дату. Раньше здесь хранилось только "22:00",
+      // поэтому на следующий вечер строка совпадала с сохранённой и условие
+      // больше никогда не выполнялось: автовыключение срабатывало ровно один
+      // раз за запуск пульта, а ПК на точке живёт неделями без перезагрузки.
+      final stamp = '${DateFormat('yyyy-MM-dd').format(now)} $currentTime';
+      if (currentTime == offTime && _lastTriggerMinute != stamp) {
+        _lastTriggerMinute = stamp;
         AppLogger.log(
             "АВТОМАТИЧЕСКОЕ РАСПИСАНИЕ: Пора выключать экраны ($offTime)");
         final saved = await DeviceStorage.load();
@@ -1243,9 +1248,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
           continue;
         }
 
+        // Старые плееры (до v0.90) не возвращают playbackEnabled — приходит
+        // null. Раньше это никогда не совпадало с ожидаемым, и сверщик «чинил»
+        // планшет, который и так работает: 25.07 планшет .145 получил 2952
+        // команды launch за сутки, перезапуская рекламу с первого ролика.
+        // Когда флаг неизвестен, судим по наблюдаемому факту — играет или нет.
+        final enabled = status?.playbackEnabled;
+        final playing = status?.playerPlaying == true;
         final matches = desired
-            ? status?.playbackEnabled == true && status?.playerPlaying == true
-            : status?.playbackEnabled == false && status?.playerPlaying != true;
+            ? (enabled ?? true) && playing
+            : !(enabled ?? false) && !playing;
         if (matches) {
           _playbackRetryAfter.remove(device.ip);
           continue;
@@ -1255,7 +1267,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
         // playing=false бывает несколько секунд между роликами. Если desired
         // уже true, перепроверяем напрямую и не перезапускаем живой показ.
-        if (desired && status?.playbackEnabled == true) {
+        if (desired && (enabled ?? true)) {
           await Future.delayed(const Duration(seconds: 8));
           if (!mounted || _busy) return;
           final now = await DeviceHttp(device.ip).controlNow();
@@ -1291,12 +1303,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 : const DeviceOp.error(
                     'Не удалось восстановить автоматически'));
         _clearOpLater(device.ip, after: const Duration(seconds: 8));
-        if (ok) {
-          _playbackRetryAfter.remove(device.ip);
-        } else {
-          _playbackRetryAfter[device.ip] =
-              DateTime.now().add(const Duration(minutes: 3));
-        }
+        // Даже успех держит паузу: раньше удачное «исправление» снимало
+        // тормоз целиком, и следующий же проход через минуту чинил снова —
+        // успех гарантировал немедленный повтор. Полминуты хватает, чтобы
+        // планшет успел отчитаться о новом состоянии.
+        _playbackRetryAfter[device.ip] = DateTime.now().add(
+            ok ? const Duration(seconds: 30) : const Duration(minutes: 3));
       }
     } finally {
       _reconcilingPlayback = false;
@@ -2336,8 +2348,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
     if (confirmed == true) {
       AppLogger.log("МАССОВОЕ ВЫКЛЮЧЕНИЕ: Завершение смены");
-      await adb.bulkDisablePlayback(saved.map((d) => d.ip));
-      _refresh();
+      // Через _setPlaybackAll, а не голым bulkDisablePlayback: намерение должно
+      // быть записано ДО команды, иначе _reconcilePlaybackState через пару
+      // секунд увидит «должно играть, а не играет» и включит рекламу обратно.
+      // Именно это происходило 25.07 — кнопку жали четыре раза подряд.
+      await _guard(() => _setPlaybackAll(false));
     }
   }
 

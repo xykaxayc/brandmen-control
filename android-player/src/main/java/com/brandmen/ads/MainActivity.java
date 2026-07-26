@@ -714,15 +714,24 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
     }
 
     /** Десять минут для Wi-Fi и обслуживания, затем возвращаем ночное состояние. */
+    private static final long MAINTENANCE_MS = 10 * 60_000L;
+
     private void enterMaintenanceMode() {
         maintenanceMode = true;
         applyPlaybackWindowState(true);
         onWake();
+        // Флаг maintenanceMode живёт внутри Activity, а сторож работает
+        // в сервисе и о нём не знал: администратор уходил в системные
+        // настройки, и через 30 секунд плеер вылезал поверх них. Ставим
+        // паузу там, где её видно обеим сторонам. onWake() выше снимает
+        // паузу, поэтому порядок важен — ставим её после.
+        Kiosk.pauseGuard(this, MAINTENANCE_MS);
         maintenanceHandler.removeCallbacksAndMessages(null);
         maintenanceHandler.postDelayed(() -> {
             maintenanceMode = false;
+            Kiosk.resumeGuard(this);
             if (!Kiosk.isPlaybackEnabled(this)) onStopPlayback();
-        }, 10 * 60_000L);
+        }, MAINTENANCE_MS);
         Toast.makeText(this, "Режим обслуживания: 10 минут", Toast.LENGTH_LONG).show();
     }
 
@@ -1424,6 +1433,7 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
     // ---- MediaServer.ControlCallback ----
 
     @Override public void onWake() {
+        Kiosk.resumeGuard(this);
         android.os.PowerManager pm = (android.os.PowerManager) getSystemService(POWER_SERVICE);
         if (wakeLock != null && wakeLock.isHeld()) {
             try { wakeLock.release(); } catch (Exception ignored) {}
@@ -1442,6 +1452,9 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
     }
 
     @Override public void onSleep() {
+        // Показ снимаем в PlayerService.onSleep и в onStopPlayback — здесь
+        // только гашение. Сюда приходят и через screenOffRunnable, когда
+        // желаемое состояние уже false.
         if (dpm != null && dpm.isAdminActive(adminComponent)) {
             dpm.lockNow();
         } else {
@@ -1468,6 +1481,7 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
 
     @Override public void onLaunch() {
         Kiosk.setPlaybackEnabled(this, true);
+        Kiosk.resumeGuard(this);
         screenOffHandler.removeCallbacks(screenOffRunnable);
         applyPlaybackWindowState(true);
         onWake();

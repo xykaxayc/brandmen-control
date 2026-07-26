@@ -18,6 +18,20 @@ on:
       - 'pubspec.lock'
       - '.github/workflows/build-windows.yml'
   workflow_dispatch:
+    inputs:
+      publish_release:
+        description: 'Опубликовать релиз (иначе только собрать артефакт)'
+        type: boolean
+        default: false
+
+concurrency:
+  # Очередь на каждую сборку отдельно. Общая группа на все три не годится:
+  # GitHub держит в группе только один ожидающий запуск и отменяет остальные,
+  # поэтому один и тот же push терял сборку Windows или macOS целиком.
+  # Здесь важно другое — не дать одной и той же сборке идти дважды
+  # параллельно: версия считается в начале джоба, а тег создаётся в конце.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -49,6 +63,14 @@ jobs:
 
       - name: Get dependencies
         run: flutter pub get
+
+      # Шлюз качества перед выпуском. Пять тестов уже были написаны, но не
+      # запускались ни разу — теперь неудача останавливает релиз.
+      - name: Analyze
+        run: flutter analyze --no-fatal-infos
+
+      - name: Test
+        run: flutter test
 
       - name: Build Windows release
         run: flutter build windows --release --dart-define=APP_VERSION=${{ steps.ver.outputs.version }}
@@ -131,7 +153,9 @@ jobs:
           retention-days: 30
 
       - name: Create or update release
-        if: github.event_name != 'pull_request'
+        if: >-
+          (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+          (github.event_name == 'workflow_dispatch' && inputs.publish_release)
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.ver.outputs.tag }}

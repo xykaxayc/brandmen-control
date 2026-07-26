@@ -159,6 +159,12 @@ public class PlayerService extends Service implements MediaServer.ControlCallbac
         if (!Kiosk.isPlaybackEnabled(this)) {
             return;
         }
+        // Экран погашен командой оператора или идёт обслуживание — не мешаем.
+        // Без этой проверки сторож включал экран через 30 секунд после любой
+        // блокировки и вытаскивал плеер поверх системных настроек.
+        if (Kiosk.isGuardPaused(this)) {
+            return;
+        }
         MainActivity activity = MainActivity.peek();
         if (activity != null && activity.isPlaying()) {
             return;
@@ -396,15 +402,17 @@ public class PlayerService extends Service implements MediaServer.ControlCallbac
         }
     }
 
-    @Override public void onWake() { sendCmd("wake"); }
+    @Override public void onWake() {
+        Kiosk.resumeGuard(this);
+        sendCmd("wake");
+    }
     @Override public void onLaunch() {
         Kiosk.setPlaybackEnabled(this, true);
+        Kiosk.resumeGuard(this);
         sendCmd("launch");
     }
+    /** stop и sleep делают одно и то же: снимают показ и гасят экран. */
     @Override public void onStopPlayback() {
-        Kiosk.setPlaybackEnabled(this, false);
-        MainActivity activity = MainActivity.peek();
-        if (activity != null) activity.onStopPlayback();
         onSleep();
     }
     @Override public void onRestartPlayback() { sendCmd("restart"); }
@@ -427,7 +435,25 @@ public class PlayerService extends Service implements MediaServer.ControlCallbac
         android.util.Log.w("PlayerService", "reboot: " + ok);
     }
 
+    /**
+     * Гасим экран и держим его погашенным. Раньше sleep только вызывал
+     * lockNow(), не трогая желаемое состояние: сторож через 30 секунд видел
+     * «показ включён, видео не играет», считал это аварией и включал экран
+     * обратно. Команда «выключить экран» не могла сработать в принципе.
+     *
+     * Опускаем показ тем же способом, что и stop, — он единственный, который
+     * держится: переживает перезагрузку, выгрузку Activity и убийство
+     * процесса, потому что лежит в device-protected storage. Отдельная
+     * «пауза сторожа» для этого не нужна и была бы лишней сущностью.
+     *
+     * Порядок важен: сначала снимаем показ, потом гасим. lockNow работает
+     * только при активном админе устройства, а часть флота не провижинена —
+     * там экран не погаснет, но реклама всё равно остановится.
+     */
     @Override public void onSleep() {
+        Kiosk.setPlaybackEnabled(this, false);
+        MainActivity activity = MainActivity.peek();
+        if (activity != null) activity.onStopPlayback();
         try { if (dpm != null && dpm.isAdminActive(adminComponent)) dpm.lockNow(); }
         catch (Exception e) { android.util.Log.w("PlayerService", "sleep: " + e.getMessage()); }
     }

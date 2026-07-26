@@ -76,9 +76,46 @@ final class Kiosk {
 
     static void setPlaybackEnabled(Context ctx, boolean enabled) {
         playbackPrefs(ctx).edit().putBoolean(PLAYBACK_ENABLED, enabled).commit();
+        // Включили показ — значит экран снова нужен. Держим это здесь, а не
+        // в вызывающих местах: показ включается из девяти точек, включая
+        // кнопки ⏮ ▶ ⏭ на самом планшете, и любую из них легко забыть.
+        if (enabled) resumeGuard(ctx);
         // Оставляем совместимую копию для старых версий при откате APK.
         ctx.getApplicationContext().getSharedPreferences(PLAYER_PREFS, Context.MODE_PRIVATE)
                 .edit().putBoolean(PLAYBACK_ENABLED, enabled).apply();
+    }
+
+    /**
+     * Пауза сторожа на время обслуживания. Пока она держится,
+     * ensurePlayerRunning не поднимает плеер и не будит экран — иначе
+     * администратор, ушедший в системные настройки подключать Wi-Fi,
+     * через 30 секунд получал плеер поверх них.
+     *
+     * Живёт ТОЛЬКО в памяти процесса и намеренно не сохраняется на диск.
+     * Обслуживание — это живой сеанс работы человека за планшетом: если
+     * процесс умер или планшет перезагрузился, сеанс кончился, и правильное
+     * поведение — вернуться к обычной работе. Персистентная версия этого
+     * счётчика была бы миной: elapsedRealtime обнуляется при перезагрузке,
+     * а сохранённая метка — нет, и пауза продлевалась бы на весь прошлый
+     * аптайм (ср. NetworkWatchdog.checkAndHeal, где сброс уже учтён).
+     *
+     * Ночное выключение экрана этим механизмом НЕ пользуется: команда sleep
+     * гасит показ через setPlaybackEnabled(false), то есть тем же надёжным
+     * способом, что и stop, и переживает всё.
+     */
+    private static volatile long sMaintenanceUntilRealtime = 0L;
+
+    static void pauseGuard(Context ctx, long durationMs) {
+        sMaintenanceUntilRealtime = SystemClock.elapsedRealtime() + durationMs;
+    }
+
+    static void resumeGuard(Context ctx) {
+        sMaintenanceUntilRealtime = 0L;
+    }
+
+    static boolean isGuardPaused(Context ctx) {
+        long until = sMaintenanceUntilRealtime;
+        return until != 0L && SystemClock.elapsedRealtime() < until;
     }
 
     static ComponentName admin(Context ctx) {

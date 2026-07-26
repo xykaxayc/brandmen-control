@@ -12,6 +12,20 @@ on:
       - 'android-player/**'
       - '.github/workflows/build-android.yml'
   workflow_dispatch:
+    inputs:
+      publish_release:
+        description: 'Опубликовать релиз (иначе только собрать артефакт)'
+        type: boolean
+        default: false
+
+concurrency:
+  # Очередь на каждую сборку отдельно. Общая группа на все три не годится:
+  # GitHub держит в группе только один ожидающий запуск и отменяет остальные,
+  # поэтому один и тот же push терял сборку Windows или macOS целиком.
+  # Здесь важно другое — не дать одной и той же сборке идти дважды
+  # параллельно: версия считается в начале джоба, а тег создаётся в конце.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -33,6 +47,18 @@ jobs:
           NEXT=$(( ${MAX:-0} + 1 ))
           echo "version=0.$NEXT.0" >> $GITHUB_OUTPUT
           echo "tag=v0.$NEXT.0" >> $GITHUB_OUTPUT
+          # versionCode со смещением. Смещение обязательно: планшеты на точке
+          # несут код 146 (v0.115.0 собран по git rev-list --count), а номер
+          # тега сейчас 116 — без смещения обновление стало бы даунгрейдом,
+          # который Android не ставит вовсе. Вылечить это по воздуху нельзя:
+          # приложение работает как владелец устройства и adb uninstall его
+          # не снимает, то есть выезд на каждую точку.
+          CODE=$(( 1000 + NEXT ))
+          if [ "$CODE" -le 146 ]; then
+            echo "::error::versionCode $CODE не больше уже выпущенного 146 — установка будет отклонена"
+            exit 1
+          fi
+          echo "code=$CODE" >> $GITHUB_OUTPUT
 
       - name: Setup JDK 17
         uses: actions/setup-java@v4
@@ -50,6 +76,11 @@ jobs:
         run: |
           sed -i 's/VERSION = "0\.0\.0"/VERSION = "${{ steps.ver.outputs.version }}"/' \
             src/main/java/com/brandmen/ads/MediaServer.java
+          # sed возвращает 0 и когда ничего не заменил. Без этой проверки APK
+          # молча уезжает с версией 0.0.0, и весь флот уходит в цикл обновлений.
+          grep -q 'VERSION = "${{ steps.ver.outputs.version }}"' \
+            src/main/java/com/brandmen/ads/MediaServer.java \
+            || { echo "::error::Подстановка версии в MediaServer.java не сработала"; exit 1; }
 
       - name: Compile resources
         working-directory: android-player
@@ -91,9 +122,9 @@ jobs:
       - name: Pack APK
         working-directory: android-player
         run: |
-          # versionCode должен только расти, даже если релизный tag восстановлен
-          # из бэкапа или создан повторно. Пользователь видит versionName ниже.
-          COUNT=$(git rev-list --count HEAD)
+          # versionCode считается один раз в шаге ver, вместе с проверкой,
+          # что он больше уже выпущенного.
+          COUNT=${{ steps.ver.outputs.code }}
           # aapt2 link компилирует манифест в бинарный формат и создаёт базовый APK
           $ANDROID_SDK_ROOT/build-tools/34.0.0/aapt2 link \
             -o brandmen-base.apk \
@@ -132,7 +163,9 @@ jobs:
           retention-days: 30
 
       - name: Create or update release
-        if: github.event_name != 'pull_request'
+        if: >-
+          (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+          (github.event_name == 'workflow_dispatch' && inputs.publish_release)
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.ver.outputs.tag }}
