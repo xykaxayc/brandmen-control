@@ -436,6 +436,20 @@ public class PlayerService extends Service implements MediaServer.ControlCallbac
     }
 
     /**
+     * «Найти планшет». Экран будим сами — метку показывает Activity, а её
+     * может не быть на переднем плане; поднимаем её тем же путём, что и плеер.
+     */
+    @Override public void onIdentify() {
+        Kiosk.wakeScreen(this);
+        MainActivity activity = MainActivity.peek();
+        if (activity != null) {
+            mainHandler.post(activity::onIdentify);
+        } else {
+            sendCmd("identify");
+        }
+    }
+
+    /**
      * Обновление по команде из веб-панели: планшет сам находит свежий релиз,
      * качает APK и ставит его. На device owner установка идёт молча.
      * Раньше единственными путями были пульт по локальной сети и кнопка

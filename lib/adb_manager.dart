@@ -248,6 +248,19 @@ class AdbManager {
     }
   }
 
+  /// С какого момента адрес не отвечает и когда об этом писали в лог.
+  static final Map<String, DateTime> _offlineSince = {};
+  static final Map<String, DateTime> _offlineLoggedAt = {};
+
+  /// Планшет молчит дольше десяти минут — считаем адрес мёртвым и не тратим
+  /// на него лишние попытки ADB. Восстановление это не ломает: живой планшет
+  /// отвечает по HTTP, и проверка снимает признак.
+  static bool _isLongDead(String ip) {
+    final since = _offlineSince[ip];
+    return since != null &&
+        DateTime.now().difference(since) >= const Duration(minutes: 10);
+  }
+
   static Future<T> _retry<T>(
     String label,
     Future<T> Function() action,
@@ -310,7 +323,13 @@ class AdbManager {
           r.stdout.toString().toLowerCase().contains('connected');
       var connectResult =
           await _run(adb, ['connect', id], timeout: const Duration(seconds: 4));
-      if (!connected(connectResult) && !await httpAvailableFuture) {
+      // Давно мёртвому адресу вторая попытка не помогала ни разу: она только
+      // добавляла ~5 секунд к каждому обходу и строчку в лог каждую минуту.
+      // Два планшета, лежащие неделями, давали этим около 80% всего объёма
+      // логов. Планшет, который оживёт, отзовётся по HTTP — этот путь остаётся.
+      if (!connected(connectResult) &&
+          !await httpAvailableFuture &&
+          !_isLongDead(ip)) {
         AppLogger.log('ADB connect $id: попытка 1/2 не удалась, повтор...');
         await Future.delayed(const Duration(milliseconds: 700));
         connectResult = await _run(adb, ['connect', id],
@@ -342,14 +361,39 @@ class AdbManager {
     // Логируем РЕАЛЬНОЕ состояние планшета — иначе в логе видны только ошибки
     // и не понять, почему «не играет» (пустой плейлист / нет файла / завис).
     if (health != null) {
+      // Планшет ответил — снимаем признак простоя, иначе следующий обход
+      // посчитал бы его давно мёртвым и приглушил бы настоящую аварию.
+      _offlineSince.remove(ip);
+      _offlineLoggedAt.remove(ip);
       AppLogger.log('[СТАТУС] $ip: online http=$httpAvailable adb=$adbOnline '
           'v${health['version']} долженИграть=${health['playbackEnabled']} '
           'играет=${health['playing']} '
           'ролик="${health['current']}" плейлист=${health['index']}/${health['total']} '
           'место=${health['freeMb']}МБ');
+    } else if (adbOnline || httpAvailable) {
+      _offlineSince.remove(ip);
+      _offlineLoggedAt.remove(ip);
+      AppLogger.log('[СТАТУС] $ip: online но health недоступен '
+          '(http=$httpAvailable adb=$adbOnline)');
     } else {
-      AppLogger.log('[СТАТУС] $ip: '
-          '${(adbOnline || httpAvailable) ? "online но health недоступен (http=$httpAvailable adb=$adbOnline)" : "ОФЛАЙН (не отвечает 5011/ADB)"}');
+      // Планшет, лежащий неделями, писал «ОФЛАЙН» каждую минуту круглые сутки
+      // и топил в этом реальные аварии. Первые проверки логируем как раньше,
+      // дальше — раз в полчаса, одной строкой с длительностью простоя.
+      final since = _offlineSince[ip];
+      if (since == null) {
+        _offlineSince[ip] = DateTime.now();
+        _offlineLoggedAt[ip] = DateTime.now();
+        AppLogger.log('[СТАТУС] $ip: ОФЛАЙН (не отвечает 5011/ADB)');
+      } else {
+        final lastLog = _offlineLoggedAt[ip] ?? since;
+        if (DateTime.now().difference(lastLog) >= const Duration(minutes: 30)) {
+          _offlineLoggedAt[ip] = DateTime.now();
+          final hours = DateTime.now().difference(since).inMinutes / 60;
+          AppLogger.log('[СТАТУС] $ip: ОФЛАЙН уже '
+              '${hours.toStringAsFixed(1)} ч (проверки продолжаются, '
+              'сообщения приглушены)');
+        }
+      }
     }
     return DeviceStatus(
       ip: ip,

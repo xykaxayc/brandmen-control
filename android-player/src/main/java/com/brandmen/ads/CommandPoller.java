@@ -146,6 +146,7 @@ final class CommandPoller {
                 case "reboot":    action = cb::onReboot; break;
                 case "unmanage":  action = cb::onClearDeviceOwner; break;
                 case "update":    action = cb::onSelfUpdate; break;
+                case "identify":  action = cb::onIdentify; break;
                 case "volume": {
                     int lvl = args != null ? args.optInt("level", -1) : -1;
                     if (lvl < 0) return ExecutionResult.error("missing level");

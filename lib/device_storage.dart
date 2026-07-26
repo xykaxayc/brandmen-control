@@ -9,6 +9,10 @@ class SavedDevice {
   String? desiredDeploymentId;
   bool? desiredPlaybackEnabled;
   String? apiToken;
+  /// Номер последнего применённого намерения из веб-панели.
+  /// Хранится, чтобы решение оператора применилось один раз и не
+  /// перебивало более поздние изменения, сделанные в самом пульте.
+  int? cloudDesiredSeq;
 
   SavedDevice({
     required this.ip,
@@ -17,6 +21,7 @@ class SavedDevice {
     this.desiredDeploymentId,
     this.desiredPlaybackEnabled,
     this.apiToken,
+    this.cloudDesiredSeq,
   });
 
   Map<String, dynamic> toJson() => {
@@ -28,6 +33,7 @@ class SavedDevice {
         if (desiredPlaybackEnabled != null)
           'desired_playback_enabled': desiredPlaybackEnabled,
         if (apiToken != null) 'api_token': apiToken,
+        if (cloudDesiredSeq != null) 'cloud_desired_seq': cloudDesiredSeq,
       };
 
   factory SavedDevice.fromJson(Map<String, dynamic> j) => SavedDevice(
@@ -37,6 +43,7 @@ class SavedDevice {
         desiredDeploymentId: j['desired_deployment_id'] as String?,
         desiredPlaybackEnabled: j['desired_playback_enabled'] as bool?,
         apiToken: j['api_token'] as String?,
+        cloudDesiredSeq: (j['cloud_desired_seq'] as num?)?.toInt(),
       );
 }
 
@@ -163,6 +170,21 @@ class DeviceStorage {
       apiToken: apiToken,
     ));
     await save(list);
+  }
+
+  /// Отмечает, что решение оператора из веб-панели уже применено.
+  static Future<void> setCloudDesiredSeq(String deviceId, int seq) async {
+    if (deviceId.isEmpty) return;
+    final list = await load();
+    var changed = false;
+    for (final device in list) {
+      if (device.deviceId != deviceId) continue;
+      if (device.cloudDesiredSeq != seq) {
+        device.cloudDesiredSeq = seq;
+        changed = true;
+      }
+    }
+    if (changed) await save(list);
   }
 
   static Future<void> updateIdentity(

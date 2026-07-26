@@ -401,6 +401,7 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
             case "stop": onStopPlayback(); break;
             case "content": onContentChanged(); break;
             case "restart": onRestartPlayback(); break;
+            case "identify": onIdentify(); break;
         }
     }
 
@@ -1477,6 +1478,61 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
         WindowManager.LayoutParams lp = getWindow().getAttributes();
         lp.screenBrightness = Math.max(0.01f, Math.min(level / 255.0f, 1.0f));
         getWindow().setAttributes(lp);
+    }
+
+    /** Сколько держать метку «это я» на экране. */
+    private static final long IDENTIFY_MS = 30_000L;
+    private final Handler identifyHandler = new Handler(Looper.getMainLooper());
+    private TextView identifyView;
+
+    /**
+     * «Найти планшет»: закрывает экран крупной плашкой с адресом и моделью
+     * и подаёт короткий сигнал. Планшеты в зале одинаковые, и понять, который
+     * из них висит у окна, по списку в панели невозможно.
+     */
+    @Override public void onIdentify() {
+        onWake();
+        if (identifyView == null) {
+            identifyView = new TextView(this);
+            identifyView.setGravity(Gravity.CENTER);
+            identifyView.setTextColor(Color.WHITE);
+            identifyView.setTextSize(52);
+            identifyView.setTypeface(null, android.graphics.Typeface.BOLD);
+            identifyView.setBackgroundColor(Color.parseColor("#CC1E88E5"));
+            rootLayout.addView(identifyView,
+                    new FrameLayout.LayoutParams(-1, -1));
+        }
+        String ip = localIpForIdentify();
+        identifyView.setText("ЭТОТ ПЛАНШЕТ\n\n" + (ip.isEmpty() ? "адрес неизвестен" : ip)
+                + "\n\n" + android.os.Build.MODEL);
+        identifyView.setVisibility(View.VISIBLE);
+        identifyView.bringToFront();
+        // Сначала снимаем таймеры прошлого поиска, потом ставим новые — иначе
+        // очистка отменяла бы освобождение звукового генератора и он утекал.
+        identifyHandler.removeCallbacksAndMessages(null);
+        try {
+            android.media.ToneGenerator tone = new android.media.ToneGenerator(
+                    android.media.AudioManager.STREAM_MUSIC, 90);
+            tone.startTone(android.media.ToneGenerator.TONE_PROP_BEEP2, 900);
+            identifyHandler.postDelayed(tone::release, 2000);
+        } catch (Exception ignored) {}
+        identifyHandler.postDelayed(() -> {
+            if (identifyView != null) identifyView.setVisibility(View.GONE);
+        }, IDENTIFY_MS);
+    }
+
+    private String localIpForIdentify() {
+        try {
+            android.net.wifi.WifiManager wifi = (android.net.wifi.WifiManager)
+                    getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+            if (wifi == null) return "";
+            int ip = wifi.getConnectionInfo().getIpAddress();
+            if (ip == 0) return "";
+            return (ip & 0xff) + "." + ((ip >> 8) & 0xff) + "."
+                    + ((ip >> 16) & 0xff) + "." + ((ip >> 24) & 0xff);
+        } catch (Exception e) {
+            return "";
+        }
     }
 
     @Override public void onLaunch() {

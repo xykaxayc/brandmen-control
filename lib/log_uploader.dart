@@ -44,7 +44,20 @@ class CloudTablet {
   final String ip;
   final double? ageMinutes;
 
-  CloudTablet({required this.deviceId, required this.ip, this.ageMinutes});
+  /// Намерение показа, выставленное из веб-панели, и его номер.
+  /// Номер нужен, чтобы применить каждое решение оператора ровно один раз:
+  /// иначе пульт либо игнорировал бы веб, либо вечно перебивал бы собственные
+  /// изменения устаревшим значением с сервера.
+  final bool? desiredPlayback;
+  final int? desiredSeq;
+
+  CloudTablet({
+    required this.deviceId,
+    required this.ip,
+    this.ageMinutes,
+    this.desiredPlayback,
+    this.desiredSeq,
+  });
 
   /// Отчёт свежий — адресу можно верить. Номинально планшет пишет раз
   /// в 12 секунд, но на живом флоте интервалы плавают до нескольких минут
@@ -99,6 +112,9 @@ class LogUploader {
           deviceId: site,
           ip: ip,
           ageMinutes: (entry['age_min'] as num?)?.toDouble(),
+          desiredPlayback:
+              meta is Map ? meta['desired_playback'] as bool? : null,
+          desiredSeq: meta is Map ? (meta['desired_seq'] as num?)?.toInt() : null,
         ));
       }
       return out;
