@@ -376,11 +376,39 @@ ISSUE_PATTERN = re.compile(
     re.IGNORECASE)
 
 
+SILENT_TABLET_MINUTES = 30
+
+
+def silent_tablets():
+    """Планшеты, переставшие отчитываться в облако.
+
+    Планшет пишет сюда раз в 12 секунд независимо от того, идёт показ или нет,
+    — молчание означает, что на нём умерло приложение. Раньше это было видно
+    только тому, кто залезет на сервер: планшет .159 молчал полтора месяца,
+    и никто не знал. Теперь это первое, что показывает панель.
+    """
+    out = []
+    for entry in list_cmd_sites():
+        age = entry.get("age_min")
+        if age is None or age <= SILENT_TABLET_MINUTES:
+            continue
+        meta = entry.get("meta", {})
+        where = meta.get("name") or meta.get("ip") or entry.get("site", "?")
+        since = f"{age / 60:.1f} ч" if age >= 60 else f"{age:.0f} мин"
+        out.append({
+            "site": "планшеты",
+            "message": f"{where}: не выходит на связь {since} — "
+                       f"приложение не работает, командой не поднять",
+            "count": 1,
+        })
+    return out
+
+
 def recent_issues(limit=20):
     """Короткий дедуплицированный список проблем вместо потока служебных логов."""
     found = {}
     if not os.path.isdir(DIR):
-        return []
+        return silent_tablets()
     for site in os.listdir(DIR):
         path = os.path.join(DIR, site, "_live.log")
         if not os.path.isfile(path):
@@ -406,7 +434,8 @@ def recent_issues(limit=20):
                                   "count": 1}
         except OSError:
             continue
-    return list(found.values())[-limit:][::-1]
+    # Молчащие планшеты — впереди всего: это отказ, а не строчка в логе.
+    return silent_tablets() + list(found.values())[-limit:][::-1]
 
 
 def dashboard_data():
@@ -1179,6 +1208,17 @@ class H(BaseHTTPRequestHandler):
             if not session:
                 return self._send(401, "unauthorized")
             return self._send(200, json.dumps(dashboard_data(), ensure_ascii=False),
+                              "application/json; charset=utf-8")
+        if u.path == "/fleet":
+            # Машиночитаемый список планшетов для пульта. Пульт ищет планшеты
+            # по IP из своего списка, а планшет сообщает сюда свой адрес каждые
+            # 12 секунд — значит после смены адреса роутером связь чинится
+            # отсюда, без выезда. Токен, а не браузерная сессия: ходит
+            # программа, а не человек.
+            if not api_authed(self):
+                return self._send(401, "unauthorized")
+            return self._send(200,
+                              json.dumps(list_cmd_sites(), ensure_ascii=False),
                               "application/json; charset=utf-8")
         if u.path in ("/panel", "/list", "/view", "/dash",
                       "/live", "/ui", "/files", "/cmds", "/commands"):

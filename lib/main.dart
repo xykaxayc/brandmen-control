@@ -1187,8 +1187,46 @@ class _DashboardScreenState extends State<DashboardScreen> {
         .map((d) => _captureOne(d.ip)));
   }
 
+  /// Сверяет адреса планшетов с облаком и чинит устаревшие.
+  ///
+  /// Планшет сообщает серверу свой адрес каждые 12 секунд. Пульт же ищет его
+  /// по IP из своего списка, поэтому после перезагрузки роутера планшет мог
+  /// «пропасть» с дашборда, продолжая при этом работать. Здесь связь
+  /// восстанавливается сама — по идентификатору устройства, который у пульта
+  /// и у облака один и тот же.
+  Future<void> _healAddressesFromCloud() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final url = effectiveLogServerUrl(
+          prefs.getString(_SettingsScreenState.kLogServerUrlKey));
+      final token =
+          (prefs.getString(_SettingsScreenState.kLogServerTokenKey) ?? '')
+              .trim();
+      final fleet = await LogUploader.fetchFleet(
+        baseUrl: url,
+        token: token.isEmpty ? kDefaultLogServerToken : token,
+      );
+      if (fleet.isEmpty) return;
+      final byId = {for (final t in fleet) t.deviceId: t};
+      for (final device in await DeviceStorage.load()) {
+        final id = device.deviceId;
+        if (id == null || id.isEmpty) continue;
+        final cloud = byId[id];
+        if (cloud == null || !cloud.isFresh || cloud.ip == device.ip) continue;
+        AppLogger.log('[ОБЛАКО] ${device.name}: адрес сменился '
+            '${device.ip} → ${cloud.ip} (планшет отчитался '
+            '${cloud.ageMinutes!.toStringAsFixed(1)} мин назад) — подхватываю');
+        await DeviceStorage.add(cloud.ip, deviceId: id);
+      }
+    } catch (e) {
+      AppLogger.log('[ОБЛАКО] сверка адресов не удалась: $e');
+    }
+  }
+
   Future<void> _refresh() async {
     if (mounted) setState(() => _isLoading = true);
+    // До опроса: если планшет сменил адрес, дальше опрашивать старый бесполезно.
+    await _healAddressesFromCloud();
     final list = await DeviceStorage.load();
     for (final device in list) {
       DeviceHttp.registerToken(device.ip, device.apiToken);
