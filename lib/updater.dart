@@ -239,10 +239,12 @@ class AppUpdater {
     try {
       return await _fetchReleasesAt(githubUri, source: 'GitHub');
     } catch (e) {
-      // На части Windows-ПК локальное хранилище корневых сертификатов не
-      // принимает цепочку GitHub. Не отключаем TLS-проверку: переключаемся на
-      // собственное зеркало с жёстко закреплённым SHA-256 сертификата.
-      AppLogger.log('[UPD] GitHub TLS недоступен, резервный сервер: $e');
+      // Переключаемся на зеркало при ЛЮБОМ отказе GitHub, а не только при
+      // ошибке TLS: на части Windows-ПК не принимается цепочка сертификатов,
+      // а у закрытого репозитория GitHub отвечает 404 без всякого TLS.
+      // Зеркало ходит в GitHub своим токеном и отдаёт то же самое.
+      // TLS-проверку не отключаем — у зеркала закреплён SHA-256 сертификата.
+      AppLogger.log('[UPD] GitHub недоступен ($e), пробую резервный сервер');
       final mirrorUri = Uri.parse(_kUpdateMirrorUrl).replace(queryParameters: {
         'token': _kUpdateMirrorToken,
         '_': DateTime.now().millisecondsSinceEpoch.toString(),
@@ -274,7 +276,13 @@ class AppUpdater {
     if (response.statusCode != 200) {
       AppLogger.log('[UPD] не 200 — тело: '
           '${response.body.substring(0, response.body.length.clamp(0, 300))}');
-      return [];
+      // Именно бросаем, а не возвращаем пустой список. Пустой список означает
+      // «релизов нет» и доезжает до владельца как бодрое «у вас последняя
+      // версия» — канал обновлений мог быть сломан месяцами, и это не видно.
+      // Плюс переключение на зеркало ловит только исключения: закрытый
+      // репозиторий отдаёт 404, и без броска резервный путь не срабатывал.
+      throw HttpException('$source ответил HTTP ${response.statusCode}',
+          uri: uri);
     }
     final list = jsonDecode(response.body);
     if (list is! List) {

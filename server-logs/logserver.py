@@ -56,6 +56,9 @@ SESSION_TTL = 12 * 60 * 60
 os.makedirs(DIR, exist_ok=True)
 
 UPDATE_REPO = "xykaxayc/brandmen-control"
+# Токен чтения репозитория. Пока репозиторий публичный — не нужен; как только
+# он закрывается, без токена и список релизов, и скачивание отдают 404.
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 UPDATE_ASSETS = {
     "BrandmenAds.apk",
     "BrandmenControl-macOS.dmg",
@@ -70,6 +73,15 @@ ASSET_CACHE_DIR = os.environ.get("UPDATE_CACHE_DIR", os.path.join(
 os.makedirs(ASSET_CACHE_DIR, exist_ok=True)
 
 
+def github_headers(accept="application/vnd.github+json"):
+    """Заголовки для GitHub. Токен нужен, когда репозиторий закрыт: без него
+    приватный репозиторий отвечает 404, и зеркало обновлений молча пустеет."""
+    headers = {"Accept": accept, "User-Agent": "BrandmenUpdateMirror/1"}
+    if GITHUB_TOKEN:
+        headers["Authorization"] = f"Bearer {GITHUB_TOKEN}"
+    return headers
+
+
 def update_releases():
     """GitHub releases с download URL, переписанными на закреплённый сервер."""
     with UPDATE_CACHE_LOCK:
@@ -78,8 +90,7 @@ def update_releases():
             return UPDATE_CACHE["releases"]
         req = Request(
             f"https://api.github.com/repos/{UPDATE_REPO}/releases?per_page=15",
-            headers={"Accept": "application/vnd.github+json",
-                     "User-Agent": "BrandmenUpdateMirror/1"})
+            headers=github_headers())
         with urlopen(req, timeout=15) as response:
             releases = json.loads(response.read().decode("utf-8"))
         for release in releases:
@@ -884,11 +895,37 @@ class H(BaseHTTPRequestHandler):
             except Exception as e:
                 print(f"[updates] cached download error {tag}/{name}: {e}", flush=True)
                 return
+        # У приватного репозитория публичной ссылки на ассет нет — качать надо
+        # через API по id ассета с тем же токеном. Публичная ссылка остаётся
+        # запасным путём на случай, когда токен не задан.
         url = f"https://github.com/{UPDATE_REPO}/releases/download/{quote(tag)}/{quote(name)}"
+        accept = "application/octet-stream"
+        if GITHUB_TOKEN:
+            asset_id = None
+            try:
+                for release in update_releases():
+                    if str(release.get("tag_name", "")) != tag:
+                        continue
+                    for asset in release.get("assets", []):
+                        if str(asset.get("name", "")) == name:
+                            asset_id = asset.get("id")
+                            break
+                    break
+            except Exception as e:
+                print(f"[updates] asset lookup failed {tag}/{name}: {e}", flush=True)
+            if asset_id is None:
+                return self._send(404, "update asset not found")
+            url = (f"https://api.github.com/repos/{UPDATE_REPO}"
+                   f"/releases/assets/{asset_id}")
         tmp = cache_path + ".tmp-" + secrets.token_hex(4)
+        # Заголовки уже отправлены — второй полноценный ответ дописался бы
+        # в середину тела первого. На keep-alive соединении получатель принял
+        # бы 502 за продолжение файла: битый инсталлятор без единой ошибки.
+        headers_sent = False
         try:
-            req = Request(url, headers={"User-Agent": "BrandmenUpdateMirror/1"})
+            req = Request(url, headers=github_headers(accept))
             with urlopen(req, timeout=60) as response:
+                headers_sent = True
                 self.send_response(200)
                 self.send_header("Content-Type", response.headers.get(
                     "Content-Type", "application/octet-stream"))
@@ -914,6 +951,11 @@ class H(BaseHTTPRequestHandler):
             except OSError:
                 pass
             print(f"[updates] download error {tag}/{name}: {e}", flush=True)
+            if headers_sent:
+                # Обрываем соединение: это единственный честный способ
+                # сказать «файл неполный», когда заголовки уже ушли.
+                self.close_connection = True
+                return
             return self._send(502, "update download unavailable")
 
     def log_message(self, *a):
