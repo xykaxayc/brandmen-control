@@ -38,7 +38,78 @@ bool _trustedLogServerCertificate(
 ///   Content-Type: text/plain; charset=utf-8
 ///   тело: текст лога
 /// Ответ 2xx = успех; тело ответа (если есть) показывается пользователю.
+/// Что сервер знает о планшете из его собственных отчётов.
+class CloudTablet {
+  final String deviceId;
+  final String ip;
+  final double? ageMinutes;
+
+  CloudTablet({required this.deviceId, required this.ip, this.ageMinutes});
+
+  /// Отчёт свежий — адресу можно верить. Номинально планшет пишет раз
+  /// в 12 секунд, но на живом флоте интервалы плавают до нескольких минут
+  /// (сервис перезапускается, сеть на точке рыхлая). Полчаса — компромисс:
+  /// нерегулярный, но живой планшет попадает, а замолчавший на всю ночь нет.
+  /// Брать адрес у давно молчащего опасно: его мог занять другой планшет,
+  /// и пульт начал бы командовать не тем устройством.
+  bool get isFresh => ageMinutes != null && ageMinutes! <= 30;
+}
+
 class LogUploader {
+  /// Список планшетов по данным их собственных отчётов в облако.
+  ///
+  /// Пульт ищет планшеты по IP из своего списка, а роутер после перезагрузки
+  /// может выдать другой адрес — и планшет пропадает с дашборда, хотя жив
+  /// и крутит рекламу. Планшет при этом каждые 12 секунд сообщает серверу
+  /// свой актуальный адрес. Отсюда связь и восстанавливается, без выезда.
+  static Future<List<CloudTablet>> fetchFleet({
+    required String baseUrl,
+    required String token,
+  }) async {
+    final base = baseUrl.trim().replaceAll(RegExp(r'/+$'), '');
+    if (base.isEmpty) return const [];
+    final Uri uri;
+    try {
+      uri = Uri.parse('$base/fleet');
+    } catch (_) {
+      return const [];
+    }
+    final httpClient = HttpClient()
+      ..badCertificateCallback = (cert, host, port) =>
+          _trustedLogServerCertificate(cert, host, port, uri.host);
+    final client = IOClient(httpClient);
+    try {
+      final response = await client.get(uri, headers: {
+        if (token.isNotEmpty) 'Authorization': 'Bearer $token',
+      }).timeout(const Duration(seconds: 10));
+      if (response.statusCode != 200) {
+        AppLogger.log('[ОБЛАКО] список планшетов: HTTP ${response.statusCode}');
+        return const [];
+      }
+      final decoded = jsonDecode(utf8.decode(response.bodyBytes));
+      if (decoded is! List) return const [];
+      final out = <CloudTablet>[];
+      for (final entry in decoded) {
+        if (entry is! Map) continue;
+        final site = (entry['site'] as String? ?? '').trim();
+        final meta = entry['meta'];
+        final ip = (meta is Map ? meta['ip'] as String? : null)?.trim() ?? '';
+        if (site.isEmpty || ip.isEmpty) continue;
+        out.add(CloudTablet(
+          deviceId: site,
+          ip: ip,
+          ageMinutes: (entry['age_min'] as num?)?.toDouble(),
+        ));
+      }
+      return out;
+    } catch (e) {
+      AppLogger.log('[ОБЛАКО] список планшетов недоступен: $e');
+      return const [];
+    } finally {
+      client.close();
+    }
+  }
+
   /// Передаёт центральной панели список экранов, сохранённый на этом ПК.
   /// Секреты сопряжения (apiToken) намеренно не отправляются.
   static Future<bool> sendFleetSnapshot({
