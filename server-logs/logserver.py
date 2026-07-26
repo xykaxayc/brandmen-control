@@ -171,10 +171,17 @@ def enqueue_cmd(site, cmd, args):
         return cid
 
 
-def poll_cmds(site, meta=None):
-    """Возвращает pending-команды и помечает их sent (чтобы не выполнить дважды)."""
+def poll_cmds(site, meta=None, tenant=None):
+    """Возвращает pending-команды и помечает их sent (чтобы не выполнить дважды).
+
+    Заодно закрепляет планшет за объектом: он приходит со своим токеном,
+    и по нему видно, чей это планшет. Служебный доступ ("*") принадлежность
+    не меняет — иначе наш собственный токен переписал бы чужие планшеты.
+    """
     with CMDS_LOCK:
         data = _load_cmds(site)
+        if tenant and tenant != "*":
+            data.setdefault("meta", {})["tenant"] = tenant
         if meta:
             m = data.setdefault("meta", {})
             m.update(meta)
@@ -215,7 +222,8 @@ def poll_meta(query):
     return meta
 
 
-def list_cmd_sites():
+def list_cmd_sites(tenant="*"):
+    """Планшеты объекта. tenant='*' — служебный доступ, видно все."""
     out = []
     if not os.path.isdir(CMDS_DIR):
         return out
@@ -225,6 +233,8 @@ def list_cmd_sites():
         site = fn[:-5]
         data = _load_cmds(site)
         meta = data.get("meta", {})
+        if not visible_to(tenant, meta.get("tenant")):
+            continue
         ls = meta.get("last_seen")
         age = None
         if ls:
@@ -238,18 +248,96 @@ def list_cmd_sites():
     return out
 
 
-def api_authed(handler):
-    if not TOKEN:
-        return True
+# --- Объекты (клиенты) ----------------------------------------------------
+# До этого «клиент» существовал только как имя компьютера в папке логов:
+# планшеты всех покупателей легли бы в одну кучу, а единственный токен давал
+# бы каждому доступ к чужой точке. Объект — это владелец: у него свой токен,
+# свои планшеты и свой пульт.
+#
+# Совместимость обязательна: работающая точка ничего не знает про объекты и
+# ходит со старым общим токеном. Поэтому общий токен остаётся и означает
+# «наш служебный доступ ко всему», а устройства без объекта считаются
+# принадлежащими объекту по умолчанию.
+TENANTS_PATH = os.environ.get("TENANTS_PATH", os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "tenants.json"))
+DEFAULT_TENANT = os.environ.get("DEFAULT_TENANT", "default")
+TENANTS_LOCK = threading.Lock()
+
+
+def load_tenants():
+    try:
+        with open(TENANTS_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_tenants(data):
+    tmp = TENANTS_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, TENANTS_PATH)
+
+
+def tenant_for_token(supplied):
+    """Какому объекту принадлежит токен. None — токен неизвестен."""
+    if not supplied:
+        return None
+    if TOKEN and hmac.compare_digest(supplied.encode(), TOKEN.encode()):
+        return "*"  # служебный доступ: видит все объекты
+    for tid, info in load_tenants().items():
+        tok = str(info.get("token", ""))
+        if tok and hmac.compare_digest(supplied.encode(), tok.encode()):
+            return tid
+    return None
+
+
+def tenant_for_host(handler):
+    """Объект по поддомену: client1.example.ru → объект с subdomain=client1.
+
+    Кабинет клиента открывается по своему адресу, поэтому принадлежность
+    видна ещё до входа — на странице логина уже понятно, чей это кабинет.
+    """
+    host = (handler.headers.get("Host", "") or "").split(":")[0].lower()
+    if not host:
+        return None
+    label = host.split(".")[0]
+    for tid, info in load_tenants().items():
+        sub = str(info.get("subdomain", "")).lower()
+        if sub and sub == label:
+            return tid
+    return None
+
+
+def request_token(handler):
     supplied = handler.headers.get("Authorization", "")
-    if supplied.startswith("Bearer ") and hmac.compare_digest(
-            supplied[7:].encode(), TOKEN.encode()):
-        return True
+    if supplied.startswith("Bearer "):
+        return supplied[7:]
     # Легаси-клиенты ещё передают токен в URL. Оставляем только для служебных
     # API на время обновления флота; браузерная панель query-token не принимает.
     q = parse_qs(urlparse(handler.path).query)
-    candidate = q.get("token", [""])[0]
-    return bool(candidate) and hmac.compare_digest(candidate.encode(), TOKEN.encode())
+    return q.get("token", [""])[0]
+
+
+def request_tenant(handler):
+    """Объект, от имени которого пришёл запрос. '*' — служебный доступ."""
+    if not TOKEN:
+        return "*"
+    return tenant_for_token(request_token(handler))
+
+
+def api_authed(handler):
+    if not TOKEN:
+        return True
+    return request_tenant(handler) is not None
+
+
+def visible_to(tenant, owner):
+    """Виден ли объекту owner запрашивающему tenant."""
+    if tenant == "*":
+        return True
+    return (owner or DEFAULT_TENANT) == tenant
 
 
 def _b64e(raw):
@@ -260,10 +348,10 @@ def _b64d(value):
     return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
 
 
-def verify_password(password):
-    """Verify pbkdf2_sha256$iterations$salt_b64$digest_b64."""
+def verify_pbkdf2(password, stored):
+    """Проверка пароля вида pbkdf2_sha256$iterations$salt_b64$digest_b64."""
     try:
-        kind, rounds, salt, expected = ADMIN_PASSWORD_HASH.split("$", 3)
+        kind, rounds, salt, expected = str(stored).split("$", 3)
         if kind != "pbkdf2_sha256":
             return False
         actual = hashlib.pbkdf2_hmac(
@@ -273,9 +361,40 @@ def verify_password(password):
         return False
 
 
-def new_session(username):
+def verify_password(password):
+    return verify_pbkdf2(password, ADMIN_PASSWORD_HASH)
+
+
+def hash_password(password, rounds=200_000):
+    """Хеш для записи в tenants.json — пароли в открытом виде не храним."""
+    salt = secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, rounds)
+    return f"pbkdf2_sha256${rounds}${_b64e(salt)}${_b64e(digest)}"
+
+
+def authenticate_user(tenant_id, username, password):
+    """Возвращает объект, под которым вошёл пользователь, либо None.
+
+    Служебная учётка из окружения видит все объекты — ей мы пользуемся сами.
+    Пользователи объекта живут в tenants.json и видят только своё.
+    """
+    if (ADMIN_USER and ADMIN_PASSWORD_HASH
+            and hmac.compare_digest(username, ADMIN_USER)
+            and verify_password(password)):
+        return "*"
+    if not tenant_id:
+        return None
+    info = load_tenants().get(tenant_id) or {}
+    user = (info.get("users") or {}).get(username)
+    if user and verify_pbkdf2(password, user.get("hash", "")):
+        return tenant_id
+    return None
+
+
+def new_session(username, tenant="*"):
     payload = {
         "u": username,
+        "t": tenant,
         "exp": int(time.time()) + SESSION_TTL,
         "csrf": secrets.token_urlsafe(24),
     }
@@ -301,7 +420,22 @@ def web_session(handler):
         if not hmac.compare_digest(sig, expected):
             return None
         session = json.loads(_b64d(raw).decode())
-        if session.get("u") != ADMIN_USER or int(session.get("exp", 0)) < time.time():
+        if int(session.get("exp", 0)) < time.time():
+            return None
+        tenant = session.get("t", "*")
+        username = session.get("u", "")
+        # Учётка должна существовать и сейчас: удалили пользователя объекта —
+        # его открытая сессия перестаёт работать, а не живёт до истечения.
+        if tenant == "*":
+            if not ADMIN_USER or username != ADMIN_USER:
+                return None
+        else:
+            info = load_tenants().get(tenant) or {}
+            if username not in (info.get("users") or {}):
+                return None
+        # Кабинет открыт по чужому поддомену — не отдаём чужие данные.
+        host_tenant = tenant_for_host(handler)
+        if tenant != "*" and host_tenant and host_tenant != tenant:
             return None
         return session
     except Exception:
@@ -333,7 +467,7 @@ def login_allowed(ip, success=False):
         return allowed
 
 
-def save_agent_snapshot(body):
+def save_agent_snapshot(body, tenant=None):
     site = safe(str(body.get("site", "")))
     if site == "unknown":
         raise ValueError("missing site")
@@ -344,6 +478,17 @@ def save_agent_snapshot(body):
         "seen_utc": datetime.datetime.utcnow().isoformat() + "Z",
         "devices": [],
     }
+    # Пульт принадлежит тому же объекту, чьим токеном он ходит.
+    if tenant and tenant != "*":
+        clean["tenant"] = tenant
+    else:
+        try:
+            with open(os.path.join(AGENTS_DIR, site + ".json"), encoding="utf-8") as f:
+                previous = json.load(f).get("tenant")
+            if previous:
+                clean["tenant"] = previous
+        except Exception:
+            pass
     for item in devices[:500]:
         if not isinstance(item, dict):
             continue
@@ -363,7 +508,7 @@ def save_agent_snapshot(body):
     return clean
 
 
-def list_agent_snapshots():
+def list_agent_snapshots(tenant="*"):
     out = []
     for fn in sorted(os.listdir(AGENTS_DIR)):
         if not fn.endswith(".json"):
@@ -374,6 +519,8 @@ def list_agent_snapshots():
             seen = datetime.datetime.fromisoformat(item["seen_utc"].rstrip("Z"))
             item["age_min"] = round(
                 (datetime.datetime.utcnow() - seen).total_seconds() / 60, 1)
+            if not visible_to(tenant, item.get("tenant")):
+                continue
             out.append(item)
         except Exception:
             continue
@@ -388,7 +535,7 @@ ISSUE_PATTERN = re.compile(
 SILENT_TABLET_MINUTES = 30
 
 
-def silent_tablets():
+def silent_tablets(tenant="*"):
     """Планшеты, переставшие отчитываться в облако.
 
     Планшет пишет сюда раз в 12 секунд независимо от того, идёт показ или нет,
@@ -397,7 +544,7 @@ def silent_tablets():
     и никто не знал. Теперь это первое, что показывает панель.
     """
     out = []
-    for entry in list_cmd_sites():
+    for entry in list_cmd_sites(tenant):
         age = entry.get("age_min")
         if age is None or age <= SILENT_TABLET_MINUTES:
             continue
@@ -413,11 +560,11 @@ def silent_tablets():
     return out
 
 
-def recent_issues(limit=20):
+def recent_issues(limit=20, tenant="*"):
     """Короткий дедуплицированный список проблем вместо потока служебных логов."""
     found = {}
     if not os.path.isdir(DIR):
-        return silent_tablets()
+        return silent_tablets(tenant)
     for site in os.listdir(DIR):
         path = os.path.join(DIR, site, "_live.log")
         if not os.path.isfile(path):
@@ -444,15 +591,15 @@ def recent_issues(limit=20):
         except OSError:
             continue
     # Молчащие планшеты — впереди всего: это отказ, а не строчка в логе.
-    return silent_tablets() + list(found.values())[-limit:][::-1]
+    return silent_tablets(tenant) + list(found.values())[-limit:][::-1]
 
 
-def dashboard_data():
-    devices = list_cmd_sites()
+def dashboard_data(tenant="*"):
+    devices = list_cmd_sites(tenant)
     for device in devices:
         device["controllable"] = True
     by_id = {d["site"]: d for d in devices}
-    agents = list_agent_snapshots()
+    agents = list_agent_snapshots(tenant)
     for agent in agents:
         for item in agent.get("devices", []):
             did = item.get("device_id", "")
@@ -476,7 +623,8 @@ def dashboard_data():
                 }
                 devices.append(row)
                 by_id[key] = row
-    return {"devices": devices, "agents": agents, "issues": recent_issues(),
+    return {"devices": devices, "agents": agents,
+            "issues": recent_issues(tenant=tenant),
             "server_utc": datetime.datetime.utcnow().isoformat() + "Z"}
 
 
@@ -837,7 +985,7 @@ class H(BaseHTTPRequestHandler):
         body = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
         self.connection.sendall(websocket_frame(body))
 
-    def _ws_dashboard(self):
+    def _ws_dashboard(self, tenant="*"):
         if not self._websocket_upgrade():
             return
         last_digest = None
@@ -845,7 +993,7 @@ class H(BaseHTTPRequestHandler):
         started = time.time()
         try:
             while time.time() - started < SESSION_TTL:
-                data = dashboard_data()
+                data = dashboard_data(tenant)
                 stable = dict(data)
                 stable.pop("server_utc", None)
                 digest = hashlib.sha256(json.dumps(
@@ -1067,12 +1215,14 @@ class H(BaseHTTPRequestHandler):
             form = self._read_form()
             username = form.get("username", "")
             password = form.get("password", "")
-            if (hmac.compare_digest(username, ADMIN_USER)
-                    and verify_password(password)):
+            # Объект определяем по поддомену: кабинет клиента открывается
+            # по своему адресу, и пользователь объекта существует только там.
+            tenant = authenticate_user(tenant_for_host(self), username, password)
+            if tenant:
                 login_allowed(ip, success=True)
-                cookie = (f"{SESSION_COOKIE}={new_session(username)}; Path=/; "
+                cookie = (f"{SESSION_COOKIE}={new_session(username, tenant)}; Path=/; "
                           f"Max-Age={SESSION_TTL}; Secure; HttpOnly; SameSite=Lax")
-                print(f"[web] login {username} from {ip}", flush=True)
+                print(f"[web] login {username} (объект {tenant}) from {ip}", flush=True)
                 return self._redirect("/panel", cookie)
             return self._send(401, login_page("Неверный логин или пароль."),
                               "text/html; charset=utf-8")
@@ -1080,7 +1230,7 @@ class H(BaseHTTPRequestHandler):
             if not api_authed(self):
                 return self._send(401, "unauthorized")
             try:
-                snapshot = save_agent_snapshot(self._read_json())
+                snapshot = save_agent_snapshot(self._read_json(), request_tenant(self))
                 return self._send(200, json.dumps({
                     "ok": True, "devices": len(snapshot["devices"])}),
                     "application/json; charset=utf-8")
@@ -1161,7 +1311,9 @@ class H(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         q = parse_qs(u.query)
         if u.path == "/ws/dashboard":
-            return self._ws_dashboard()
+            # Объект берём из сессии; сам upgrade её ещё раз проверит.
+            live = web_session(self)
+            return self._ws_dashboard((live or {}).get("t", "*"))
         if u.path == "/ws/logs":
             site = safe(q.get("site", [""])[0])
             if site == "unknown":
@@ -1211,13 +1363,17 @@ class H(BaseHTTPRequestHandler):
                 return self._send(401, "unauthorized")
             site = safe(q.get("site", [""])[0])
             meta = poll_meta(q)
-            return self._send(200, json.dumps(poll_cmds(site, meta), ensure_ascii=False),
+            return self._send(200, json.dumps(
+                                  poll_cmds(site, meta, request_tenant(self)),
+                                  ensure_ascii=False),
                               "application/json; charset=utf-8")
         if u.path == "/api/dashboard":
             session = web_session(self)
             if not session:
                 return self._send(401, "unauthorized")
-            return self._send(200, json.dumps(dashboard_data(), ensure_ascii=False),
+            return self._send(200, json.dumps(
+                                  dashboard_data(session.get("t", "*")),
+                                  ensure_ascii=False),
                               "application/json; charset=utf-8")
         if u.path == "/fleet":
             # Машиночитаемый список планшетов для пульта. Пульт ищет планшеты
@@ -1228,7 +1384,8 @@ class H(BaseHTTPRequestHandler):
             if not api_authed(self):
                 return self._send(401, "unauthorized")
             return self._send(200,
-                              json.dumps(list_cmd_sites(), ensure_ascii=False),
+                              json.dumps(list_cmd_sites(request_tenant(self)),
+                                         ensure_ascii=False),
                               "application/json; charset=utf-8")
         if u.path in ("/panel", "/list", "/view", "/dash",
                       "/live", "/ui", "/files", "/cmds", "/commands"):
@@ -1245,7 +1402,9 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, json.dumps(list_files(site), ensure_ascii=False, indent=2),
                               "application/json; charset=utf-8")
         if u.path == "/commands":
-            return self._send(200, json.dumps(list_cmd_sites(), ensure_ascii=False, indent=2),
+            return self._send(200, json.dumps(
+                                  list_cmd_sites(session.get("t", "*")),
+                                  ensure_ascii=False, indent=2),
                               "application/json; charset=utf-8")
         if u.path == "/cmds":
             return self._redirect("/panel")
