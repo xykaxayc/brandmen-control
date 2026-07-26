@@ -30,7 +30,7 @@ concurrency:
   # поэтому один и тот же push терял сборку Windows или macOS целиком.
   # Здесь важно другое — не дать одной и той же сборке идти дважды
   # параллельно: версия считается в начале джоба, а тег создаётся в конце.
-  group: ${{ github.workflow }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:

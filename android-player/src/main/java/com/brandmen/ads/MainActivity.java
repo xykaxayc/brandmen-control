@@ -1452,8 +1452,9 @@ public class MainActivity extends Activity implements MediaServer.ControlCallbac
     }
 
     @Override public void onSleep() {
-        // Держим экран погашенным, иначе сторож вернёт его через 30 секунд.
-        Kiosk.pauseGuard(this, PlayerService.SLEEP_GUARD_PAUSE_MS);
+        // Показ снимаем в PlayerService.onSleep и в onStopPlayback — здесь
+        // только гашение. Сюда приходят и через screenOffRunnable, когда
+        // желаемое состояние уже false.
         if (dpm != null && dpm.isAdminActive(adminComponent)) {
             dpm.lockNow();
         } else {

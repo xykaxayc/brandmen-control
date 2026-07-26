@@ -86,37 +86,36 @@ final class Kiosk {
     }
 
     /**
-     * Пауза сторожа: до этого момента ensurePlayerRunning не будит экран и не
-     * поднимает плеер. Нужна, чтобы отличить «погасили намеренно» от аварии.
-     * Раньше такого различия не было: администратор гасил экран, а через 30
-     * секунд сторож включал его обратно — и он же выбрасывал администратора
-     * из системных настроек, пока тот подключал планшет к Wi-Fi.
+     * Пауза сторожа на время обслуживания. Пока она держится,
+     * ensurePlayerRunning не поднимает плеер и не будит экран — иначе
+     * администратор, ушедший в системные настройки подключать Wi-Fi,
+     * через 30 секунд получал плеер поверх них.
      *
-     * Считаем по elapsedRealtime, а не по настенным часам: на планшете без
-     * сети время не синхронизировано и может прыгать. Побочный эффект —
-     * пауза не переживает перезагрузку, и это безопасное направление:
-     * худшее, что случится, — планшет вернётся к обычной работе.
+     * Живёт ТОЛЬКО в памяти процесса и намеренно не сохраняется на диск.
+     * Обслуживание — это живой сеанс работы человека за планшетом: если
+     * процесс умер или планшет перезагрузился, сеанс кончился, и правильное
+     * поведение — вернуться к обычной работе. Персистентная версия этого
+     * счётчика была бы миной: elapsedRealtime обнуляется при перезагрузке,
+     * а сохранённая метка — нет, и пауза продлевалась бы на весь прошлый
+     * аптайм (ср. NetworkWatchdog.checkAndHeal, где сброс уже учтён).
+     *
+     * Ночное выключение экрана этим механизмом НЕ пользуется: команда sleep
+     * гасит показ через setPlaybackEnabled(false), то есть тем же надёжным
+     * способом, что и stop, и переживает всё.
      */
-    private static final String GUARD_PAUSED_UNTIL = "guard_paused_until";
+    private static volatile long sMaintenanceUntilRealtime = 0L;
 
     static void pauseGuard(Context ctx, long durationMs) {
-        playbackPrefs(ctx).edit()
-                .putLong(GUARD_PAUSED_UNTIL, SystemClock.elapsedRealtime() + durationMs)
-                .commit();
+        sMaintenanceUntilRealtime = SystemClock.elapsedRealtime() + durationMs;
     }
 
     static void resumeGuard(Context ctx) {
-        playbackPrefs(ctx).edit().remove(GUARD_PAUSED_UNTIL).commit();
+        sMaintenanceUntilRealtime = 0L;
     }
 
     static boolean isGuardPaused(Context ctx) {
-        long until = playbackPrefs(ctx).getLong(GUARD_PAUSED_UNTIL, 0L);
-        if (until == 0L) return false;
-        if (SystemClock.elapsedRealtime() >= until) {
-            resumeGuard(ctx);
-            return false;
-        }
-        return true;
+        long until = sMaintenanceUntilRealtime;
+        return until != 0L && SystemClock.elapsedRealtime() < until;
     }
 
     static ComponentName admin(Context ctx) {
