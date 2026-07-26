@@ -152,6 +152,15 @@ def enqueue_cmd(site, cmd, args):
         data = _load_cmds(site)
         cid = int(data.get("next_id", 1))
         data["next_id"] = cid + 1
+        # Команда показа — это не разовое действие, а смена намерения.
+        # Без этого пульт через минуту возвращал планшет к своему
+        # сохранённому состоянию и гасил то, что включили из панели:
+        # кнопка в вебе «работала», а реклама не шла. Пульт читает
+        # намерение отсюда (см. /fleet) и обновляет своё.
+        if cmd in ("launch", "stop"):
+            meta = data.setdefault("meta", {})
+            meta["desired_playback"] = (cmd == "launch")
+            meta["desired_seq"] = int(meta.get("desired_seq", 0)) + 1
         data.setdefault("queue", []).append({
             "id": cid, "cmd": cmd, "args": args or {},
             "status": "pending", "result": "",

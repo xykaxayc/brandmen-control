@@ -1212,7 +1212,21 @@ class _DashboardScreenState extends State<DashboardScreen> {
         final id = device.deviceId;
         if (id == null || id.isEmpty) continue;
         final cloud = byId[id];
-        if (cloud == null || !cloud.isFresh || cloud.ip == device.ip) continue;
+        if (cloud == null) continue;
+
+        // Намерение показа, выставленное из веб-панели. Применяем по номеру —
+        // ровно один раз на каждое решение оператора, иначе пульт либо
+        // игнорировал бы веб, либо вечно перебивал бы собственные изменения.
+        final seq = cloud.desiredSeq;
+        final want = cloud.desiredPlayback;
+        if (seq != null && want != null && seq != device.cloudDesiredSeq) {
+          AppLogger.log('[ОБЛАКО] ${device.name}: из панели пришло '
+              '«${want ? "включить" : "выключить"} показ» (решение #$seq) — принимаю');
+          await DeviceStorage.setDesiredPlayback([device.ip], want);
+          await DeviceStorage.setCloudDesiredSeq(id, seq);
+        }
+
+        if (!cloud.isFresh || cloud.ip == device.ip) continue;
         AppLogger.log('[ОБЛАКО] ${device.name}: адрес сменился '
             '${device.ip} → ${cloud.ip} (планшет отчитался '
             '${cloud.ageMinutes!.toStringAsFixed(1)} мин назад) — подхватываю');
