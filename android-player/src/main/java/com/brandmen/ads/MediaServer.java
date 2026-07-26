@@ -64,6 +64,12 @@ public class MediaServer {
          * обновлять планшет из веб-панели — без пульта и без локальной сети.
          */
         default void onSelfUpdate() {}
+        /**
+         * «Найти планшет»: на весь экран крупно показать адрес и модель,
+         * разбудить экран и подать звук. Планшеты в зале одинаковые,
+         * и по списку в панели непонятно, который из них где висит.
+         */
+        default void onIdentify() {}
     }
 
     private final String mediaDir;
@@ -238,6 +244,9 @@ public class MediaServer {
                 } else {
                     handleInstallUpload(in, out, contentLength);
                 }
+            } else if (path.equals("/api/control/identify")) {
+                mainHandler.post(() -> { if (callback != null) callback.onIdentify(); });
+                sendJson(out, 200, "{\"ok\":true}");
             } else if (method.equals("POST") && path.equals("/api/brand-pack")) {
                 handleBrandPack(body, out);
             } else if (path.startsWith("/api/control/")) {
